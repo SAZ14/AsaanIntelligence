@@ -1,0 +1,22 @@
+sku,name,category,cost,price
+ESP,Espresso,Coffee,70,420
+AMR,Americano,Coffee,85,480
+CAP,Cappuccino,Coffee,110,560
+LAT,Cafe Latte,Coffee,120,580
+FLW,Flat White,Coffee,115,600
+MOC,Mocha,Coffee,140,650
+CLB,Cold Brew,Coffee,130,680
+ICL,Iced Latte,Coffee,135,640
+MAT,Matcha Latte,Coffee,190,720
+HOT,Hot Chocolate,Coffee,150,560
+CRO,Butter Croissant,Bakery,180,520
+PNC,Pain au Chocolat,Bakery,220,600
+CKE,Slice of Cake,Bakery,260,780
+CKE2,Cheesecake,Bakery,320,880
+AVT,Avocado Toast,Food,520,1450
+BFP,Big Breakfast,Food,780,1850
+SAN,Chicken Sandwich,Food,560,1350
+PAS,Pasta,Food,640,1650
+SAL,Garden Salad,Food,430,1250
+IMP,Imported Soda,Other,380,480
+WTR,Bottled Water,Other,60,150
