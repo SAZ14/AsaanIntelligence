@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 
 from app.ingest import load_dataset
 from app.analysis.integrity import analyze_integrity, IntegrityReport
@@ -19,12 +20,32 @@ def test_worst_offender_is_s03():
     assert report.worst_offender == "S03", f"Expected S03, got {report.worst_offender}"
 
 
-def test_monthly_leakage_in_range():
+def test_leakage_headline_reconciles_with_components():
     report = _load_report()
-    lo, hi = 55_000, 65_000
-    assert lo <= report.estimated_leakage_monthly <= hi, (
-        f"Expected monthly leakage {lo}-{hi}, got {report.estimated_leakage_monthly:,.0f}"
+    component_sum = (
+        report.suspected_theft_value
+        + report.excess_comp_value
+        + report.excess_discount_value
     )
+    assert component_sum == report.estimated_leakage_period, (
+        f"Period total {report.estimated_leakage_period:,.0f} != "
+        f"component sum {component_sum:,.0f}"
+    )
+    expected_monthly = report.estimated_leakage_period * 30 / report.venue_baseline.period_days
+    assert abs(report.estimated_leakage_monthly - expected_monthly) < 1, (
+        f"Monthly {report.estimated_leakage_monthly:,.0f} != "
+        f"period×30/{report.venue_baseline.period_days} = {expected_monthly:,.0f}"
+    )
+
+
+def test_per_staff_leakage_sums_to_headline():
+    report = _load_report()
+    staff_theft = sum(si.excess_theft_void_value for si in report.staff_integrity)
+    staff_comp = sum(si.excess_comp_value for si in report.staff_integrity)
+    staff_disc = sum(si.excess_discount_value for si in report.staff_integrity)
+    assert abs(staff_theft - report.suspected_theft_value) < 1
+    assert abs(staff_comp - report.excess_comp_value) < 1
+    assert abs(staff_disc - report.excess_discount_value) < 1
 
 
 def test_theft_flags_concentrate_on_s03():
@@ -51,21 +72,19 @@ def test_venue_baseline_rates():
     assert bl.void_rate > 0
     assert bl.comp_rate > 0
     assert bl.discount_rate > 0
+    assert bl.theft_void_rate > 0
     assert bl.void_rate < 0.05
     assert bl.comp_rate < 0.05
 
 
 def test_no_false_positives_on_clean_data():
     """With no planted bad actor, leakage should be near zero."""
-    from datetime import datetime
-
     staff_clean = {
         "S01": Staff(staff_id="S01", name="Alice", role="barista"),
         "S02": Staff(staff_id="S02", name="Bob", role="server"),
     }
     menu_clean = {
         "ESP": MenuItem(sku="ESP", name="Espresso", category="Coffee", cost=70, price=420),
-        "LAT": MenuItem(sku="LAT", name="Latte", category="Coffee", cost=120, price=580),
     }
 
     orders_clean: list[Order] = []

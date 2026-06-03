@@ -37,6 +37,7 @@ class StaffIntegrity:
     cash_share: float = 0.0
     theft_void_count: int = 0
     theft_void_value: float = 0.0
+    excess_theft_void_value: float = 0.0
     excess_comp_value: float = 0.0
     excess_discount_value: float = 0.0
     total_leakage: float = 0.0
@@ -59,6 +60,8 @@ class VenueBaseline:
     comp_rate: float = 0.0
     discount_value: float = 0.0
     discount_rate: float = 0.0
+    theft_void_value: float = 0.0
+    theft_void_rate: float = 0.0
     period_days: int = 0
 
 
@@ -138,6 +141,7 @@ def analyze_integrity(
                 if li.void_after_fire and is_cash:
                     si.theft_void_count += 1
                     si.theft_void_value += gross
+                    baseline.theft_void_value += gross
                     flagged.append(FlaggedEvent(
                         order_id=order.order_id,
                         staff_id=sid,
@@ -162,6 +166,7 @@ def analyze_integrity(
         baseline.void_rate = baseline.void_value / baseline.gross_volume
         baseline.comp_rate = baseline.comp_value / baseline.gross_volume
         baseline.discount_rate = baseline.discount_value / baseline.gross_volume
+        baseline.theft_void_rate = baseline.theft_void_value / baseline.gross_volume
 
     for si in per_staff.values():
         if si.gross_volume > 0:
@@ -171,9 +176,10 @@ def analyze_integrity(
         if si.total_orders > 0:
             si.cash_share = si.cash_orders / si.total_orders
 
+        si.excess_theft_void_value = max(0.0, si.theft_void_value - baseline.theft_void_rate * si.gross_volume)
         si.excess_comp_value = max(0.0, si.comp_value - baseline.comp_rate * si.gross_volume)
         si.excess_discount_value = max(0.0, si.discount_value - baseline.discount_rate * si.gross_volume)
-        si.total_leakage = si.theft_void_value + si.excess_comp_value + si.excess_discount_value
+        si.total_leakage = si.excess_theft_void_value + si.excess_comp_value + si.excess_discount_value
 
     staff_list = [si for si in per_staff.values() if si.total_lines > 0]
 
@@ -187,7 +193,7 @@ def analyze_integrity(
         si.discount_rate_z = _z_score(si.discount_rate, disc_rates)
 
         penalty = (
-            si.theft_void_value * 3.0
+            si.excess_theft_void_value * 3.0
             + si.excess_comp_value * 2.0
             + si.excess_discount_value * 1.0
         )
@@ -196,16 +202,16 @@ def analyze_integrity(
 
     staff_list.sort(key=lambda s: s.integrity_score)
 
-    total_theft = sum(si.theft_void_value for si in staff_list)
+    total_excess_theft = sum(si.excess_theft_void_value for si in staff_list)
     total_excess_comp = sum(si.excess_comp_value for si in staff_list)
     total_excess_disc = sum(si.excess_discount_value for si in staff_list)
-    total_leakage = total_theft + total_excess_comp + total_excess_disc
+    total_leakage = total_excess_theft + total_excess_comp + total_excess_disc
 
     return IntegrityReport(
         venue_baseline=baseline,
         staff_integrity=staff_list,
         worst_offender=staff_list[0].staff_id if staff_list else "",
-        suspected_theft_value=total_theft,
+        suspected_theft_value=total_excess_theft,
         excess_comp_value=total_excess_comp,
         excess_discount_value=total_excess_disc,
         estimated_leakage_period=total_leakage,
