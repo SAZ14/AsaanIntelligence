@@ -6,7 +6,7 @@ from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from app.models.canonical import LineItem, MenuItem, Order, Payment, Staff
+from app.models.canonical import LineItem, MenuItem, Order, Payment, Review, Staff
 from app.ingest.mappings import cafe_generic as default_mapping
 
 
@@ -98,6 +98,25 @@ def load_orders(
         ))
 
     return orders
+
+
+def load_reviews(
+    path: Path,
+    mapping: dict[str, str] | None = None,
+) -> list[Review]:
+    m = mapping or default_mapping.REVIEWS
+    reviews: list[Review] = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            reviews.append(Review(
+                review_id=_get(row, m, "review_id"),
+                source=_get(row, m, "source"),
+                rating=int(_get(row, m, "rating")),
+                posted_at=dt.fromisoformat(_get(row, m, "posted_at")),
+                reviewer_name=_get(row, m, "reviewer_name"),
+                text=_get(row, m, "text"),
+            ))
+    return reviews
 
 
 def load_dataset(

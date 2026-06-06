@@ -41,3 +41,12 @@ STAFF = {
     "name": "name",
     "role": "role",
 }
+
+REVIEWS = {
+    "review_id": "review_id",
+    "source": "source",
+    "rating": "rating",
+    "posted_at": "posted_at",
+    "reviewer_name": "reviewer_name",
+    "text": "text",
+}

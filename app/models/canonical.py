@@ -50,6 +50,15 @@ class Payment(BaseModel):
     tax_rate: float
 
 
+class Review(BaseModel):
+    review_id: str
+    source: str
+    rating: int
+    posted_at: datetime
+    reviewer_name: str
+    text: str
+
+
 class Order(BaseModel):
     order_id: str
     datetime: datetime
