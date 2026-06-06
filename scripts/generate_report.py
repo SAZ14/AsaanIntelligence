@@ -24,9 +24,14 @@ def main() -> None:
     operations = analyze_operations(orders, menu, staff)
 
     h = compute_headlines(integrity, retention, operations)
-    print(f"Monthly leakage (flagged staff): PKR {h.monthly_leakage:,.0f}")
-    print(f"Monthly win-back (Tier A):       PKR {h.monthly_winback_tier_a:,.0f}")
-    print(f"Monthly win-back (A+B total):    PKR {h.monthly_winback_total:,.0f}")
+    print(f"Monthly leakage (flagged staff):        PKR {h.monthly_leakage:,.0f}")
+    print(f"Monthly revenue:                        PKR {h.monthly_revenue:,.0f}")
+    print(f"Recovery rate:                          {h.recovery_rate:.0%}")
+    print(f"Potential recoverable/mo (Tier A):       PKR {h.monthly_winback_tier_a:,.0f}")
+    print(f"Potential recoverable/mo (A+B total):    PKR {h.monthly_winback_total:,.0f}")
+    print(f"Win-back as % of revenue:               {h.winback_pct_of_revenue:.1%}")
+    if h.winback_sanity_warning:
+        print(f"⚠  WARNING: win-back exceeds 10% of monthly revenue — review assumptions")
 
     html = generate_report(integrity, retention, operations)
 

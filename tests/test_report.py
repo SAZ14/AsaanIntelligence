@@ -3,7 +3,10 @@ from pathlib import Path
 from app.ingest import load_dataset
 from app.analysis.integrity import analyze_integrity
 from app.analysis.retention import analyze_retention, analyze_operations
-from app.report.render import generate_report, compute_headlines
+from app.report.render import (
+    generate_report, compute_headlines,
+    _observed_monthly_spend, SANITY_WINBACK_PCT_WARN,
+)
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -29,8 +32,8 @@ def test_report_generates_without_error():
 def test_headline_numbers_present_and_positive():
     integrity, retention, operations = _build()
     h = compute_headlines(integrity, retention, operations)
-    assert h.monthly_leakage > 0, f"Leakage should be positive, got {h.monthly_leakage}"
-    assert h.monthly_winback_tier_a > 0, f"Win-back Tier A should be positive, got {h.monthly_winback_tier_a}"
+    assert h.monthly_leakage > 0
+    assert h.monthly_winback_tier_a > 0
     assert h.monthly_winback_total >= h.monthly_winback_tier_a
 
 
@@ -54,3 +57,39 @@ def test_winnable_lapsed_within_gap_limit():
     h = compute_headlines(integrity, retention, operations)
     for c in h.tier_a_winnable + h.tier_b_winnable:
         assert c.days_since_last <= 30
+
+
+def test_winback_uses_observed_spend_rate():
+    integrity, retention, operations = _build()
+    h = compute_headlines(integrity, retention, operations)
+    for c in h.tier_a_winnable:
+        obs = _observed_monthly_spend(c)
+        assert obs > 0, f"{c.customer_ref} has zero observed monthly spend"
+        recoverable = obs * h.recovery_rate
+        assert recoverable < obs, "Recoverable should be discounted below observed rate"
+        assert recoverable > 0
+
+
+def test_recovery_rate_configurable():
+    integrity, retention, operations = _build()
+    h50 = compute_headlines(integrity, retention, operations, recovery_rate=0.50)
+    h30 = compute_headlines(integrity, retention, operations, recovery_rate=0.30)
+    assert h50.monthly_winback_tier_a > h30.monthly_winback_tier_a
+    assert h50.recovery_rate == 0.50
+    assert h30.recovery_rate == 0.30
+
+
+def test_sanity_bound_reported():
+    integrity, retention, operations = _build()
+    h = compute_headlines(integrity, retention, operations)
+    assert h.winback_pct_of_revenue >= 0
+    assert h.monthly_revenue > 0
+    recomputed_pct = h.monthly_winback_total / h.monthly_revenue
+    assert abs(recomputed_pct - h.winback_pct_of_revenue) < 0.001
+
+
+def test_sanity_warning_triggers_at_high_recovery():
+    integrity, retention, operations = _build()
+    h = compute_headlines(integrity, retention, operations, recovery_rate=1.0)
+    if h.winback_pct_of_revenue > SANITY_WINBACK_PCT_WARN:
+        assert h.winback_sanity_warning

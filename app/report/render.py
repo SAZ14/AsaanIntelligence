@@ -8,6 +8,8 @@ from app.analysis.retention import RetentionReport, OperationsReport, CustomerPr
 
 FLAGGED_SCORE_THRESHOLD = 99.0
 WINNABLE_GAP_MAX_DAYS = 30
+DEFAULT_RECOVERY_RATE = 0.30
+SANITY_WINBACK_PCT_WARN = 0.10
 
 
 @dataclass
@@ -17,15 +19,31 @@ class HeadlineNumbers:
     venue_wide_leakage_monthly: float = 0.0
     monthly_winback_tier_a: float = 0.0
     monthly_winback_total: float = 0.0
+    monthly_revenue: float = 0.0
+    winback_pct_of_revenue: float = 0.0
+    winback_sanity_warning: bool = False
+    recovery_rate: float = DEFAULT_RECOVERY_RATE
     tier_a_winnable: list[CustomerProfile] = field(default_factory=list)
     tier_b_winnable: list[CustomerProfile] = field(default_factory=list)
     period_days: int = 35
+
+
+def _observed_monthly_spend(c: CustomerProfile) -> float:
+    """Actual spend rate while active = total_spend / active_span_months."""
+    if c.first_visit is None or c.last_visit is None:
+        return 0.0
+    span_days = (c.last_visit - c.first_visit).days
+    if span_days < 1:
+        return 0.0
+    return c.total_spend / span_days * 30
 
 
 def compute_headlines(
     integrity: IntegrityReport,
     retention: RetentionReport,
     operations: OperationsReport,
+    recovery_rate: float = DEFAULT_RECOVERY_RATE,
+    winnable_gap_max_days: int = WINNABLE_GAP_MAX_DAYS,
 ) -> HeadlineNumbers:
     period_days = integrity.venue_baseline.period_days or 35
     monthly_scale = 30 / period_days
@@ -37,7 +55,7 @@ def compute_headlines(
     winnable_a: list[CustomerProfile] = []
     winnable_b: list[CustomerProfile] = []
     for c in retention.customers:
-        if c.days_since_last > WINNABLE_GAP_MAX_DAYS:
+        if c.days_since_last > winnable_gap_max_days:
             continue
         if c.median_cadence_days is None or c.median_cadence_days <= 0:
             continue
@@ -46,21 +64,28 @@ def compute_headlines(
         elif c.is_lapsing:
             winnable_b.append(c)
 
-    def _monthly_value(c: CustomerProfile) -> float:
-        visits_per_month = 30 / c.median_cadence_days if c.median_cadence_days else 0
-        return visits_per_month * c.avg_ticket
+    def _recoverable(c: CustomerProfile) -> float:
+        return _observed_monthly_spend(c) * recovery_rate
 
-    tier_a_monthly = sum(_monthly_value(c) for c in winnable_a)
-    tier_b_monthly = sum(_monthly_value(c) for c in winnable_b)
+    tier_a_monthly = sum(_recoverable(c) for c in winnable_a)
+    tier_b_monthly = sum(_recoverable(c) for c in winnable_b)
+    total_winback = tier_a_monthly + tier_b_monthly
+
+    monthly_revenue = retention.total_revenue * monthly_scale
+    wb_pct = total_winback / monthly_revenue if monthly_revenue > 0 else 0.0
 
     return HeadlineNumbers(
         monthly_leakage=monthly_leakage,
         monthly_leakage_flagged_staff=flagged,
         venue_wide_leakage_monthly=integrity.estimated_leakage_monthly,
         monthly_winback_tier_a=tier_a_monthly,
-        monthly_winback_total=tier_a_monthly + tier_b_monthly,
-        tier_a_winnable=sorted(winnable_a, key=lambda c: _monthly_value(c), reverse=True),
-        tier_b_winnable=sorted(winnable_b, key=lambda c: _monthly_value(c), reverse=True),
+        monthly_winback_total=total_winback,
+        monthly_revenue=monthly_revenue,
+        winback_pct_of_revenue=wb_pct,
+        winback_sanity_warning=wb_pct > SANITY_WINBACK_PCT_WARN,
+        recovery_rate=recovery_rate,
+        tier_a_winnable=sorted(winnable_a, key=lambda c: _recoverable(c), reverse=True),
+        tier_b_winnable=sorted(winnable_b, key=lambda c: _recoverable(c), reverse=True),
         period_days=period_days,
     )
 
@@ -110,8 +135,10 @@ def generate_report(
     heroes.reverse()
     dogs = [i for i in operations.items_by_margin if i.margin is not None and i.margin < 0.30][:1]
 
-    def _monthly_val(c):
-        return (30 / c.median_cadence_days * c.avg_ticket) if c.median_cadence_days else 0
+    def _recoverable_val(c):
+        return _observed_monthly_spend(c) * h.recovery_rate
+
+    recovery_pct = int(h.recovery_rate * 100)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -169,9 +196,9 @@ def generate_report(
     <div class="card-sub">Attributable to {len(h.monthly_leakage_flagged_staff)} flagged staff &middot; Venue-wide: {_esc(_pkr(h.venue_wide_leakage_monthly))}/mo</div>
   </div>
   <div class="card win">
-    <div class="card-label">Monthly Win-Back</div>
+    <div class="card-label">Potential Recoverable / Month</div>
     <div class="card-value">{_esc(_pkr(h.monthly_winback_tier_a))}</div>
-    <div class="card-sub">Tier A regulars ({len(h.tier_a_winnable)}) &middot; Total w/ Tier B: {_esc(_pkr(h.monthly_winback_total))}/mo</div>
+    <div class="card-sub">Tier A regulars ({len(h.tier_a_winnable)}) at {recovery_pct}% recovery &middot; A+B: {_esc(_pkr(h.monthly_winback_total))}/mo &middot; {_pct(h.winback_pct_of_revenue)} of revenue</div>
   </div>
 </div>
 """
@@ -209,18 +236,26 @@ Integrity score {worst.integrity_score:.0f}/100.</p>
 <div class="kv"><span class="kv-label">Unique customers</span><span class="kv-value">{retention.unique_customers:,}</span></div>
 <div class="kv"><span class="kv-label">Repeat rate</span><span class="kv-value">{_pct(retention.repeat_rate)}</span></div>
 <div class="kv"><span class="kv-label">Regulars (cadence &le; {retention.cadence_threshold_days:.0f}d)</span><span class="kv-value">{retention.regular_count}</span></div>
-<div class="kv"><span class="kv-label">Lapsed regulars (Tier A)</span><span class="kv-value">{len(h.tier_a_winnable)} &middot; {_esc(_pkr(h.monthly_winback_tier_a))}/mo</span></div>
-<div class="kv"><span class="kv-label">At-risk lapsing (Tier A+B)</span><span class="kv-value">{len(h.tier_a_winnable) + len(h.tier_b_winnable)} &middot; {_esc(_pkr(h.monthly_winback_total))}/mo</span></div>
+<div class="kv"><span class="kv-label">Lapsed regulars (Tier A)</span><span class="kv-value">{len(h.tier_a_winnable)} &middot; {_esc(_pkr(h.monthly_winback_tier_a))}/mo recoverable</span></div>
+<div class="kv"><span class="kv-label">At-risk lapsing (Tier A+B)</span><span class="kv-value">{len(h.tier_a_winnable) + len(h.tier_b_winnable)} &middot; {_esc(_pkr(h.monthly_winback_total))}/mo recoverable</span></div>
+<div class="kv"><span class="kv-label">Win-back as % of revenue</span><span class="kv-value">{_pct(h.winback_pct_of_revenue)}</span></div>
+"""
+    if h.winback_sanity_warning:
+        html += f"""<p class="insight" style="color:#b7791f">&#9888; Win-back exceeds {_pct(SANITY_WINBACK_PCT_WARN)} of monthly revenue &mdash; review lapse criteria or recovery assumptions before presenting.</p>
+"""
+    html += f"""<p class="insight">Values based on each customer&#39;s observed spend rate while active, at {recovery_pct}% assumed recovery.</p>
 """
     if h.tier_a_winnable:
         html += """<table style="margin-top:10px">
-<tr><th>Customer</th><th class="num">Visits</th><th class="num">Cadence</th><th class="num">Gap</th><th class="num">Avg Ticket</th><th class="num">Monthly Value</th></tr>
+<tr><th>Customer</th><th class="num">Visits</th><th class="num">Active Span</th><th class="num">Gap</th><th class="num">Hist. Spend/Mo</th><th class="num">Recoverable/Mo</th></tr>
 """
         for c in h.tier_a_winnable[:8]:
-            mv = _monthly_val(c)
+            obs = _observed_monthly_spend(c)
+            rv = _recoverable_val(c)
+            span = (c.last_visit - c.first_visit).days if c.first_visit and c.last_visit else 0
             html += f"""<tr><td>{_esc(c.customer_ref[:12])}</td><td class="num">{c.visit_count}</td>
-<td class="num">{c.median_cadence_days:.0f}d</td><td class="num">{c.days_since_last}d</td>
-<td class="num">{_esc(_pkr(c.avg_ticket))}</td><td class="num">{_esc(_pkr(mv))}</td></tr>
+<td class="num">{span}d</td><td class="num">{c.days_since_last}d</td>
+<td class="num">{_esc(_pkr(obs))}</td><td class="num">{_esc(_pkr(rv))}</td></tr>
 """
         html += "</table>\n"
     html += "</section>\n"
