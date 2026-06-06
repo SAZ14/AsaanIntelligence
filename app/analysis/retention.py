@@ -20,8 +20,11 @@ class CustomerProfile:
     total_spend: float = 0.0
     avg_ticket: float = 0.0
     mean_days_between: float | None = None
-    is_regular: bool = False
-    is_lapsed: bool = False
+    median_cadence_days: float | None = None
+    days_since_last: int = 0
+    lapse_multiplier: float = 0.0
+    is_lapsing: bool = False
+    is_lapsed_regular: bool = False
     winback_value: float = 0.0
 
 
@@ -37,10 +40,12 @@ class RetentionReport:
     repeat_customers: int = 0
     repeat_rate: float = 0.0
     regular_count: int = 0
-    regular_threshold_visits: float = 0.0
+    cadence_threshold_days: float = 0.0
     lapsed_regular_count: int = 0
+    lapsed_regular_winback: float = 0.0
+    lapsing_count: int = 0
+    lapsing_winback: float = 0.0
     total_winback_value: float = 0.0
-    lapse_window_days: int = 14
     customers: list[CustomerProfile] = field(default_factory=list)
 
 
@@ -122,27 +127,42 @@ class OperationsReport:
 
 # ── Retention analysis ──
 
+LAPSE_MULTIPLIER = 2.5
+LAPSE_FLOOR_DAYS = 10
+MIN_VISITS_FOR_CADENCE = 3
+
+
+def _gaps(visit_dates: list[date]) -> list[int]:
+    s = sorted(visit_dates)
+    return [(s[i + 1] - s[i]).days for i in range(len(s) - 1)]
+
 
 def _mean_gap(visit_dates: list[date]) -> float | None:
-    if len(visit_dates) < 2:
-        return None
-    sorted_d = sorted(visit_dates)
-    gaps = [(sorted_d[i + 1] - sorted_d[i]).days for i in range(len(sorted_d) - 1)]
-    return sum(gaps) / len(gaps)
+    g = _gaps(visit_dates)
+    return sum(g) / len(g) if g else None
+
+
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
 
 
 def analyze_retention(
     orders: list[Order],
     menu: dict[str, MenuItem],
     staff: dict[str, Staff],
-    lapse_window_days: int = 14,
 ) -> RetentionReport:
     if not orders:
         return RetentionReport()
 
     all_dates = [o.datetime.date() for o in orders]
     period_end = max(all_dates)
-    lapse_cutoff = period_end - timedelta(days=lapse_window_days - 1)
 
     total_orders = len(orders)
     total_revenue = sum(p.amount for o in orders for p in o.payments)
@@ -162,13 +182,15 @@ def analyze_retention(
             cust_spend[o.customer_ref] += order_rev
 
     profiles: list[CustomerProfile] = []
-    visit_counts: list[int] = []
 
     for cref, dates in cust_visits.items():
         unique_dates = sorted(set(dates))
         vc = len(unique_dates)
-        visit_counts.append(vc)
         spend = cust_spend[cref]
+        gaps = _gaps(unique_dates)
+        median_cad = _median([float(g) for g in gaps]) if gaps else None
+        days_since = (period_end - unique_dates[-1]).days
+
         profiles.append(CustomerProfile(
             customer_ref=cref,
             visit_count=vc,
@@ -177,39 +199,46 @@ def analyze_retention(
             total_spend=spend,
             avg_ticket=spend / vc if vc > 0 else 0.0,
             mean_days_between=_mean_gap(unique_dates),
+            median_cadence_days=median_cad,
+            days_since_last=days_since,
         ))
 
     repeat_count = sum(1 for p in profiles if p.visit_count > 1)
     unique_count = len(profiles)
     repeat_rate = repeat_count / unique_count if unique_count else 0.0
 
-    if len(visit_counts) >= 2:
-        mean_vc = sum(visit_counts) / len(visit_counts)
-        std_vc = math.sqrt(sum((v - mean_vc) ** 2 for v in visit_counts) / len(visit_counts))
-        threshold = mean_vc + std_vc
-    else:
-        threshold = 2.0
-
+    # Cadence-based lapse detection
     for p in profiles:
-        if p.visit_count >= threshold:
-            p.is_regular = True
-
-    for p in profiles:
-        if not p.is_regular:
+        if p.visit_count < MIN_VISITS_FOR_CADENCE or p.median_cadence_days is None:
             continue
-        early_visits = [d for d in cust_visits[p.customer_ref] if d < lapse_cutoff]
-        recent_visits = [d for d in cust_visits[p.customer_ref] if d >= lapse_cutoff]
-        if len(early_visits) >= 2 and len(recent_visits) == 0:
-            p.is_lapsed = True
-            early_unique = sorted(set(early_visits))
-            if len(early_unique) >= 2:
-                span = (early_unique[-1] - early_unique[0]).days
-                if span > 0:
-                    freq = len(early_unique) / span
-                    p.winback_value = freq * p.avg_ticket * lapse_window_days
+        cad = p.median_cadence_days
+        threshold = max(LAPSE_FLOOR_DAYS, LAPSE_MULTIPLIER * cad)
+        if cad > 0:
+            p.lapse_multiplier = p.days_since_last / cad
+        if p.days_since_last > threshold:
+            p.is_lapsing = True
+            p.winback_value = (p.days_since_last / cad) * p.avg_ticket
 
-    lapsed = [p for p in profiles if p.is_lapsed]
-    regulars = [p for p in profiles if p.is_regular]
+    # Derive "regular" cadence threshold from the data: customers whose
+    # median cadence is in the tighter half (below median of all cadences).
+    cadences = [p.median_cadence_days for p in profiles
+                if p.median_cadence_days is not None and p.visit_count >= MIN_VISITS_FOR_CADENCE]
+    cadence_threshold = _median(cadences) if cadences else 7.0
+
+    regulars: list[CustomerProfile] = []
+    for p in profiles:
+        if (p.median_cadence_days is not None
+                and p.median_cadence_days <= cadence_threshold
+                and p.visit_count >= MIN_VISITS_FOR_CADENCE):
+            regulars.append(p)
+            if p.is_lapsing:
+                p.is_lapsed_regular = True
+
+    lapsed_regulars = [p for p in profiles if p.is_lapsed_regular]
+    lapsing = [p for p in profiles if p.is_lapsing]
+
+    lapsed_reg_wb = sum(p.winback_value for p in lapsed_regulars)
+    lapsing_wb = sum(p.winback_value for p in lapsing)
 
     return RetentionReport(
         identified_orders=identified_orders,
@@ -222,10 +251,12 @@ def analyze_retention(
         repeat_customers=repeat_count,
         repeat_rate=repeat_rate,
         regular_count=len(regulars),
-        regular_threshold_visits=threshold,
-        lapsed_regular_count=len(lapsed),
-        total_winback_value=sum(p.winback_value for p in lapsed),
-        lapse_window_days=lapse_window_days,
+        cadence_threshold_days=cadence_threshold,
+        lapsed_regular_count=len(lapsed_regulars),
+        lapsed_regular_winback=lapsed_reg_wb,
+        lapsing_count=len(lapsing),
+        lapsing_winback=lapsing_wb,
+        total_winback_value=lapsing_wb,
         customers=sorted(profiles, key=lambda p: p.total_spend, reverse=True),
     )
 
