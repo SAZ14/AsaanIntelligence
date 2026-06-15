@@ -1,7 +1,11 @@
-"""FastAPI router for the WhatsApp Cloud API webhook.
+"""FastAPI router for the WhatsApp webhooks.
 
-GET  /webhook  — Meta verification handshake (echoes hub.challenge).
-POST /webhook  — inbound messages: routes button taps and free text.
+Twilio (active live backend):
+    POST /twilio/inbound  — owner's reply: POST / EDIT / IGNORE or free text.
+
+Meta Cloud API (alternative backend):
+    GET  /webhook   — verification handshake (echoes hub.challenge).
+    POST /webhook   — inbound messages: button taps and free text.
 
 Mount it on an app:
 
@@ -14,6 +18,7 @@ Mount it on an app:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +27,14 @@ from fastapi.responses import PlainTextResponse
 
 from .config import WhatsAppConfig
 from .notifier import BTN_EDIT, BTN_IGNORE, BTN_POST_REPLY
+
+# Keyword (lowercased) -> action button id, for Twilio text replies.
+_KEYWORD_TO_BUTTON = {
+    "post": BTN_POST_REPLY,
+    "post reply": BTN_POST_REPLY,
+    "edit": BTN_EDIT,
+    "ignore": BTN_IGNORE,
+}
 
 log = logging.getLogger("whatsapp.webhook")
 
@@ -79,8 +92,8 @@ def parse_webhook_events(body: dict[str, Any]) -> list[ParsedMessage]:
 # ── Action handlers (stubs to be wired to Google later) ──
 
 def post_reply(msg: ParsedMessage) -> None:
-    """Owner tapped 'Post reply' — later this posts the draft to Google."""
-    log.info("ACTION post_reply from=%s message_id=%s (stub: would post draft to Google)",
+    """Owner chose 'Post reply' — later this posts the draft to Google."""
+    log.info("ACTION post_reply from=%s message_id=%s — would post to Google",
              msg.from_number, msg.message_id)
 
 
@@ -141,3 +154,64 @@ async def receive(request: Request) -> dict[str, Any]:
     body = await request.json()
     actions = [dispatch(msg) for msg in parse_webhook_events(body)]
     return {"status": "ok", "actions": actions}
+
+
+# ── Twilio inbound (active live backend) ──
+
+def parse_twilio_inbound(form: Mapping[str, str]) -> ParsedMessage:
+    """Parse a Twilio inbound WhatsApp webhook (form-encoded) to a ParsedMessage.
+
+    Twilio sends `From` (e.g. 'whatsapp:+1555...'), `Body`, and `MessageSid`.
+    A POST/EDIT/IGNORE keyword maps to a button action; anything else is text.
+    """
+    body = (form.get("Body", "") or "").strip()
+    pm = ParsedMessage(
+        from_number=form.get("From", ""),
+        message_id=form.get("MessageSid", ""),
+    )
+    keyword = body.strip().strip("*").strip().lower()
+    if keyword in _KEYWORD_TO_BUTTON:
+        pm.kind = "button"
+        pm.button_id = _KEYWORD_TO_BUTTON[keyword]
+        pm.button_title = body
+    elif body:
+        pm.kind = "text"
+        pm.text = body
+    return pm
+
+
+_ACK = {
+    "post_reply": "Got it — posting your reply to Google.",
+    "edit": "Send me the edited reply text and I'll use that instead.",
+    "ignore": "Skipped — I won't reply to that one.",
+    "qa": "Thanks, noted.",
+}
+
+
+def _twiml(message: str = "") -> str:
+    """Minimal TwiML response. Empty <Response/> if no message."""
+    if message:
+        safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        inner = f"<Message>{safe}</Message>"
+    else:
+        inner = ""
+    return f'<?xml version="1.0" encoding="UTF-8"?><Response>{inner}</Response>'
+
+
+@router.post("/twilio/inbound")
+async def twilio_inbound(request: Request) -> Response:
+    """Twilio inbound webhook: parse the owner's reply and route it."""
+    form = dict(await request.form())
+    config = WhatsAppConfig.from_env()
+
+    if config.validate_signature:
+        from twilio.request_validator import RequestValidator
+
+        validator = RequestValidator(config.twilio_auth_token)
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not validator.validate(str(request.url), form, signature):
+            return Response(content="invalid signature", status_code=403)
+
+    msg = parse_twilio_inbound(form)
+    action = dispatch(msg)
+    return Response(content=_twiml(_ACK.get(action, "")), media_type="application/xml")

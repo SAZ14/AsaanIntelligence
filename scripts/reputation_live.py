@@ -44,6 +44,13 @@ def main() -> None:
             print("ERROR: OWNER_NUMBER not set and DRY_RUN is off.", file=sys.stderr)
             sys.exit(1)
 
+    if not wa.dry_run:
+        try:
+            wa.require_twilio_credentials()
+        except RuntimeError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+
     # Mock feed: the bundled reviews CSV stands in for a live review source.
     orders, menu, staff = load_dataset(
         DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",

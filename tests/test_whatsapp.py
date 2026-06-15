@@ -14,14 +14,33 @@ from fastapi.testclient import TestClient
 
 from whatsapp.config import WhatsAppConfig
 from whatsapp.notifier import (
+    ACTION_PROMPT,
     BTN_EDIT,
     BTN_IGNORE,
     BTN_POST_REPLY,
     build_review_alert_payload,
     build_text_payload,
+    build_twilio_params,
     send_review_alert,
+    send_text,
+    twilio_alert_body,
+    wa_address,
 )
-from whatsapp.webhook import dispatch, parse_webhook_events, router
+from whatsapp.webhook import (
+    dispatch,
+    parse_twilio_inbound,
+    parse_webhook_events,
+    router,
+)
+
+
+def _twilio_cfg(dry_run=True):
+    return WhatsAppConfig(
+        twilio_account_sid="ACxxxx",
+        twilio_auth_token="tok",
+        twilio_whatsapp_number="+14155238886",
+        dry_run=dry_run,
+    )
 
 
 # ── Fixtures ──
@@ -110,19 +129,54 @@ class TestPayloadStructure:
         }
 
 
-# ── DRY_RUN: no network calls ──
+# ── Twilio send formatting ──
+
+class TestTwilioFormatting:
+    def test_wa_address_normalisation(self):
+        assert wa_address("+14155238886") == "whatsapp:+14155238886"
+        assert wa_address("14155238886") == "whatsapp:+14155238886"
+        assert wa_address("whatsapp:+14155238886") == "whatsapp:+14155238886"
+
+    def test_build_twilio_params_shape(self):
+        params = build_twilio_params("923001234567", "hi", _twilio_cfg())
+        assert params == {
+            "from_": "whatsapp:+14155238886",
+            "to": "whatsapp:+923001234567",
+            "body": "hi",
+        }
+
+    def test_alert_body_has_story_draft_and_prompt(self):
+        body = twilio_alert_body(
+            _review(), _correlation(), "service_speed", "UNIQUE_DRAFT_SENTINEL",
+        )
+        assert "1/5" in body
+        assert "Foodpanda" in body
+        assert "Bilal" in body
+        assert "UNIQUE_DRAFT_SENTINEL" in body
+        assert ACTION_PROMPT in body  # POST / EDIT / IGNORE prompt
+
+    def test_alert_body_respects_1024_limit(self):
+        body = twilio_alert_body(_review(), _correlation(), "service_speed", "x" * 5000)
+        assert len(body) <= 1024
+
+
+# ── DRY_RUN: no Twilio calls ──
 
 class TestDryRun:
-    def test_send_review_alert_dry_run_returns_payload(self, capsys):
-        cfg = WhatsAppConfig(phone_number_id="PNID", token="", verify_token="vt", dry_run=True)
+    def test_send_review_alert_dry_run_returns_params(self, capsys):
         result = send_review_alert(
             "923001234567", _review(), _correlation(),
-            issue="service_speed", draft="draft", config=cfg,
+            issue="service_speed", draft="draft", config=_twilio_cfg(),
         )
         assert result["dry_run"] is True
-        assert result["payload"]["type"] == "interactive"
-        # The exact payload is printed for offline verification.
-        assert "messaging_product" in capsys.readouterr().out
+        assert result["provider"] == "twilio"
+        assert result["params"]["to"] == "whatsapp:+923001234567"
+        assert "Twilio" in capsys.readouterr().out
+
+    def test_send_text_dry_run(self):
+        result = send_text("923001234567", "hello", config=_twilio_cfg())
+        assert result["dry_run"] is True
+        assert result["params"]["body"] == "hello"
 
 
 # ── Meta verification handshake ──
@@ -249,3 +303,40 @@ class TestButtonReplyParsing:
         resp = client.post("/webhook", json=_button_reply_body(BTN_IGNORE))
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "actions": ["ignore"]}
+
+
+# ── Twilio inbound parsing ──
+
+class TestTwilioInbound:
+    def _form(self, body: str):
+        return {"From": "whatsapp:+923001234567", "MessageSid": "SM123", "Body": body}
+
+    def test_post_keyword_routes_to_post_reply(self):
+        msg = parse_twilio_inbound(self._form("POST"))
+        assert msg.kind == "button"
+        assert msg.button_id == BTN_POST_REPLY
+        assert msg.from_number == "whatsapp:+923001234567"
+        assert dispatch(msg) == "post_reply"
+
+    def test_keyword_is_case_and_asterisk_insensitive(self):
+        assert dispatch(parse_twilio_inbound(self._form("  ignore "))) == "ignore"
+        assert dispatch(parse_twilio_inbound(self._form("*Edit*"))) == "edit"
+        assert dispatch(parse_twilio_inbound(self._form("post reply"))) == "post_reply"
+
+    def test_free_text_routes_to_qa(self):
+        msg = parse_twilio_inbound(self._form("are we open on Eid?"))
+        assert msg.kind == "text"
+        assert msg.text == "are we open on Eid?"
+        assert dispatch(msg) == "qa"
+
+    def test_inbound_endpoint_returns_twiml(self, monkeypatch):
+        monkeypatch.setenv("DRY_RUN", "true")
+        monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURE", "false")
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        resp = client.post("/twilio/inbound", data=self._form("POST"))
+        assert resp.status_code == 200
+        assert "application/xml" in resp.headers["content-type"]
+        assert "<Response>" in resp.text
+        assert "Google" in resp.text  # post_reply ack mentions posting to Google
