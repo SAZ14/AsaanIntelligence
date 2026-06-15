@@ -1,0 +1,29 @@
+{
+  "name": "Sugar Rush",
+  "timezone": "Asia/Karachi",
+  "tables": [
+    {"id": "T1", "seats": 2},
+    {"id": "T2", "seats": 2},
+    {"id": "T3", "seats": 2},
+    {"id": "T4", "seats": 2},
+    {"id": "T5", "seats": 4},
+    {"id": "T6", "seats": 4},
+    {"id": "T7", "seats": 4},
+    {"id": "T8", "seats": 6},
+    {"id": "T9", "seats": 6},
+    {"id": "T10", "seats": 8}
+  ],
+  "service_windows": [
+    {"label": "lunch", "open_hour": 12, "last_seating_hour": 15},
+    {"label": "dinner", "open_hour": 18, "last_seating_hour": 22}
+  ],
+  "turn_time_minutes": 90,
+  "large_party_turn_minutes": 120,
+  "large_party_threshold": 6,
+  "max_party_size": 12,
+  "vips": [
+    {"phone": "+923001112222", "name": "Ayesha Khan", "tier": "vip", "notes": "Food critic. Always offer the window table."},
+    {"phone": "+923004445555", "name": "Bilal Sheikh", "tier": "regular", "notes": "Twice-weekly regular. Flat white, no sugar."},
+    {"phone": "+923007778888", "name": "Sana Malik", "tier": "owner_friend", "notes": "Owner's family. Comp dessert, never waitlist."}
+  ]
+}
