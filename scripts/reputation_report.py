@@ -1,28 +1,42 @@
 #!/usr/bin/env python3
 """Run the Reputation agent on the main dataset and print the report."""
 
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.config import load_dotenv
 from app.ingest import load_dataset
 from app.ingest.loader import load_reviews
-from app.agents.reputation import run_reputation_agent
+from app.agents.reputation import DEFAULT_BRAND, run_reputation_agent
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
 
 def main() -> None:
+    load_dotenv()
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        print(
+            "ERROR: no ANTHROPIC_API_KEY found (looked in the environment and .env).\n"
+            "Add it to a .env file at the repo root, e.g.:\n"
+            "    ANTHROPIC_API_KEY=sk-ant-...\n"
+            "then re-run this script.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     orders, menu, staff = load_dataset(
         DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",
     )
     reviews = load_reviews(DATA / "reviews.csv")
 
     print(f"Loaded {len(reviews)} reviews, {len(orders)} orders")
-    print("Running reputation agent (calls Claude API)...\n")
+    print(f"Brand voice: {DEFAULT_BRAND.name}")
+    print("Running reputation agent (Haiku=classify, Sonnet=draft)...\n")
 
-    report = run_reputation_agent(reviews, orders, staff, menu)
+    report = run_reputation_agent(reviews, orders, staff, menu, brand=DEFAULT_BRAND)
 
     print("=" * 70)
     print(f"REPUTATION REPORT — {report.venue_name}")
@@ -39,7 +53,7 @@ def main() -> None:
             match_info += f" [staff: {ra.correlation.matched_staff_name}]"
 
         print(f"\n  {ra.review_id} | {ra.source:10s} | {ra.rating}/5 | {ra.reviewer_name}")
-        print(f"  Text: {ra.text[:100]}{'...' if len(ra.text) > 100 else ''}")
+        print(f"  Text: {ra.text}")
         print(f"  Correlation: {match_info}")
         if ra.correlation.match_reasons:
             print(f"  Reasons: {'; '.join(ra.correlation.match_reasons)}")
@@ -47,7 +61,7 @@ def main() -> None:
             print(f"  Window load: {ra.correlation.order_count_in_window} orders")
         print(f"  Issue: {ra.issue_class} | Sentiment: {ra.sentiment}")
         if ra.draft_reply:
-            print(f"  Reply: {ra.draft_reply[:200]}")
+            print(f"  Drafted reply: {ra.draft_reply}")
 
     print("\n" + "=" * 70)
     print("PATTERN FINDINGS")

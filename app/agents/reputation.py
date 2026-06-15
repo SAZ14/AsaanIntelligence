@@ -12,11 +12,34 @@ from app.models.canonical import MenuItem, Order, Review, Staff
 
 # ── Config ──
 
-DEFAULT_VENUE_NAME = "Sugar Rush"
-DEFAULT_BRAND_VOICE = (
-    "Warm, appreciative, specific. Thank by name, reference their order "
-    "when possible, acknowledge issues honestly, invite them back."
-)
+# Model routing: cheap/fast classification on Haiku, customer-facing drafting on Sonnet.
+CLASSIFIER_MODEL = "claude-haiku-4-5-20251001"
+DRAFTER_MODEL = "claude-sonnet-4-6"
+
+
+@dataclass
+class BrandVoice:
+    """Per-venue brand voice config used to steer the reply drafter.
+
+    Defaults to the Tayto voice. Swap in another venue's config to re-tone
+    every drafted reply without touching the agent.
+    """
+
+    name: str = "Tayto"
+    tone: str = (
+        "Warm, genuine, and a little playful. Thank people by name when you "
+        "know it, reference what they ordered when you can, own mistakes "
+        "plainly without grovelling, and invite them back without being salesy."
+    )
+    never_say: list[str] = field(default_factory=lambda: [
+        "free coffee", "free meal", "discount", "voucher", "compensation",
+        "we value your feedback", "sorry for the inconvenience",
+        "we apologise for any inconvenience caused", "dear valued customer",
+    ])
+
+
+# Default brand voice if a caller doesn't supply one.
+DEFAULT_BRAND = BrandVoice()
 
 ISSUE_CLASSES = [
     "service_speed", "staff_attitude", "food_quality",
@@ -241,7 +264,7 @@ Reply format: issue_class,sentiment"""
 
         try:
             resp = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=CLASSIFIER_MODEL,
                 max_tokens=20,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -305,43 +328,57 @@ def detect_patterns(
 def draft_replies(
     reviews: list[ReviewAnalysis],
     client: anthropic.Anthropic,
-    venue_name: str = DEFAULT_VENUE_NAME,
-    brand_voice: str = DEFAULT_BRAND_VOICE,
+    brand: BrandVoice = DEFAULT_BRAND,
 ) -> list[ReviewAnalysis]:
+    never_say = "; ".join(brand.never_say) if brand.never_say else "(none)"
+    system = (
+        f"You are the owner of {brand.name}, personally replying to online "
+        f"reviews. Voice: {brand.tone}\n\n"
+        f"Hard rules:\n"
+        f"- Reply in 2-3 sentences, plain text, no emojis, no hashtags.\n"
+        f"- Be specific to this reviewer's actual experience — never generic.\n"
+        f"- Never use these words/phrases (they sound corporate or over-promise): "
+        f"{never_say}.\n"
+        f"- Do not invent facts, refunds, or offers. If you don't know a detail, "
+        f"don't claim it.\n"
+        f"- Write only the reply text, nothing else."
+    )
+
     for ra in reviews:
         if ra.rating >= 5 and ra.issue_class == "praise":
-            tone = "thankful, invite them to try something new"
+            intent = "Thank them warmly and, if natural, nudge them to try something else next time."
         elif ra.rating <= 2:
-            tone = "apologetic, acknowledge the specific issue, explain what you're doing about it"
+            intent = "Apologise plainly, name the specific issue they hit, and say (honestly) that you're looking into it. Invite them back."
         elif ra.rating <= 3:
-            tone = "appreciative of feedback, address concern"
+            intent = "Appreciate the honest feedback and address the specific concern they raised."
         else:
-            tone = "warm thank you"
+            intent = "A warm, specific thank you."
 
         context_lines = []
         if ra.correlation.confidence != "none":
             if ra.correlation.estimated_date:
                 context_lines.append(f"Visit was likely {ra.correlation.estimated_date}")
+            if ra.correlation.estimated_hour_range:
+                context_lines.append(f"around {ra.correlation.estimated_hour_range}")
             if ra.correlation.order_count_in_window > 0:
                 context_lines.append(f"{ra.correlation.order_count_in_window} orders in that window (busy period)")
             if ra.correlation.matched_staff_name:
-                context_lines.append(f"Staff involved: {ra.correlation.matched_staff_name}")
-        context_str = "; ".join(context_lines) if context_lines else "No visit details available"
+                context_lines.append(f"staff involved: {ra.correlation.matched_staff_name}")
+        context_str = "; ".join(context_lines) if context_lines else "No reliable visit details available"
 
-        prompt = f"""Write a short reply (2-3 sentences) from {venue_name} to this review.
-
-Brand voice: {brand_voice}
-Tone: {tone}
-Review by {ra.reviewer_name} ({ra.rating}/5 on {ra.source}): "{ra.text}"
-Visit context: {context_str}
-Issue: {ra.issue_class}
-
-Reply as the venue. Be specific to their experience, not generic. Do not use emojis."""
+        prompt = (
+            f'Review by {ra.reviewer_name} — {ra.rating}/5 on {ra.source}:\n'
+            f'"{ra.text}"\n\n'
+            f"Classified issue: {ra.issue_class} (sentiment: {ra.sentiment})\n"
+            f"What we reconstructed about the visit: {context_str}\n\n"
+            f"Goal for this reply: {intent}"
+        )
 
         try:
             resp = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=150,
+                model=DRAFTER_MODEL,
+                max_tokens=200,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
             ra.draft_reply = resp.content[0].text.strip()
@@ -358,8 +395,7 @@ def run_reputation_agent(
     orders: list[Order],
     staff: dict[str, Staff],
     menu: dict[str, MenuItem],
-    venue_name: str = DEFAULT_VENUE_NAME,
-    brand_voice: str = DEFAULT_BRAND_VOICE,
+    brand: BrandVoice = DEFAULT_BRAND,
     client: anthropic.Anthropic | None = None,
 ) -> ReputationReport:
     if client is None:
@@ -380,7 +416,7 @@ def run_reputation_agent(
 
     classify_reviews_batch(analyses, client)
     patterns = detect_patterns(analyses)
-    draft_replies(analyses, client, venue_name, brand_voice)
+    draft_replies(analyses, client, brand)
 
     happy = [
         {"reviewer_name": ra.reviewer_name, "review_id": ra.review_id,
@@ -392,7 +428,7 @@ def run_reputation_agent(
     avg_rating = sum(r.rating for r in reviews) / len(reviews) if reviews else 0
 
     return ReputationReport(
-        venue_name=venue_name,
+        venue_name=brand.name,
         total_reviews=len(reviews),
         avg_rating=avg_rating,
         reviews=analyses,
