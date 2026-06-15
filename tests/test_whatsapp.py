@@ -136,6 +136,8 @@ class TestTwilioFormatting:
         assert wa_address("+14155238886") == "whatsapp:+14155238886"
         assert wa_address("14155238886") == "whatsapp:+14155238886"
         assert wa_address("whatsapp:+14155238886") == "whatsapp:+14155238886"
+        # spaces / dashes are stripped to clean E.164
+        assert wa_address("+1 415-523-8886") == "whatsapp:+14155238886"
 
     def test_build_twilio_params_shape(self):
         params = build_twilio_params("923001234567", "hi", _twilio_cfg())

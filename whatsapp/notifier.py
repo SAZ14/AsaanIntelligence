@@ -17,6 +17,7 @@ calling Twilio, so formatting can be verified offline and CI never sends.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .config import WhatsAppConfig
@@ -138,13 +139,17 @@ def build_text_payload(to: str, text: str) -> dict[str, Any]:
 # ── Twilio delivery (active live backend) ──
 
 def wa_address(number: str) -> str:
-    """Normalise a number to Twilio's WhatsApp address form: 'whatsapp:+<E164>'."""
+    """Normalise a number to Twilio's WhatsApp address form: 'whatsapp:+<E164>'.
+
+    Strips spaces, dashes, and parens so inputs like '+1 415-523-8886' work.
+    """
     n = (number or "").strip()
     if n.startswith("whatsapp:"):
         return n
-    if n and not n.startswith("+") and n.lstrip().replace(" ", "").isdigit():
-        n = "+" + n
-    return f"whatsapp:{n}"
+    cleaned = re.sub(r"[\s()\-]", "", n)
+    if cleaned and not cleaned.startswith("+") and cleaned.isdigit():
+        cleaned = "+" + cleaned
+    return f"whatsapp:{cleaned}"
 
 
 def twilio_alert_body(review: Any, correlation: Any, issue: str, draft: str) -> str:
