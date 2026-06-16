@@ -32,6 +32,35 @@ def normalize_phone(phone: str) -> str:
     return "".join(ch for ch in p if ch.isdigit() or ch == "+")
 
 
+# The shared sample dataset root — never a private café folder.
+_SAMPLE_DATA_ROOT = (Path(__file__).resolve().parents[2] / "data").resolve()
+
+_MENU_TEMPLATE = "sku,name,category,cost,price\n"
+
+
+def provision_cafe_dir(data_dir: str) -> tuple[Path, bool]:
+    """Create a café's OWN private POS folder, safely.
+
+    * Refuses the shared sample ``data/`` root (that's not anyone's private data).
+    * Creates the folder if missing and drops an empty ``menu.csv`` template so
+      it's obvious where this café's files go.
+    Returns (path, created_now). Isolation between cafés is still enforced by the
+    registry; this just makes the folder step foolproof.
+    """
+    p = Path(data_dir)
+    if p.resolve() == _SAMPLE_DATA_ROOT:
+        raise ValueError(
+            "data_dir must be a café-specific folder (e.g. data/cafes/<id>), "
+            "not the shared sample 'data/' root — keep each café's data separate."
+        )
+    created = not p.exists()
+    p.mkdir(parents=True, exist_ok=True)
+    menu = p / "menu.csv"
+    if not menu.exists():
+        menu.write_text(_MENU_TEMPLATE)
+    return p, created
+
+
 @dataclass
 class Tenant:
     cafe_id: str

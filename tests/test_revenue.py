@@ -20,7 +20,12 @@ from app.revenue.nlu import parse_query
 from app.revenue.pricing import compute_pricing_recommendations, _headroom, _stability
 from app.revenue.segments import build_segments
 from app.revenue.store import Store
-from app.revenue.tenants import Tenant, TenantRegistry, normalize_phone
+from app.revenue.tenants import (
+    Tenant,
+    TenantRegistry,
+    normalize_phone,
+    provision_cafe_dir,
+)
 from app.revenue.strategy import (
     analyze_attach,
     build_playbook,
@@ -374,6 +379,20 @@ class TestTenants:
         a_subs = reg.agent_for("sugar_rush").store.active_subscriptions()
         b_subs = reg.agent_for("bean_scene").store.active_subscriptions()
         assert len(a_subs) == 1 and len(b_subs) == 0             # no cross-talk
+
+    def test_provision_creates_private_folder(self, tmp_path):
+        target = tmp_path / "cafes" / "sip"
+        path, created = provision_cafe_dir(str(target))
+        assert created is True
+        assert path.is_dir()
+        assert (path / "menu.csv").exists()       # template dropped to guide setup
+        # idempotent: running again reuses, doesn't recreate
+        _p, created2 = provision_cafe_dir(str(target))
+        assert created2 is False
+
+    def test_provision_refuses_shared_sample_root(self):
+        with pytest.raises(ValueError, match="shared sample"):
+            provision_cafe_dir("data")
 
     def test_add_cafe_persists_and_routes(self, tmp_path):
         path = tmp_path / "tenants.json"
