@@ -1,0 +1,22 @@
+{
+  "venue_name": "Sugar Rush",
+  "habitual_categories": ["Coffee", "Tea"],
+  "min_volume_for_pricing": 15,
+  "min_power_score": 0.60,
+  "min_raise_pct": 0.03,
+  "max_raise_pct": 0.10,
+  "volume_retention_on_raise": 0.97,
+  "segment_redemption": {
+    "premium": 0.07,
+    "regular": 0.05,
+    "lapsing": 0.05,
+    "occasional": 0.02
+  },
+  "campaigns": [
+    {"key": "coffee_tasting", "name": "Invite-only coffee tasting for 2", "description": "Curated tasting flight hosted by the head barista", "target_segment": "premium", "est_cost_per_redemption": 350, "fits_dayparts": ["Afternoon", "Midday"]},
+    {"key": "chefs_dessert", "name": "Chef's complimentary dessert", "description": "A complimentary signature dessert with any visit", "target_segment": "regular", "est_cost_per_redemption": 180, "fits_dayparts": ["Afternoon", "Evening", "Midday"]},
+    {"key": "priority_table", "name": "Priority table", "description": "A held, best-in-house table with no wait", "target_segment": "premium", "est_cost_per_redemption": 0, "fits_dayparts": ["Evening", "Late night"]},
+    {"key": "members_mocktail", "name": "Members-only mocktail", "description": "A complimentary craft mocktail for members", "target_segment": "regular", "est_cost_per_redemption": 220, "fits_dayparts": ["Evening", "Late night", "Afternoon"]},
+    {"key": "founders_circle", "name": "Founders' circle table", "description": "An exclusive invitation to the Founders' circle evening", "target_segment": "premium", "est_cost_per_redemption": 500, "fits_dayparts": ["Evening", "Late night"]}
+  ]
+}
