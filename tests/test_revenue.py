@@ -262,12 +262,14 @@ class TestAgent:
 
     def test_data_answers_always_advise_growth(self, pos):
         # A revenue agent should never just report — every data answer must
-        # close with a growth recommendation.
+        # close with the top 2-3 growth recommendations.
         agent = _agent(pos)
         for q in ["how did we do this week", "best sellers this month",
                   "what can I raise prices on", "when are we slow"]:
             reply = agent.handle_message("+92300", q)
-            assert "Biggest opportunity" in reply.text, q
+            assert "Top moves to grow revenue" in reply.text, q
+            # at least two ranked moves are surfaced
+            assert "1." in reply.text and "2." in reply.text, q
 
     def test_campaigns_are_logged(self, pos):
         agent = _agent(pos)

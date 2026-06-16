@@ -80,8 +80,8 @@ class RevenueAgent:
 
     # ── always-on growth advice ──
 
-    def _top_growth_tip(self) -> str:
-        """The single highest-impact, data-backed growth move (cached).
+    def _growth_advice(self, n: int = 3) -> str:
+        """The top N highest-impact, data-backed growth moves (cached).
 
         Appended to every data answer so the agent always advises, not just
         reports — it's a revenue advisor, not a dashboard.
@@ -89,20 +89,20 @@ class RevenueAgent:
         if self._growth_tip is None:
             orders, _p, _l = self._window("month")
             pb = build_playbook(orders, self.menu, self.staff, self.config, period_days=30)
-            if pb.items:
-                it = pb.items[0]
-                impact = f" (~{_money(it.est_monthly_impact)}/mo)" if it.est_monthly_impact else ""
-                first_action = it.action.split(".")[0].strip()
-                self._growth_tip = (
-                    f"\n📈 Biggest opportunity: [{it.lever}] {it.title}{impact} — "
-                    f"{first_action}. Say 'how do I grow revenue' for the full plan."
-                )
-            else:
+            if not pb.items:
                 self._growth_tip = ""
+            else:
+                lines = ["\n📈 Top moves to grow revenue:"]
+                for i, it in enumerate(pb.items[:n], 1):
+                    impact = f" (~{_money(it.est_monthly_impact)}/mo)" if it.est_monthly_impact else ""
+                    first_action = it.action.split(".")[0].strip()
+                    lines.append(f"{i}. [{it.lever}] {it.title}{impact} — {first_action}.")
+                lines.append("Say 'how do I grow revenue' for the full plan.")
+                self._growth_tip = "\n".join(lines)
         return self._growth_tip
 
     def _advise(self, text: str) -> str:
-        tip = self._top_growth_tip()
+        tip = self._growth_advice()
         return text + tip if tip else text
 
     # ── entry point ──
