@@ -20,6 +20,7 @@ from app.revenue.nlu import parse_query
 from app.revenue.pricing import compute_pricing_recommendations, _headroom, _stability
 from app.revenue.segments import build_segments
 from app.revenue.store import Store
+from app.revenue.tenants import Tenant, TenantRegistry, normalize_phone
 from app.revenue.strategy import (
     analyze_attach,
     build_playbook,
@@ -305,3 +306,56 @@ class TestAgent:
         agent = _agent(pos)
         reply = agent.handle_message("+92300", "asdfghjkl")
         assert reply.intent == "help"
+
+
+# ── multi-café tenancy (one bot, routed by owner phone) ──
+
+class TestTenants:
+    def _registry(self, tmp_path):
+        # Café B gets a different venue name to prove isolation.
+        cfg_b = tmp_path / "bean_scene.json"
+        cfg_b.write_text('{"venue_name": "Bean Scene"}')
+        return TenantRegistry([
+            Tenant("sugar_rush", "Sugar Rush", owner_phones=["+923001234567"],
+                   data_dir="data", config_path="data/revenue_config.example.json",
+                   db_path=":memory:"),
+            Tenant("bean_scene", "Bean Scene", owner_phones=["+923009998888"],
+                   data_dir="data", config_path=str(cfg_b), db_path=":memory:"),
+        ])
+
+    def test_normalize_phone(self):
+        assert normalize_phone("whatsapp:+92 300 1234567") == "+923001234567"
+
+    def test_routes_by_owner_phone(self, tmp_path):
+        reg = self._registry(tmp_path)
+        a = reg.handle("+923001234567", "how did we do this week")
+        b = reg.handle("+923009998888", "how did we do this week")
+        assert "Sugar Rush" in a.text
+        assert "Bean Scene" in b.text          # same bot, different owner → different café
+
+    def test_unknown_owner_gets_onboarding_prompt(self, tmp_path):
+        reg = self._registry(tmp_path)
+        reply = reg.handle("+920000000000", "hello")
+        assert reply.action == "unregistered"
+
+    def test_agent_instance_is_cached(self, tmp_path):
+        reg = self._registry(tmp_path)
+        assert reg.agent_for("sugar_rush") is reg.agent_for("sugar_rush")
+
+    def test_cafes_are_isolated(self, tmp_path):
+        reg = self._registry(tmp_path)
+        reg.handle("+923001234567", "send me a weekly digest")   # subscribe café A's owner
+        a_subs = reg.agent_for("sugar_rush").store.active_subscriptions()
+        b_subs = reg.agent_for("bean_scene").store.active_subscriptions()
+        assert len(a_subs) == 1 and len(b_subs) == 0             # no cross-talk
+
+    def test_add_cafe_persists_and_routes(self, tmp_path):
+        path = tmp_path / "tenants.json"
+        path.write_text('{"tenants": []}')
+        reg = TenantRegistry.load(path)
+        reg.add_cafe(Tenant("new_cafe", "New Cafe", owner_phones=["+923331112222"],
+                            data_dir="data", db_path=":memory:"))
+        # persisted to disk
+        reloaded = TenantRegistry.load(path)
+        assert reloaded.tenant_for_owner("+923331112222") is not None
+        assert reloaded.tenant_for_owner("+923331112222").name == "New Cafe"

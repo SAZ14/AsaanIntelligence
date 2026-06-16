@@ -1,0 +1,12 @@
+{
+  "tenants": [
+    {
+      "cafe_id": "sugar_rush",
+      "name": "Sugar Rush",
+      "owner_phones": ["+923001234567"],
+      "data_dir": "data",
+      "config_path": "data/revenue_config.example.json",
+      "db_path": "data/sugar_rush.db"
+    }
+  ]
+}
