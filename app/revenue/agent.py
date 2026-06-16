@@ -76,6 +76,34 @@ class RevenueAgent:
         self.menu = menu or {}
         self.staff = staff or {}
         self.as_of = as_of
+        self._growth_tip: str | None = None
+
+    # ── always-on growth advice ──
+
+    def _top_growth_tip(self) -> str:
+        """The single highest-impact, data-backed growth move (cached).
+
+        Appended to every data answer so the agent always advises, not just
+        reports — it's a revenue advisor, not a dashboard.
+        """
+        if self._growth_tip is None:
+            orders, _p, _l = self._window("month")
+            pb = build_playbook(orders, self.menu, self.staff, self.config, period_days=30)
+            if pb.items:
+                it = pb.items[0]
+                impact = f" (~{_money(it.est_monthly_impact)}/mo)" if it.est_monthly_impact else ""
+                first_action = it.action.split(".")[0].strip()
+                self._growth_tip = (
+                    f"\n📈 Biggest opportunity: [{it.lever}] {it.title}{impact} — "
+                    f"{first_action}. Say 'how do I grow revenue' for the full plan."
+                )
+            else:
+                self._growth_tip = ""
+        return self._growth_tip
+
+    def _advise(self, text: str) -> str:
+        tip = self._top_growth_tip()
+        return text + tip if tip else text
 
     # ── entry point ──
 
@@ -123,10 +151,9 @@ class RevenueAgent:
         text = (
             f"{self.config.venue_name} — {label}\n"
             f"Revenue: {_money(perf.total_revenue)} across {perf.order_count} orders "
-            f"(avg ticket {_money(perf.avg_ticket)}).{top_line}\n"
-            "Ask me for 'best sellers', 'pricing', 'slow times' or 'campaign ideas'."
+            f"(avg ticket {_money(perf.avg_ticket)}).{top_line}"
         )
-        return RevenueReply(text=text, intent="summary", period=period)
+        return RevenueReply(text=self._advise(text), intent="summary", period=period)
 
     def _best_sellers(self, period: str) -> RevenueReply:
         orders, period, label = self._window(period)
@@ -140,7 +167,8 @@ class RevenueAgent:
         if biggest:
             lines.append(f"Biggest profit driver: {biggest.name} "
                          f"({_money(biggest.margin_contribution)} margin).")
-        return RevenueReply(text="\n".join(lines), intent="best_sellers", period=period)
+        return RevenueReply(text=self._advise("\n".join(lines)),
+                            intent="best_sellers", period=period)
 
     def _pricing(self, period: str) -> RevenueReply:
         # Pricing power is more reliable over a longer window.
@@ -164,7 +192,7 @@ class RevenueAgent:
                 f"Why: {r.reasons[0] if r.reasons else 'strong, steady demand'}."
             )
         lines.append(f"Combined upside: ~{_money(total)} per month (assumes demand holds).")
-        return RevenueReply(text="\n".join(lines), intent="pricing", period=period)
+        return RevenueReply(text=self._advise("\n".join(lines)), intent="pricing", period=period)
 
     def _dead_windows(self, period: str) -> RevenueReply:
         orders, period, label = self._window("month")  # need enough samples
@@ -178,7 +206,7 @@ class RevenueAgent:
                          f"({w.start_hour:02d}:00–{w.end_hour:02d}:00): "
                          f"~{w.avg_orders:.0f} orders, {w.gap_vs_peak:.0f} below peak.")
         lines.append("Want me to suggest brand-safe campaigns to fill these? Say 'campaign ideas'.")
-        return RevenueReply(text="\n".join(lines), intent="dead_windows", period=period)
+        return RevenueReply(text=self._advise("\n".join(lines)), intent="dead_windows", period=period)
 
     def _campaigns(self, period: str) -> RevenueReply:
         orders, period, label = self._window("month")
@@ -303,7 +331,7 @@ class RevenueAgent:
         out: list[RevenueReply] = []
         for sub in self.store.active_subscriptions(cadence):
             digest = self.build_owner_digest(period)
-            text = render_digest_text(digest, self.config.venue_name)
+            text = self._advise(render_digest_text(digest, self.config.venue_name))
             out.append(RevenueReply(
                 text=text, intent="summary", period=period, action="digest",
                 outbound=[(sub.phone, text)],

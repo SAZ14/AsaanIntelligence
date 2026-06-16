@@ -260,6 +260,15 @@ class TestAgent:
         assert len(reply.text) > 80
         assert "Average ticket" in reply.text
 
+    def test_data_answers_always_advise_growth(self, pos):
+        # A revenue agent should never just report — every data answer must
+        # close with a growth recommendation.
+        agent = _agent(pos)
+        for q in ["how did we do this week", "best sellers this month",
+                  "what can I raise prices on", "when are we slow"]:
+            reply = agent.handle_message("+92300", q)
+            assert "Biggest opportunity" in reply.text, q
+
     def test_campaigns_are_logged(self, pos):
         agent = _agent(pos)
         reply = agent.handle_message("+92300", "campaign ideas")
