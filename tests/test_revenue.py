@@ -311,17 +311,43 @@ class TestAgent:
 # ── multi-café tenancy (one bot, routed by owner phone) ──
 
 class TestTenants:
+    def _data_dir(self, tmp_path, name):
+        """Each café gets its OWN copy of the POS files — never shared."""
+        import shutil
+        d = tmp_path / name
+        d.mkdir()
+        for f in ("sales_detail.csv", "menu.csv", "staff.csv"):
+            shutil.copy(f"data/{f}", d / f)
+        return str(d)
+
     def _registry(self, tmp_path):
-        # Café B gets a different venue name to prove isolation.
         cfg_b = tmp_path / "bean_scene.json"
         cfg_b.write_text('{"venue_name": "Bean Scene"}')
         return TenantRegistry([
             Tenant("sugar_rush", "Sugar Rush", owner_phones=["+923001234567"],
-                   data_dir="data", config_path="data/revenue_config.example.json",
-                   db_path=":memory:"),
+                   data_dir=self._data_dir(tmp_path, "sugar_rush"),
+                   config_path="data/revenue_config.example.json", db_path=":memory:"),
             Tenant("bean_scene", "Bean Scene", owner_phones=["+923009998888"],
-                   data_dir="data", config_path=str(cfg_b), db_path=":memory:"),
+                   data_dir=self._data_dir(tmp_path, "bean_scene"),
+                   config_path=str(cfg_b), db_path=":memory:"),
         ])
+
+    def test_shared_data_dir_is_rejected(self, tmp_path):
+        shared = self._data_dir(tmp_path, "shared")
+        with pytest.raises(ValueError, match="isolation"):
+            TenantRegistry([
+                Tenant("a", "A", owner_phones=["+9211"], data_dir=shared, db_path=":memory:"),
+                Tenant("b", "B", owner_phones=["+9222"], data_dir=shared, db_path=":memory:"),
+            ])
+
+    def test_shared_db_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="isolation"):
+            TenantRegistry([
+                Tenant("a", "A", owner_phones=["+9211"],
+                       data_dir=self._data_dir(tmp_path, "a"), db_path=str(tmp_path / "x.db")),
+                Tenant("b", "B", owner_phones=["+9222"],
+                       data_dir=self._data_dir(tmp_path, "b"), db_path=str(tmp_path / "x.db")),
+            ])
 
     def test_normalize_phone(self):
         assert normalize_phone("whatsapp:+92 300 1234567") == "+923001234567"

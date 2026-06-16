@@ -72,9 +72,32 @@ class TenantRegistry:
             self._register(t)
 
     def _register(self, t: Tenant) -> None:
+        self._assert_isolated(t)
         self._by_id[t.cafe_id] = t
         for phone in t.owner_phones:
             self._owner_index[normalize_phone(phone)] = t.cafe_id
+
+    def _assert_isolated(self, t: Tenant) -> None:
+        """Refuse to share one café's POS data or database with another.
+
+        Sugar Rush for Sugar Rush, SIP for SIP — never the twain shall meet.
+        A misconfiguration raises loudly instead of leaking data.
+        """
+        for other in self._by_id.values():
+            if other.cafe_id == t.cafe_id:
+                continue  # updating the same café is fine
+            if t.data_dir and other.data_dir and t.data_dir == other.data_dir:
+                raise ValueError(
+                    f"Data isolation violation: café '{t.cafe_id}' and '{other.cafe_id}' "
+                    f"both point at data_dir '{t.data_dir}'. Each café must have its own "
+                    f"POS folder — one café's data is never shared with another."
+                )
+            if (t.db_path and t.db_path != ":memory:"
+                    and t.db_path == other.db_path):
+                raise ValueError(
+                    f"Data isolation violation: café '{t.cafe_id}' and '{other.cafe_id}' "
+                    f"both use db_path '{t.db_path}'. Each café needs its own database."
+                )
 
     # ── lookup / routing ──
 
