@@ -1,0 +1,401 @@
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+import anthropic
+
+from app.models.canonical import MenuItem, Order, Review, Staff
+
+
+# ── Config ──
+
+DEFAULT_VENUE_NAME = "Sugar Rush"
+DEFAULT_BRAND_VOICE = (
+    "Warm, appreciative, specific. Thank by name, reference their order "
+    "when possible, acknowledge issues honestly, invite them back."
+)
+
+ISSUE_CLASSES = [
+    "service_speed", "staff_attitude", "food_quality",
+    "price", "ambiance", "praise", "other",
+]
+
+DAY_KEYWORDS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+    "weekend": (5, 6), "weekday": (0, 1, 2, 3, 4),
+}
+
+TIME_PATTERNS = [
+    (re.compile(r"(\d{1,2})\s*(?::(\d{2}))?\s*(am|pm)", re.I), True),
+    (re.compile(r"~?\s*(\d{1,2})\s*(?::(\d{2}))?\s*(am|pm|ish)", re.I), True),
+    (re.compile(r"around\s+(\d{1,2})\s*(pm|am)?", re.I), True),
+    (re.compile(r"\b(morning|afternoon|evening|night)\b", re.I), False),
+]
+
+DAYPART_HOURS = {
+    "morning": (7, 12), "afternoon": (12, 17),
+    "evening": (17, 22), "night": (19, 23),
+}
+
+
+# ── Data classes ──
+
+@dataclass
+class VisitContext:
+    estimated_date: str = ""
+    estimated_hour_range: str = ""
+    order_count_in_window: int = 0
+    staff_on_duty: list[str] = field(default_factory=list)
+    matched_staff_id: str = ""
+    matched_staff_name: str = ""
+    confidence: str = "none"
+    match_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ReviewAnalysis:
+    review_id: str
+    source: str
+    rating: int
+    posted_at: str
+    reviewer_name: str
+    text: str
+    correlation: VisitContext = field(default_factory=VisitContext)
+    issue_class: str = "other"
+    sentiment: str = "neutral"
+    draft_reply: str = ""
+
+
+@dataclass
+class PatternFinding:
+    issue: str
+    day_of_week: str = ""
+    hour_range: str = ""
+    review_count: int = 0
+    review_ids: list[str] = field(default_factory=list)
+    description: str = ""
+
+
+@dataclass
+class ReputationReport:
+    venue_name: str = ""
+    total_reviews: int = 0
+    avg_rating: float = 0.0
+    reviews: list[ReviewAnalysis] = field(default_factory=list)
+    patterns: list[PatternFinding] = field(default_factory=list)
+    happy_reviewers: list[dict] = field(default_factory=list)
+
+
+# ── Correlation engine (deterministic) ──
+
+def _extract_day_of_week(text: str) -> int | None:
+    lower = text.lower()
+    for kw, val in DAY_KEYWORDS.items():
+        if kw in lower:
+            if isinstance(val, tuple):
+                return val[0]
+            return val
+    return None
+
+
+def _extract_hour_range(text: str) -> tuple[int, int] | None:
+    lower = text.lower()
+    for pat, has_time in TIME_PATTERNS:
+        m = pat.search(lower)
+        if m:
+            if has_time and m.group(1).isdigit():
+                h = int(m.group(1))
+                ampm = m.group(3).lower() if m.group(3) else ""
+                if ampm in ("pm", "ish") and h < 12:
+                    h += 12
+                elif ampm == "am" and h == 12:
+                    h = 0
+                return (max(h - 1, 0), min(h + 1, 23))
+            elif not has_time:
+                word = m.group(1).lower()
+                if word in DAYPART_HOURS:
+                    return DAYPART_HOURS[word]
+    return None
+
+
+def _extract_staff_name(text: str, staff: dict[str, Staff]) -> tuple[str, str] | None:
+    lower = text.lower()
+    for sid, s in staff.items():
+        name_lower = s.name.lower()
+        if re.search(r'\b' + re.escape(name_lower) + r'\b', lower):
+            return sid, s.name
+    return None
+
+
+def _extract_item_mentions(text: str, menu: dict[str, MenuItem]) -> list[str]:
+    lower = text.lower()
+    found = []
+    for sku, mi in menu.items():
+        if mi.name.lower() in lower:
+            found.append(mi.name)
+    return found
+
+
+def correlate_review(
+    review: Review,
+    orders: list[Order],
+    staff: dict[str, Staff],
+    menu: dict[str, MenuItem],
+) -> VisitContext:
+    ctx = VisitContext()
+    reasons: list[str] = []
+
+    mentioned_dow = _extract_day_of_week(review.text)
+    mentioned_hours = _extract_hour_range(review.text)
+    staff_match = _extract_staff_name(review.text, staff)
+    item_mentions = _extract_item_mentions(review.text, menu)
+
+    posted = review.posted_at
+    candidate_dates: list[datetime] = []
+
+    if mentioned_dow is not None:
+        for delta in range(0, 8):
+            d = (posted - timedelta(days=delta)).date()
+            if d.weekday() == mentioned_dow:
+                candidate_dates.append(datetime.combine(d, datetime.min.time()))
+                reasons.append(f"text mentions {d.strftime('%A')}")
+                break
+    else:
+        yesterday = (posted - timedelta(days=1)).date()
+        today = posted.date()
+        candidate_dates.append(datetime.combine(yesterday, datetime.min.time()))
+        candidate_dates.append(datetime.combine(today, datetime.min.time()))
+
+    if not candidate_dates and not staff_match:
+        ctx.confidence = "none"
+        return ctx
+
+    hour_lo, hour_hi = (0, 23)
+    if mentioned_hours:
+        hour_lo, hour_hi = mentioned_hours
+        reasons.append(f"text mentions ~{hour_lo}:00–{hour_hi}:00")
+
+    best_date = None
+    best_count = 0
+    best_staff_list: list[str] = []
+
+    for cand in candidate_dates:
+        d = cand.date()
+        window_orders = [
+            o for o in orders
+            if o.datetime.date() == d and hour_lo <= o.datetime.hour <= hour_hi
+        ]
+        if len(window_orders) > best_count or best_date is None:
+            best_date = d
+            best_count = len(window_orders)
+            staff_ids_in_window = {o.staff_id for o in window_orders}
+            best_staff_list = sorted(staff_ids_in_window)
+
+    if best_date:
+        ctx.estimated_date = str(best_date)
+        ctx.estimated_hour_range = f"{hour_lo:02d}:00–{hour_hi:02d}:00"
+        ctx.order_count_in_window = best_count
+        ctx.staff_on_duty = best_staff_list
+
+    if staff_match:
+        ctx.matched_staff_id = staff_match[0]
+        ctx.matched_staff_name = staff_match[1]
+        reasons.append(f"text names staff '{staff_match[1]}'")
+
+    if item_mentions:
+        reasons.append(f"mentions items: {', '.join(item_mentions)}")
+
+    ctx.match_reasons = reasons
+
+    if staff_match or (mentioned_dow is not None and mentioned_hours):
+        ctx.confidence = "high"
+    elif mentioned_dow is not None or mentioned_hours:
+        ctx.confidence = "medium"
+    elif item_mentions:
+        ctx.confidence = "low"
+    else:
+        ctx.confidence = "none"
+
+    return ctx
+
+
+# ── LLM classification ──
+
+def classify_reviews_batch(
+    reviews: list[ReviewAnalysis],
+    client: anthropic.Anthropic,
+) -> list[ReviewAnalysis]:
+    for ra in reviews:
+        prompt = f"""Classify this review. Respond with EXACTLY two words separated by a comma: issue_class,sentiment
+
+Issue classes: {', '.join(ISSUE_CLASSES)}
+Sentiments: positive, negative, neutral, mixed
+
+Review (rating {ra.rating}/5): "{ra.text}"
+
+Reply format: issue_class,sentiment"""
+
+        try:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=20,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            parts = resp.content[0].text.strip().lower().split(",")
+            if len(parts) >= 2:
+                issue = parts[0].strip()
+                sent = parts[1].strip()
+                if issue in ISSUE_CLASSES:
+                    ra.issue_class = issue
+                if sent in ("positive", "negative", "neutral", "mixed"):
+                    ra.sentiment = sent
+        except Exception:
+            pass
+
+    return reviews
+
+
+# ── Pattern detection (deterministic) ──
+
+def detect_patterns(
+    reviews: list[ReviewAnalysis],
+) -> list[PatternFinding]:
+    clusters: dict[tuple[str, str, str], list[ReviewAnalysis]] = defaultdict(list)
+
+    for ra in reviews:
+        if ra.correlation.confidence == "none":
+            continue
+        if ra.issue_class in ("praise", "other"):
+            continue
+        dow = ""
+        if ra.correlation.estimated_date:
+            try:
+                d = datetime.strptime(ra.correlation.estimated_date, "%Y-%m-%d")
+                dow = d.strftime("%A")
+            except ValueError:
+                pass
+        key = (ra.issue_class, dow, ra.correlation.estimated_hour_range)
+        clusters[key].append(ra)
+
+    patterns: list[PatternFinding] = []
+    for (issue, dow, hours), ras in clusters.items():
+        if len(ras) >= 2:
+            patterns.append(PatternFinding(
+                issue=issue,
+                day_of_week=dow,
+                hour_range=hours,
+                review_count=len(ras),
+                review_ids=[r.review_id for r in ras],
+                description=(
+                    f"{len(ras)} reviews flag {issue.replace('_', ' ')} on "
+                    f"{dow + ' ' if dow else ''}{hours if hours else 'unknown time'}"
+                ),
+            ))
+
+    patterns.sort(key=lambda p: p.review_count, reverse=True)
+    return patterns
+
+
+# ── Response drafting (LLM) ──
+
+def draft_replies(
+    reviews: list[ReviewAnalysis],
+    client: anthropic.Anthropic,
+    venue_name: str = DEFAULT_VENUE_NAME,
+    brand_voice: str = DEFAULT_BRAND_VOICE,
+) -> list[ReviewAnalysis]:
+    for ra in reviews:
+        if ra.rating >= 5 and ra.issue_class == "praise":
+            tone = "thankful, invite them to try something new"
+        elif ra.rating <= 2:
+            tone = "apologetic, acknowledge the specific issue, explain what you're doing about it"
+        elif ra.rating <= 3:
+            tone = "appreciative of feedback, address concern"
+        else:
+            tone = "warm thank you"
+
+        context_lines = []
+        if ra.correlation.confidence != "none":
+            if ra.correlation.estimated_date:
+                context_lines.append(f"Visit was likely {ra.correlation.estimated_date}")
+            if ra.correlation.order_count_in_window > 0:
+                context_lines.append(f"{ra.correlation.order_count_in_window} orders in that window (busy period)")
+            if ra.correlation.matched_staff_name:
+                context_lines.append(f"Staff involved: {ra.correlation.matched_staff_name}")
+        context_str = "; ".join(context_lines) if context_lines else "No visit details available"
+
+        prompt = f"""Write a short reply (2-3 sentences) from {venue_name} to this review.
+
+Brand voice: {brand_voice}
+Tone: {tone}
+Review by {ra.reviewer_name} ({ra.rating}/5 on {ra.source}): "{ra.text}"
+Visit context: {context_str}
+Issue: {ra.issue_class}
+
+Reply as the venue. Be specific to their experience, not generic. Do not use emojis."""
+
+        try:
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=150,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            ra.draft_reply = resp.content[0].text.strip()
+        except Exception as e:
+            ra.draft_reply = f"[draft generation failed: {e}]"
+
+    return reviews
+
+
+# ── Main agent ──
+
+def run_reputation_agent(
+    reviews: list[Review],
+    orders: list[Order],
+    staff: dict[str, Staff],
+    menu: dict[str, MenuItem],
+    venue_name: str = DEFAULT_VENUE_NAME,
+    brand_voice: str = DEFAULT_BRAND_VOICE,
+    client: anthropic.Anthropic | None = None,
+) -> ReputationReport:
+    if client is None:
+        client = anthropic.Anthropic()
+
+    analyses: list[ReviewAnalysis] = []
+    for r in reviews:
+        ctx = correlate_review(r, orders, staff, menu)
+        analyses.append(ReviewAnalysis(
+            review_id=r.review_id,
+            source=r.source,
+            rating=r.rating,
+            posted_at=str(r.posted_at),
+            reviewer_name=r.reviewer_name,
+            text=r.text,
+            correlation=ctx,
+        ))
+
+    classify_reviews_batch(analyses, client)
+    patterns = detect_patterns(analyses)
+    draft_replies(analyses, client, venue_name, brand_voice)
+
+    happy = [
+        {"reviewer_name": ra.reviewer_name, "review_id": ra.review_id,
+         "rating": ra.rating, "source": ra.source}
+        for ra in analyses
+        if ra.rating >= 5 and ra.sentiment == "positive"
+    ]
+
+    avg_rating = sum(r.rating for r in reviews) / len(reviews) if reviews else 0
+
+    return ReputationReport(
+        venue_name=venue_name,
+        total_reviews=len(reviews),
+        avg_rating=avg_rating,
+        reviews=analyses,
+        patterns=patterns,
+        happy_reviewers=happy,
+    )
