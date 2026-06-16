@@ -30,7 +30,7 @@ from app.revenue.datasource import (
 )
 from app.revenue.models import CampaignLogEntry, OwnerSubscription
 from app.revenue.nlu import parse_query
-from app.revenue.pricing import compute_pricing_recommendations
+from app.revenue.pricing import simple_price_moves
 from app.revenue.segments import build_segments
 from app.revenue.store import Store
 from app.revenue.strategy import (
@@ -76,34 +76,50 @@ class RevenueAgent:
         self.menu = menu or {}
         self.staff = staff or {}
         self.as_of = as_of
-        self._growth_tip: str | None = None
+        self._price_wins: str | None = None
+        self._bigger_moves: str | None = None
 
-    # ── always-on growth advice ──
+    # ── always-on advice (simple price wins first, then bigger plays) ──
 
-    def _growth_advice(self, n: int = 3) -> str:
-        """The top N highest-impact, data-backed growth moves (cached).
+    def _price_wins_block(self, n: int = 3) -> str:
+        """The simplest, most concrete advice: small price bumps on big sellers."""
+        if self._price_wins is None:
+            orders, _p, _l = self._window("month")
+            moves = simple_price_moves(orders, self.menu, self.config, period_days=30)
+            ups = [m for m in moves if m.direction == "up"][:n]
+            if not ups:
+                self._price_wins = ""
+            else:
+                lines = ["\n💰 Quick price wins (sell well → small bump):"]
+                for m in ups:
+                    lines.append(
+                        f"• {m.name} sells ~{m.units_month}/mo — raise PKR {m.bump:.0f} "
+                        f"({_money(m.current_price)}→{_money(m.new_price)}) = "
+                        f"+{_money(m.monthly_impact)}/mo"
+                    )
+                self._price_wins = "\n".join(lines)
+        return self._price_wins
 
-        Appended to every data answer so the agent always advises, not just
-        reports — it's a revenue advisor, not a dashboard.
-        """
-        if self._growth_tip is None:
+    def _bigger_moves_block(self, n: int = 2) -> str:
+        """The larger growth levers, after the simple price advice."""
+        if self._bigger_moves is None:
             orders, _p, _l = self._window("month")
             pb = build_playbook(orders, self.menu, self.staff, self.config, period_days=30)
             if not pb.items:
-                self._growth_tip = ""
+                self._bigger_moves = ""
             else:
-                lines = ["\n📈 Top moves to grow revenue:"]
+                lines = ["\n📈 Then bigger plays:"]
                 for i, it in enumerate(pb.items[:n], 1):
                     impact = f" (~{_money(it.est_monthly_impact)}/mo)" if it.est_monthly_impact else ""
                     first_action = it.action.split(".")[0].strip()
                     lines.append(f"{i}. [{it.lever}] {it.title}{impact} — {first_action}.")
                 lines.append("Say 'how do I grow revenue' for the full plan.")
-                self._growth_tip = "\n".join(lines)
-        return self._growth_tip
+                self._bigger_moves = "\n".join(lines)
+        return self._bigger_moves
 
     def _advise(self, text: str) -> str:
-        tip = self._growth_advice()
-        return text + tip if tip else text
+        """Append simple price advice first, then the bigger growth plays."""
+        return text + self._price_wins_block() + self._bigger_moves_block()
 
     # ── entry point ──
 
@@ -171,28 +187,38 @@ class RevenueAgent:
                             intent="best_sellers", period=period)
 
     def _pricing(self, period: str) -> RevenueReply:
-        # Pricing power is more reliable over a longer window.
-        orders, period, label = self._window("month" if period == "day" else period)
-        recs = compute_pricing_recommendations(
+        # Pricing signals are more reliable over a longer window.
+        period = "month" if period == "day" else period
+        orders, period, label = self._window(period)
+        moves = simple_price_moves(
             orders, self.menu, self.config, period_days=PERIOD_DAYS.get(period, 30)
         )
-        if not recs:
+        ups = [m for m in moves if m.direction == "up"]
+        downs = [m for m in moves if m.direction == "down"]
+        if not ups and not downs:
             return RevenueReply(
-                text="No confident price-increase candidates right now — demand "
-                     "signals don't show clear pricing power.",
+                text="No clear price changes stand out — demand signals don't show "
+                     "pricing power right now.",
                 intent="pricing", period=period,
             )
-        lines = ["Pricing power — items that can take a modest raise:"]
+        lines = ["Price tweaks straight from your sales data:"]
         total = 0.0
-        for r in recs[:5]:
-            total += r.est_monthly_uplift
+        for m in ups:
+            total += m.monthly_impact
             lines.append(
-                f"• {r.name}: {_money(r.current_price)} → {_money(r.suggested_price)} "
-                f"(+{r.raise_pct*100:.0f}%), ~{_money(r.est_monthly_uplift)}/mo. "
-                f"Why: {r.reasons[0] if r.reasons else 'strong, steady demand'}."
+                f"• {m.name} sells ~{m.units_month}/mo — raise PKR {m.bump:.0f} "
+                f"({_money(m.current_price)}→{_money(m.new_price)}) = "
+                f"+{_money(m.monthly_impact)}/mo"
             )
-        lines.append(f"Combined upside: ~{_money(total)} per month (assumes demand holds).")
-        return RevenueReply(text=self._advise("\n".join(lines)), intent="pricing", period=period)
+        if ups:
+            lines.append(f"It sells regardless, so volume holds → about "
+                         f"{_money(total)}/mo extra from these small raises.")
+        for m in downs:
+            lines.append(f"• Consider lowering {m.name}: {m.reason} "
+                         f"({_money(m.current_price)}→{_money(m.new_price)}).")
+        # This reply *is* the price advice, so only add the bigger plays after it.
+        return RevenueReply(text="\n".join(lines) + self._bigger_moves_block(),
+                            intent="pricing", period=period)
 
     def _dead_windows(self, period: str) -> RevenueReply:
         orders, period, label = self._window("month")  # need enough samples

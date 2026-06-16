@@ -132,6 +132,100 @@ def compute_pricing_recommendations(
     return recs
 
 
+@dataclass
+class PriceMove:
+    """A simple, concrete price change: 'sells a lot → nudge it up PKR X'."""
+    name: str
+    category: str
+    units_month: int
+    direction: str            # "up" | "down"
+    bump: float               # rupees to add (up) or take off (down)
+    current_price: float
+    new_price: float
+    monthly_impact: float     # added monthly revenue (0 for cautious "down" hints)
+    reason: str
+
+
+def simple_price_moves(
+    orders: list[Order],
+    menu: dict[str, MenuItem],
+    config: RevenueConfig | None = None,
+    period_days: int = 30,
+    max_up: int = 5,
+) -> list[PriceMove]:
+    """Plain-English price moves straight from what sells.
+
+    Increases: items with clear pricing power get a small, tidy rupee bump
+    (PKR 10/20/50 by price band); since they sell regardless, volume is assumed
+    to hold, so added monthly revenue ≈ bump × monthly units.
+    Decrease: one cautious hint for a priciest-in-category slow mover.
+    """
+    config = config or RevenueConfig()
+    span = max(period_days, 1)
+
+    units: dict[str, int] = defaultdict(int)
+    for o in orders:
+        for li in o.line_items:
+            if not li.is_void and not li.is_comp:
+                units[li.item_sku] += li.qty
+
+    moves: list[PriceMove] = []
+
+    # Increases — reuse the pricing-power screen, present them simply.
+    for r in compute_pricing_recommendations(orders, menu, config, period_days)[:max_up]:
+        bump = _simple_bump(r.current_price)
+        m_units = round(units[r.sku] * (30.0 / span))
+        impact = round(bump * m_units * config.volume_retention_on_raise, 0)
+        moves.append(PriceMove(
+            name=r.name, category=r.category, units_month=m_units, direction="up",
+            bump=bump, current_price=r.current_price, new_price=r.current_price + bump,
+            monthly_impact=impact,
+            reason=f"sells ~{m_units}/mo and demand is steady",
+        ))
+
+    down = _decrease_candidate(units, menu, span)
+    if down:
+        moves.append(down)
+    return moves
+
+
+def _simple_bump(price: float) -> float:
+    if price < 700:
+        return 10.0
+    if price < 1200:
+        return 20.0
+    return 50.0
+
+
+def _decrease_candidate(units: dict[str, int], menu, span: int) -> "PriceMove | None":
+    sold = {sku: v for sku, v in units.items() if v > 0}
+    if len(sold) < 4:
+        return None
+    vols = sorted(sold.values())
+    low_cut = vols[len(vols) // 4]            # 25th percentile of volume
+    best = None
+    for sku, mi in menu.items():
+        v = units.get(sku, 0)
+        if v <= 0 or v > low_cut:
+            continue
+        peers = [m2.price for m2 in menu.values() if m2.category == mi.category]
+        if len(peers) >= 3 and mi.price == max(peers):
+            if best is None or v < best[0]:
+                best = (v, mi)
+    if not best:
+        return None
+    v, mi = best
+    bump = _simple_bump(mi.price)
+    m_units = round(v * 30.0 / span)
+    return PriceMove(
+        name=mi.name, category=mi.category, units_month=m_units, direction="down",
+        bump=bump, current_price=mi.price, new_price=mi.price - bump,
+        monthly_impact=0.0,
+        reason=f"priciest {mi.category.lower()} item and slow (~{m_units}/mo) — "
+               f"a small cut may move more",
+    )
+
+
 def _stability(series: list[int]) -> float:
     """1.0 = perfectly steady daily volume, →0 as it gets spiky."""
     if len(series) < 2:

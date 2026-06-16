@@ -260,16 +260,23 @@ class TestAgent:
         assert len(reply.text) > 80
         assert "Average ticket" in reply.text
 
-    def test_data_answers_always_advise_growth(self, pos):
-        # A revenue agent should never just report — every data answer must
-        # close with the top 2-3 growth recommendations.
+    def test_data_answers_lead_with_price_then_bigger(self, pos):
+        # Basic price advice first, then the bigger growth plays.
         agent = _agent(pos)
-        for q in ["how did we do this week", "best sellers this month",
-                  "what can I raise prices on", "when are we slow"]:
+        for q in ["how did we do this week", "best sellers this month", "when are we slow"]:
             reply = agent.handle_message("+92300", q)
-            assert "Top moves to grow revenue" in reply.text, q
-            # at least two ranked moves are surfaced
-            assert "1." in reply.text and "2." in reply.text, q
+            assert "Quick price wins" in reply.text, q
+            assert "Then bigger plays" in reply.text, q
+            # price advice appears before the bigger plays
+            assert reply.text.index("Quick price wins") < reply.text.index("Then bigger plays"), q
+
+    def test_pricing_is_simple_and_concrete(self, pos):
+        agent = _agent(pos)
+        reply = agent.handle_message("+92300", "what can I raise prices on")
+        assert reply.intent == "pricing"
+        assert "raise PKR" in reply.text          # concrete rupee bump
+        assert "/mo" in reply.text                # monthly revenue impact
+        assert "sells ~" in reply.text            # volume-based reasoning
 
     def test_campaigns_are_logged(self, pos):
         agent = _agent(pos)
