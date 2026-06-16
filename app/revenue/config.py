@@ -18,6 +18,22 @@ DEFAULT_VENUE_NAME = "Sugar Rush"
 # they carry pricing power. Everything else is discretionary.
 HABITUAL_CATEGORIES = {"Coffee", "Tea"}
 
+# Beverage categories (the "anchor" of a café order) vs add-on food, and
+# categories that don't count as a real food upsell (soda / water).
+BEVERAGE_CATEGORIES = {"Coffee", "Tea"}
+ADDON_EXCLUDE_CATEGORIES = {"Other"}
+
+# High-margin categories worth adding if the menu lacks them.
+RECOMMENDED_CATEGORIES = ["Fresh juices", "Smoothies", "Iced teas"]
+
+# Average-ticket levers.
+TARGET_ATTACH_UPLIFT = 0.10          # realistic +10pp food-attach goal
+ATTACH_CAPTURE_FACTOR = 0.6          # conservatively bank 60% of the modelled gain
+
+# Loyalty / frequency levers.
+LOYALTY_PUNCH_TARGET = 9             # buy 9, get the 10th
+EXTRA_VISITS_PER_REGULAR = 0.5       # modelled monthly extra visits a card drives
+
 # Pricing thresholds.
 MIN_VOLUME_FOR_PRICING = 15          # ignore long-tail items for price advice
 MIN_POWER_SCORE = 0.60               # only recommend raises above this score
@@ -85,6 +101,17 @@ DEFAULT_CAMPAIGNS: list[Campaign] = [
 class RevenueConfig:
     venue_name: str = DEFAULT_VENUE_NAME
     habitual_categories: set[str] = field(default_factory=lambda: set(HABITUAL_CATEGORIES))
+    beverage_categories: set[str] = field(default_factory=lambda: set(BEVERAGE_CATEGORIES))
+    addon_exclude_categories: set[str] = field(
+        default_factory=lambda: set(ADDON_EXCLUDE_CATEGORIES)
+    )
+    recommended_categories: list[str] = field(
+        default_factory=lambda: list(RECOMMENDED_CATEGORIES)
+    )
+    target_attach_uplift: float = TARGET_ATTACH_UPLIFT
+    attach_capture_factor: float = ATTACH_CAPTURE_FACTOR
+    loyalty_punch_target: int = LOYALTY_PUNCH_TARGET
+    extra_visits_per_regular: float = EXTRA_VISITS_PER_REGULAR
     min_volume_for_pricing: int = MIN_VOLUME_FOR_PRICING
     min_power_score: float = MIN_POWER_SCORE
     min_raise_pct: float = MIN_RAISE_PCT

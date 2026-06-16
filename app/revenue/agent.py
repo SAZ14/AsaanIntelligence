@@ -33,6 +33,12 @@ from app.revenue.nlu import parse_query
 from app.revenue.pricing import compute_pricing_recommendations
 from app.revenue.segments import build_segments
 from app.revenue.store import Store
+from app.revenue.strategy import (
+    analyze_attach,
+    build_playbook,
+    frequency_opportunities,
+    menu_opportunities,
+)
 
 
 @dataclass
@@ -86,6 +92,14 @@ class RevenueAgent:
             return self._dead_windows(q.period)
         if q.intent == "campaigns":
             return self._campaigns(q.period)
+        if q.intent == "strategy":
+            return self._strategy(q.period)
+        if q.intent == "upsell":
+            return self._upsell(q.period)
+        if q.intent == "menu":
+            return self._menu(q.period)
+        if q.intent == "loyalty":
+            return self._loyalty(q.period)
         if q.intent == "subscribe":
             return self._subscribe(phone, q.cadence or "weekly")
         if q.intent == "help":
@@ -189,6 +203,63 @@ class RevenueAgent:
         return RevenueReply(text="\n".join(lines), intent="campaigns", period=period,
                             action="recommend", campaigns_logged=logged)
 
+    def _strategy(self, period: str) -> RevenueReply:
+        orders, period, label = self._window("month")
+        pb = build_playbook(orders, self.menu, self.staff, self.config, period_days=30)
+        if not pb.items:
+            return RevenueReply(text="Not enough data to build a growth plan yet.",
+                                intent="strategy", period=period)
+        lines = [f"How to grow revenue at {self.config.venue_name}:", pb.headline]
+        for i, it in enumerate(pb.items, 1):
+            impact = f" (~{_money(it.est_monthly_impact)}/mo)" if it.est_monthly_impact else ""
+            lines.append(f"{i}. [{it.lever}] {it.title}{impact}\n   {it.action}")
+        return RevenueReply(text="\n".join(lines), intent="strategy", period=period,
+                            action="advise")
+
+    def _upsell(self, period: str) -> RevenueReply:
+        orders, period, label = self._window("month")
+        a = analyze_attach(orders, self.menu, self.config, period_days=30)
+        if not a.beverage_orders:
+            return RevenueReply(text="No drink orders found to analyse for upsell.",
+                                intent="upsell", period=period)
+        bundle = f"\n• Bundle “{a.top_bundle}” as a set-price combo." if a.top_bundle else ""
+        text = (
+            "Raise the average ticket:\n"
+            f"• Food attach is {a.attach_rate*100:.0f}% of drink orders "
+            f"({a.beverage_orders} drink orders). Get baristas suggesting a pastry / "
+            f"premium add-on (extra shot, syrup, dairy-free) → target {a.target_rate*100:.0f}%.\n"
+            f"• Each point of attach ≈ PKR {a.avg_food_price:,.0f} per order added; "
+            f"reaching target ≈ {_money(a.est_monthly_uplift)}/mo.{bundle}\n"
+            "• Add a premium tier (coffee flight, single-origin) to nudge ticket up."
+        )
+        return RevenueReply(text=text, intent="upsell", period=period, action="advise")
+
+    def _menu(self, period: str) -> RevenueReply:
+        orders, period, label = self._window("month")
+        moves = menu_opportunities(orders, self.menu, self.staff, self.config)
+        if not moves:
+            return RevenueReply(text="No clear menu moves surfaced yet.",
+                                intent="menu", period=period)
+        labels = {"feature": "Feature", "fix": "Fix/cut", "add": "Add"}
+        lines = ["Menu optimisation:"]
+        for m in moves:
+            lines.append(f"• {labels.get(m.kind, m.kind)} {m.name} — {m.detail}")
+        return RevenueReply(text="\n".join(lines), intent="menu", period=period,
+                            action="advise")
+
+    def _loyalty(self, period: str) -> RevenueReply:
+        orders, period, label = self._window("month")
+        f = frequency_opportunities(orders, self.menu, self.staff, self.config)
+        text = (
+            "Drive repeat business:\n"
+            f"• Repeat rate is {f.repeat_rate*100:.0f}% across {f.regulars} regulars. "
+            f"{f.loyalty_note}\n"
+            f"• {f.lapsed_regulars} regulars have gone quiet (≈ {_money(f.winback_value)} "
+            "of lost value) — send them a members-only invite to win them back.\n"
+            "• Host events in slow hours (open-mic, tastings) to build a habit of coming in."
+        )
+        return RevenueReply(text=text, intent="loyalty", period=period, action="advise")
+
     def _subscribe(self, phone: str, cadence: str) -> RevenueReply:
         cadence = cadence if cadence in ("daily", "weekly", "monthly") else "weekly"
         self.store.upsert_subscription(OwnerSubscription(phone=phone, cadence=cadence))
@@ -202,8 +273,12 @@ class RevenueAgent:
         prefix = ("I didn't quite catch that. " if unknown else "")
         text = (
             f"{prefix}I'm your revenue advisor for {self.config.venue_name}. Ask me:\n"
+            "• 'How do I grow revenue?' — full growth playbook\n"
             "• 'How did we do this week?' — revenue summary\n"
-            "• 'Best sellers today/this month' — top products\n"
+            "• 'Best sellers this month' — top products\n"
+            "• 'How do I raise the average ticket?' — upsell & combos\n"
+            "• 'Menu advice' — high-margin heroes, dogs, gaps\n"
+            "• 'How do I get repeat customers?' — loyalty & win-back\n"
             "• 'What can I raise prices on?' — pricing advice\n"
             "• 'When are we slow?' — dead windows\n"
             "• 'Campaign ideas' — brand-safe ways to fill quiet times\n"

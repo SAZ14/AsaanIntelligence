@@ -20,6 +20,12 @@ from app.revenue.nlu import parse_query
 from app.revenue.pricing import compute_pricing_recommendations, _headroom, _stability
 from app.revenue.segments import build_segments
 from app.revenue.store import Store
+from app.revenue.strategy import (
+    analyze_attach,
+    build_playbook,
+    frequency_opportunities,
+    menu_opportunities,
+)
 
 AS_OF = date(2026, 5, 31)
 
@@ -157,9 +163,51 @@ class TestSegmentsAndCampaigns:
             assert r.audience_size > 0
             assert r.expected_redemptions >= 0
             assert "underutilized" in r.message
+            # Owner-facing framing: the owner runs it, we don't message customers.
+            assert "Run" in r.message and "Send" not in r.message
             # Brand-safe: no cheap "20% off" / discount coupons.
             assert "%" not in r.campaign_name
             assert "discount" not in r.campaign_name.lower()
+
+
+# ── strategy levers ──
+
+class TestStrategy:
+    def test_attach_insight_well_formed(self, pos, month):
+        _o, menu, _s = pos
+        a = analyze_attach(month, menu, RevenueConfig(), period_days=30)
+        assert a.beverage_orders > 0
+        assert 0.0 <= a.attach_rate <= 1.0
+        assert a.target_rate >= a.attach_rate
+        assert a.avg_food_price > 0
+        assert a.est_monthly_uplift >= 0
+
+    def test_menu_moves_flag_dog_and_hero(self, pos, month):
+        _o, menu, staff = pos
+        moves = menu_opportunities(month, menu, staff, RevenueConfig())
+        kinds = {m.kind for m in moves}
+        assert "feature" in kinds                      # push a high-margin hero
+        # Imported Soda is the planted low-margin "dog".
+        assert any(m.kind == "fix" and "Soda" in m.name for m in moves)
+        assert "add" in kinds                          # suggest a missing category
+
+    def test_frequency_insight(self, pos, month):
+        _o, menu, staff = pos
+        f = frequency_opportunities(month, menu, staff, RevenueConfig())
+        assert 0.0 <= f.repeat_rate <= 1.0
+        assert f.regulars >= 0
+        assert f.loyalty_note
+
+    def test_playbook_covers_levers(self, pos, month):
+        _o, menu, staff = pos
+        pb = build_playbook(month, menu, staff, RevenueConfig(), period_days=30)
+        assert pb.headline
+        assert len(pb.items) >= 3
+        levers = {it.lever for it in pb.items}
+        assert "Average ticket" in levers
+        # items with a modelled impact are ordered ahead of unknowns
+        impacts = [it.est_monthly_impact for it in pb.items if it.est_monthly_impact]
+        assert impacts == sorted(impacts, reverse=True)
 
 
 # ── NLU routing ──
@@ -173,6 +221,14 @@ class TestNLU:
         assert parse_query("give me campaign ideas").intent == "campaigns"
         assert parse_query("send me a weekly digest").intent == "subscribe"
         assert parse_query("help").intent == "help"
+
+    def test_strategy_lever_intents(self):
+        assert parse_query("how do I grow revenue?").intent == "strategy"
+        assert parse_query("how do I maximise revenue").intent == "strategy"
+        assert parse_query("how do I raise the average ticket").intent == "upsell"
+        assert parse_query("any combo or bundle ideas").intent == "upsell"
+        assert parse_query("give me menu advice").intent == "menu"
+        assert parse_query("how do I get repeat customers").intent == "loyalty"
 
     def test_period_detection(self):
         assert parse_query("revenue today").period == "day"
@@ -189,6 +245,20 @@ class TestAgent:
         assert agent.handle_message("+92300", "best sellers this month").intent == "best_sellers"
         assert agent.handle_message("+92300", "what can I raise prices on").intent == "pricing"
         assert agent.handle_message("+92300", "when are we slow").intent == "dead_windows"
+
+    def test_routes_strategy_levers(self, pos):
+        agent = _agent(pos)
+        assert agent.handle_message("+92300", "how do I grow revenue").intent == "strategy"
+        assert agent.handle_message("+92300", "raise the average ticket").intent == "upsell"
+        assert agent.handle_message("+92300", "menu advice").intent == "menu"
+        assert agent.handle_message("+92300", "how do I get repeat business").intent == "loyalty"
+
+    def test_strategy_reply_has_actions(self, pos):
+        agent = _agent(pos)
+        reply = agent.handle_message("+92300", "how do I grow revenue")
+        assert reply.action == "advise"
+        assert len(reply.text) > 80
+        assert "Average ticket" in reply.text
 
     def test_campaigns_are_logged(self, pos):
         agent = _agent(pos)

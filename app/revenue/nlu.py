@@ -19,6 +19,10 @@ INTENTS = (
     "pricing",        # which prices can I raise
     "dead_windows",   # when are we slow
     "campaigns",      # ideas to boost revenue / fill slow times
+    "strategy",       # full revenue-growth playbook (all levers)
+    "upsell",         # raise average ticket: attach / bundles / add-ons
+    "menu",           # menu optimisation: heroes, dogs, gaps
+    "loyalty",        # frequency: loyalty programme / win-back
     "subscribe",      # set up scheduled digests
     "help",
     "unknown",
@@ -50,7 +54,11 @@ Fields:
 - intent: one of {list(INTENTS)}
     summary = overall performance/revenue; best_sellers = what's selling;
     pricing = which prices to raise; dead_windows = slow/quiet times;
-    campaigns = ideas to boost revenue / fill quiet times;
+    campaigns = ideas to fill quiet windows specifically;
+    strategy = broad "how do I grow / maximise revenue" advice (all levers);
+    upsell = raise average ticket / spend per order (attach, bundles, combos, add-ons);
+    menu = menu optimisation (high-margin items, low-margin dogs, what to add);
+    loyalty = repeat business / frequency / loyalty programme / win-back;
     subscribe = wants regular/scheduled updates; help = what can you do; unknown
 - period: "day", "week" or "month" (default "week")
 - cadence: if intent is subscribe, "daily"/"weekly"/"monthly", else ""
@@ -87,7 +95,7 @@ def _parse_fallback(text: str) -> ParsedQuery:
     period = _norm_period(lower)
     cadence = ""
 
-    if re.search(r"\b(subscribe|every day|every week|daily|weekly|monthly|digest|each (day|week|month)|send me)\b", lower):
+    if re.search(r"\b(subscribe|every day|every week|digest|each (day|week|month)|send me .*(update|digest|report))\b", lower):
         intent = "subscribe"
         if "dai" in lower or "every day" in lower:
             cadence = "daily"
@@ -95,11 +103,19 @@ def _parse_fallback(text: str) -> ParsedQuery:
             cadence = "monthly"
         else:
             cadence = "weekly"
-    elif re.search(r"\b(price|prices|pricing|raise|charge more|increase price|markup)\b", lower):
+    elif re.search(r"\b(price|prices|pricing|raise (the )?price|charge more|increase price|markup)\b", lower):
         intent = "pricing"
-    elif re.search(r"\b(campaign|promo|promotion|fill|boost|idea|grow revenue|more revenue|underutil|win.?back)\b", lower):
+    elif re.search(r"\b(upsell|up.?sell|average (ticket|transaction|order|spend)|spend per|basket|add.?on|attach|combo|bundle|pastry|bigger (order|ticket)|increase spend)", lower):
+        intent = "upsell"
+    elif re.search(r"\b(loyal|repeat|frequency|come back|retention|punch card|win.?back|regular)", lower):
+        intent = "loyalty"
+    elif re.search(r"\b(menu|high.?margin|low.?margin|margin|product mix|what should i (add|sell|cut)|dishes to add|cut item|dog)", lower):
+        intent = "menu"
+    elif re.search(r"\b(strateg|maximi|grow|growth|increase revenue|more revenue|more money|make more|boost revenue|playbook|how (do|can) i (grow|increase|make|boost))", lower):
+        intent = "strategy"
+    elif re.search(r"\b(campaign|promo|promotion|fill|event|underutil)\b", lower):
         intent = "campaigns"
-    elif re.search(r"\b(dead|slow|quiet|empty|lull|underutil|off.?peak|low demand)\b", lower):
+    elif re.search(r"\b(dead|slow|quiet|empty|lull|off.?peak|low demand)\b", lower):
         intent = "dead_windows"
     elif re.search(r"\b(best.?sell|top.?sell|selling|most popular|top item|top product|what sold)", lower):
         intent = "best_sellers"

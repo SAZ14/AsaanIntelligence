@@ -194,8 +194,8 @@ def recommend_campaigns(
         message = (
             f"{window_desc} is underutilized "
             f"(~{win.avg_orders:.0f} orders vs {win.avg_orders + win.gap_vs_peak:.0f} at peak). "
-            f"Send “{campaign.name}” to {audience} {seg.label}. "
-            f"Expected ~{redemptions} redemptions, ≈ PKR {added:,.0f} added revenue."
+            f"Run “{campaign.name}” for your {audience} {seg.label} to fill it — "
+            f"projected ~{redemptions} take-ups, ≈ PKR {added:,.0f} added revenue."
         )
         recs.append(CampaignRec(
             window_desc=window_desc, campaign_key=campaign.key,
