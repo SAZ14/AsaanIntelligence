@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from html import escape
 
 from app.analysis.integrity import IntegrityReport, StaffIntegrity, FlaggedEvent
+from app.analysis.reconciliation import ReconciliationReport
 from app.analysis.retention import RetentionReport, OperationsReport, CustomerProfile
+from app.agents.integrity_agent import build_findings
 
 FLAGGED_SCORE_THRESHOLD = 99.0
 WINNABLE_GAP_MAX_DAYS = 30
@@ -102,10 +104,58 @@ def _esc(s: str) -> str:
     return escape(str(s))
 
 
+def _reconciliation_section(integrity: IntegrityReport, rec: ReconciliationReport) -> str:
+    """Profit / payments / discrepancies + priority actions (impact-ranked)."""
+    balanced = rec.books_balanced
+    badge = ('<span class="tag tag-green">Balanced</span>' if balanced
+             else '<span class="tag tag-red">Needs review</span>')
+    html = f"""<section>
+<h2>Profit &amp; Reconciliation</h2>
+<p class="insight">Net sales {_esc(_pkr(rec.net_sales))} at {_pct(rec.gross_margin)} gross margin.
+Payments reconcile to the till: {badge}.</p>
+<div class="kv"><span class="kv-label">Net sales (ex-tax)</span><span class="kv-value">{_esc(_pkr(rec.net_sales))}</span></div>
+<div class="kv"><span class="kv-label">COGS (sold)</span><span class="kv-value">{_esc(_pkr(rec.cogs_sold))}</span></div>
+<div class="kv"><span class="kv-label">Gross profit</span><span class="kv-value">{_esc(_pkr(rec.gross_profit))} ({_pct(rec.gross_margin)})</span></div>
+<div class="kv"><span class="kv-label">Wasted COGS (comp / fired-then-voided)</span><span class="kv-value">{_esc(_pkr(rec.wasted_cogs))}</span></div>
+<div class="kv"><span class="kv-label">Revenue collected (incl. tax)</span><span class="kv-value">{_esc(_pkr(rec.gross_collected))}</span></div>
+<div class="kv"><span class="kv-label">Payment mismatches</span><span class="kv-value">{rec.payment_mismatch_count} ({_esc(_pkr(rec.payment_mismatch_abs_value))})</span></div>
+<div class="kv"><span class="kv-label">Tax anomalies</span><span class="kv-value">{rec.tax_anomaly_count} ({_esc(_pkr(rec.tax_anomaly_value))})</span></div>
+"""
+    if rec.by_method:
+        html += """<table style="margin-top:10px">
+<tr><th>Method</th><th class="num">Orders</th><th class="num">Collected</th><th class="num">Share</th></tr>
+"""
+        for mb in rec.by_method:
+            html += (f'<tr><td>{_esc(mb.method)}</td><td class="num">{mb.orders:,}</td>'
+                     f'<td class="num">{_esc(_pkr(mb.gross_collected))}</td>'
+                     f'<td class="num">{_pct(mb.share_pct)}</td></tr>\n')
+        html += "</table>\n"
+    html += "</section>\n"
+
+    findings = build_findings(integrity, rec)
+    if findings:
+        html += """<section>
+<h2>Priority Actions</h2>
+<table>
+<tr><th>#</th><th>Severity</th><th>Issue</th><th>Subject</th><th class="num">Impact</th></tr>
+"""
+        sev_cls = {"high": "tag-red", "medium": "tag-amber", "low": "tag-blue"}
+        for f in findings[:8]:
+            cls = sev_cls.get(f.severity, "tag-blue")
+            html += (f'<tr><td>{f.rank}</td>'
+                     f'<td><span class="tag {cls}">{_esc(f.severity.title())}</span></td>'
+                     f'<td>{_esc(f.category.replace("_", " ").title())}</td>'
+                     f'<td>{_esc(f.subject)}</td>'
+                     f'<td class="num">{_esc(_pkr(f.monetary_impact))}</td></tr>\n')
+        html += "</table>\n</section>\n"
+    return html
+
+
 def generate_report(
     integrity: IntegrityReport,
     retention: RetentionReport,
     operations: OperationsReport,
+    reconciliation: ReconciliationReport | None = None,
 ) -> str:
     h = compute_headlines(integrity, retention, operations)
     worst = next((s for s in integrity.staff_integrity if s.staff_id == integrity.worst_offender), None)
@@ -227,6 +277,10 @@ Integrity score {worst.integrity_score:.0f}/100.</p>
 """
         html += "</table>\n"
     html += "</section>\n"
+
+    # ── Profit & Reconciliation section ──
+    if reconciliation is not None:
+        html += _reconciliation_section(integrity, reconciliation)
 
     # ── Retention section ──
     html += f"""<section>

@@ -109,6 +109,36 @@ def test_freeform_question_uses_llm():
     assert reply == "Your worst staff member is Bilal (S03)."
 
 
+def test_staff_list_command():
+    svc = _service()
+    reply = svc.handle_message("whatsapp:+923001234567", "staff")
+    assert "Team integrity" in reply
+    # all eight staff listed
+    for sid in ("S01", "S02", "S03", "S08"):
+        assert sid in reply
+
+
+def test_staff_detail_by_name():
+    svc = _service()
+    reply = svc.handle_message("whatsapp:+923001234567", "staff Bilal")
+    assert "Bilal (S03)" in reply
+    assert "Integrity score" in reply
+    assert "Void rate" in reply and "Comp rate" in reply
+
+
+def test_staff_detail_by_id():
+    svc = _service()
+    reply = svc.handle_message("whatsapp:+923001234567", "staff S03")
+    assert "Bilal (S03)" in reply
+    assert "Total leakage" in reply
+
+
+def test_staff_detail_unknown():
+    svc = _service()
+    reply = svc.handle_message("whatsapp:+923001234567", "staff Nobody")
+    assert "No staff matching" in reply
+
+
 def test_report_is_cached():
     svc = _service()
     r1 = svc.get_report("roastery")

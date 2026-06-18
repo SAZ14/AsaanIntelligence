@@ -2,6 +2,7 @@ from pathlib import Path
 
 from app.ingest import load_dataset
 from app.analysis.integrity import analyze_integrity
+from app.analysis.reconciliation import reconcile_payments
 from app.analysis.retention import analyze_retention, analyze_operations
 from app.report.render import (
     generate_report, compute_headlines,
@@ -21,12 +22,32 @@ def _build():
     return integrity, retention, operations
 
 
+def _reconciliation():
+    orders, menu, staff = load_dataset(
+        DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",
+    )
+    return reconcile_payments(orders, menu, staff)
+
+
 def test_report_generates_without_error():
     integrity, retention, operations = _build()
     html = generate_report(integrity, retention, operations)
     assert len(html) > 1000
     assert "<html" in html
     assert "</html>" in html
+
+
+def test_report_includes_reconciliation_section():
+    integrity, retention, operations = _build()
+    rec = _reconciliation()
+    html = generate_report(integrity, retention, operations, rec)
+    assert "Profit &amp; Reconciliation" in html
+    assert "Priority Actions" in html
+    assert f"PKR {rec.gross_profit:,.0f}" in html
+    # backward compatible: still valid when reconciliation omitted
+    plain = generate_report(integrity, retention, operations)
+    assert "Profit &amp; Reconciliation" not in plain
+    assert "<html" in plain
 
 
 def test_headline_numbers_present_and_positive():

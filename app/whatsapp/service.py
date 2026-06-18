@@ -25,6 +25,8 @@ HELP_TEXT = (
     "• *profit* – profit & margin\n"
     "• *leakage* – suspected loss\n"
     "• *findings* – top issues to act on\n"
+    "• *staff* – team integrity scores\n"
+    "• *staff <name>* – drill into one person\n"
     "• *refresh* – re-pull latest POS data\n"
     "Or just ask, e.g. \"who is my worst staff member?\""
 )
@@ -154,6 +156,49 @@ class IntegrityWhatsAppService:
                 lines.append(f"   → {f.recommended_action}")
         return "\n".join(lines)
 
+    def _fmt_staff_list(self, r: IntegrityAgentReport) -> str:
+        roster = sorted(r.integrity.staff_integrity, key=lambda s: s.integrity_score)
+        lines = [f"👥 *Team integrity — {r.venue_name}* (worst → best)"]
+        for s in roster:
+            flag = "🔴" if s.integrity_score < 90 else ("🟡" if s.integrity_score < 99 else "🟢")
+            leak = f" · leak {_money(s.total_leakage)}" if s.total_leakage > 0 else ""
+            lines.append(f"{flag} {s.staff_name} ({s.staff_id}): {s.integrity_score:.0f}/100{leak}")
+        lines.append("\nReply *staff <name>* for one person's detail.")
+        return "\n".join(lines)
+
+    def _fmt_staff_detail(self, r: IntegrityAgentReport, query: str) -> str:
+        q = query.strip().lower()
+        match = None
+        for s in r.integrity.staff_integrity:
+            if q == s.staff_id.lower() or q in s.staff_name.lower():
+                match = s
+                break
+        if match is None:
+            names = ", ".join(s.staff_name for s in r.integrity.staff_integrity)
+            return f"No staff matching “{query}”. Try one of: {names}."
+
+        bl = r.integrity.venue_baseline
+        events = [e for e in r.integrity.flagged_events if e.staff_id == match.staff_id]
+        lines = [
+            f"👤 *{match.staff_name} ({match.staff_id})*",
+            f"Integrity score: {match.integrity_score:.0f}/100",
+            f"Lines rung: {match.total_lines} · gross {_money(match.gross_volume)} · cash {match.cash_share:.0%}",
+            f"Void rate: {match.void_rate:.1%} (venue {bl.void_rate:.1%}, z={match.void_rate_z:.1f})",
+            f"Comp rate: {match.comp_rate:.1%} (venue {bl.comp_rate:.1%}, z={match.comp_rate_z:.1f})",
+            f"Discount rate: {match.discount_rate:.1%} (venue {bl.discount_rate:.1%}, z={match.discount_rate_z:.1f})",
+            "Excess (vs baseline):",
+            f"  • theft voids: {_money(match.excess_theft_void_value)}",
+            f"  • comps: {_money(match.excess_comp_value)}",
+            f"  • discounts: {_money(match.excess_discount_value)}",
+            f"Total leakage: {_money(match.total_leakage)}",
+        ]
+        if events:
+            lines.append(f"\nTop flagged events ({len(events)}):")
+            for e in events[:3]:
+                lines.append(f"  {e.order_id} · {e.flag_type.replace('_', ' ')} · "
+                             f"{e.item_name} · {_money(e.value)}")
+        return "\n".join(lines)
+
     # ── Main entry point ──
 
     def handle_message(self, from_number: str, body: str) -> str:
@@ -186,6 +231,9 @@ class IntegrityWhatsAppService:
                 return self._fmt_leakage(report)
             if cmd in ("findings", "issues", "top", "flags"):
                 return self._fmt_findings(report)
+            if cmd in ("staff", "team", "employee", "employees", "waiter", "server"):
+                rest = text[len(text.split()[0]):].strip()
+                return self._fmt_staff_detail(report, rest) if rest else self._fmt_staff_list(report)
 
             # Anything else: grounded free-form Q&A via the agent.
             return answer_question(report, text, client=self.llm_client)
