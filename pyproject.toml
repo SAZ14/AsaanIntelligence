@@ -17,5 +17,9 @@ dependencies = [
 scrape = ["browserbase>=0.3", "playwright>=1.40"]
 storage = ["supabase>=2.0"]
 
+[tool.setuptools.packages.find]
+# Only `app` is an importable package; scripts/ tests/ evals/ run via sys.path.
+include = ["app*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
