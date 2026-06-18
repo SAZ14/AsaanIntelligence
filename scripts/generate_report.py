@@ -7,8 +7,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.ingest import load_dataset
+from app.ingest.loader import load_customers
 from app.analysis.integrity import analyze_integrity
 from app.analysis.retention import analyze_retention, analyze_operations
+from app.agents.customer import run_customer_agent
 from app.report.render import generate_report, compute_headlines
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -22,6 +24,8 @@ def main() -> None:
     integrity = analyze_integrity(orders, menu, staff)
     retention = analyze_retention(orders, menu, staff)
     operations = analyze_operations(orders, menu, staff)
+    registry = load_customers(DATA / "customers.csv")
+    customer = run_customer_agent(orders, menu, staff, registry, venue_name="Sugar Rush")
 
     h = compute_headlines(integrity, retention, operations)
     print(f"Monthly leakage (flagged staff):        PKR {h.monthly_leakage:,.0f}")
@@ -33,7 +37,7 @@ def main() -> None:
     if h.winback_sanity_warning:
         print(f"⚠  WARNING: win-back exceeds 10% of monthly revenue — review assumptions")
 
-    html = generate_report(integrity, retention, operations)
+    html = generate_report(integrity, retention, operations, customer)
 
     OUT.mkdir(exist_ok=True)
     out_path = OUT / "audit_report.html"

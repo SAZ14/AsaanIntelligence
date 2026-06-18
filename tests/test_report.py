@@ -93,3 +93,19 @@ def test_sanity_warning_triggers_at_high_recovery():
     h = compute_headlines(integrity, retention, operations, recovery_rate=1.0)
     if h.winback_pct_of_revenue > SANITY_WINBACK_PCT_WARN:
         assert h.winback_sanity_warning
+
+
+def test_customer_agent_section_in_html():
+    from app.ingest.loader import load_customers
+    from app.agents.customer import run_customer_agent, TAGLINE
+
+    integrity, retention, operations = _build()
+    registry = load_customers(DATA / "customers.csv")
+    orders, menu, staff = load_dataset(
+        DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",
+    )
+    customer = run_customer_agent(orders, menu, staff, registry)
+    html = generate_report(integrity, retention, operations, customer)
+    assert "Customer Agent" in html
+    assert TAGLINE in html
+    assert "QR-linked guests" in html

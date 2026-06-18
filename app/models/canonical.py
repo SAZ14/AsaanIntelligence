@@ -70,3 +70,14 @@ class Order(BaseModel):
     customer_ref: str = ""
     line_items: list[LineItem] = Field(default_factory=list)
     payments: list[Payment] = Field(default_factory=list)
+
+
+class LoyaltyCustomer(BaseModel):
+    """QR-linked guest profile — ties a scan token to POS customer_ref."""
+
+    customer_ref: str
+    qr_token: str = ""
+    display_name: str = ""
+    phone: str = ""
+    channel: str = "sms"  # sms | whatsapp
+    opted_in: bool = True
