@@ -1,0 +1,140 @@
+{
+  "note": "Latest capture. Synthetic fixture data for offline runs. Diff against snapshot_prev.json reveals new dishes and review momentum; a brand-new venue (Crust & Co, F-7) appears with no baseline.",
+  "competitors": [
+    {
+      "competitor": {
+        "competitor_id": "islamabad:brew-lab",
+        "name": "Brew Lab",
+        "area": "F-7",
+        "city": "Islamabad",
+        "country": "Pakistan",
+        "cuisine": "Specialty coffee & dessert",
+        "source_url": "https://example.com/brew-lab",
+        "opened_at": "2023-01-15T00:00:00"
+      },
+      "captured_at": "2026-06-16T09:00:00",
+      "menu": [
+        {"name": "Cappuccino", "category": "Coffee", "price": 720, "tags": []},
+        {"name": "Cold Brew", "category": "Coffee", "price": 780, "tags": []},
+        {"name": "Cheesecake", "category": "Bakery", "price": 600, "tags": ["dessert"]},
+        {"name": "Biscoff Tres Leches", "category": "Bakery", "price": 650, "tags": ["dessert", "viral"]}
+      ],
+      "promotions": [
+        {"title": "Weekend BOGO on desserts", "description": "Buy one dessert, get one free, Fri-Sun", "discount_pct": 50}
+      ],
+      "reviews": [
+        {"source": "Google", "rating_avg": 4.6, "review_count": 820}
+      ]
+    },
+    {
+      "competitor": {
+        "competitor_id": "islamabad:chai-khana",
+        "name": "Chai Khana",
+        "area": "F-6",
+        "city": "Islamabad",
+        "country": "Pakistan",
+        "cuisine": "Desi tea house",
+        "source_url": "https://example.com/chai-khana",
+        "opened_at": "2021-06-01T00:00:00"
+      },
+      "captured_at": "2026-06-16T09:00:00",
+      "menu": [
+        {"name": "Karak Chai", "category": "Tea", "price": 250, "tags": ["tea"]},
+        {"name": "Paratha Roll", "category": "Food", "price": 1400, "tags": []}
+      ],
+      "promotions": [],
+      "reviews": [
+        {"source": "Google", "rating_avg": 4.3, "review_count": 540}
+      ]
+    },
+    {
+      "competitor": {
+        "competitor_id": "islamabad:roastery-22",
+        "name": "Roastery 22",
+        "area": "F-10",
+        "city": "Islamabad",
+        "country": "Pakistan",
+        "cuisine": "Coffee roastery",
+        "source_url": "https://example.com/roastery-22",
+        "opened_at": "2022-03-10T00:00:00"
+      },
+      "captured_at": "2026-06-16T09:00:00",
+      "menu": [
+        {"name": "Flat White", "category": "Coffee", "price": 700, "tags": []},
+        {"name": "Matcha Latte", "category": "Coffee", "price": 760, "tags": ["matcha", "viral"]},
+        {"name": "Butter Croissant", "category": "Bakery", "price": 560, "tags": []},
+        {"name": "Kashmiri Chai", "category": "Tea", "price": 350, "tags": ["tea"]}
+      ],
+      "promotions": [],
+      "reviews": [
+        {"source": "Google", "rating_avg": 4.5, "review_count": 610}
+      ]
+    },
+    {
+      "competitor": {
+        "competitor_id": "islamabad:crust-and-co",
+        "name": "Crust & Co",
+        "area": "F-7",
+        "city": "Islamabad",
+        "country": "Pakistan",
+        "cuisine": "Modern comfort food",
+        "source_url": "https://example.com/crust-and-co",
+        "opened_at": "2026-05-29T00:00:00"
+      },
+      "captured_at": "2026-06-16T09:00:00",
+      "menu": [
+        {"name": "Nashville Hot Sandwich", "category": "Food", "price": 1600, "tags": ["viral", "spicy"]},
+        {"name": "Korean Corn Dog", "category": "Food", "price": 1300, "tags": ["viral", "korean"]},
+        {"name": "Cold Brew", "category": "Coffee", "price": 690, "tags": []}
+      ],
+      "promotions": [
+        {"title": "Opening week: 20% off", "description": "Launch promo across the whole menu", "discount_pct": 20}
+      ],
+      "reviews": [
+        {"source": "Google", "rating_avg": 4.8, "review_count": 130}
+      ]
+    },
+    {
+      "competitor": {
+        "competitor_id": "karachi:karachi-coffee-co",
+        "name": "Karachi Coffee Co",
+        "area": "DHA",
+        "city": "Karachi",
+        "country": "Pakistan",
+        "cuisine": "Specialty coffee",
+        "source_url": "https://example.com/karachi-coffee-co",
+        "opened_at": "2022-09-01T00:00:00"
+      },
+      "captured_at": "2026-06-16T09:00:00",
+      "menu": [
+        {"name": "Spanish Latte", "category": "Coffee", "price": 750, "tags": ["viral", "spanish-latte"]},
+        {"name": "Biscoff Tres Leches", "category": "Bakery", "price": 680, "tags": ["dessert", "viral"]}
+      ],
+      "promotions": [],
+      "reviews": [
+        {"source": "Google", "rating_avg": 4.4, "review_count": 360}
+      ]
+    },
+    {
+      "competitor": {
+        "competitor_id": "lahore:lahore-loaf",
+        "name": "Lahore Loaf",
+        "area": "Gulberg",
+        "city": "Lahore",
+        "country": "Pakistan",
+        "cuisine": "Bakery & cafe",
+        "source_url": "https://example.com/lahore-loaf",
+        "opened_at": "2021-11-20T00:00:00"
+      },
+      "captured_at": "2026-06-16T09:00:00",
+      "menu": [
+        {"name": "Spanish Latte", "category": "Coffee", "price": 720, "tags": ["viral", "spanish-latte"]},
+        {"name": "Korean Corn Dog", "category": "Food", "price": 850, "tags": ["viral", "korean"]}
+      ],
+      "promotions": [],
+      "reviews": [
+        {"source": "Google", "rating_avg": 4.2, "review_count": 360}
+      ]
+    }
+  ]
+}
