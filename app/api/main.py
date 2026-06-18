@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from dataclasses import asdict
+
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.agents.customer import link_qr_scan, run_customer_agent
 from app.api.deps import (
+    JOIN_BASE_URL,
     VENUE_NAME,
+    VENUE_SLUG,
     build_merchant_dashboard,
+    get_message_dispatcher,
     load_orders,
     load_registry,
     load_rules,
     registry_path,
+    venues_path,
 )
 from app.api.merchant import router as merchant_router
 from app.ingest.loader import save_customers
+from app.report.guest_join_render import render_join_page
+from app.services.guest import join_guest, load_venues, recognize_guest
 
 app = FastAPI(title="Asaan Intelligence API", version="0.1.0")
 app.include_router(merchant_router)
@@ -26,7 +35,7 @@ class QRScanRequest(BaseModel):
     customer_ref: str
     display_name: str = ""
     phone: str = ""
-    channel: str = Field(default="sms", pattern="^(sms|whatsapp)$")
+    channel: str = Field(default="whatsapp", pattern="^(sms|whatsapp)$")
     opted_in: bool = True
 
 
@@ -37,13 +46,103 @@ class QRScanResponse(BaseModel):
     registered: bool
 
 
+class QRJoinRequest(BaseModel):
+    venue_slug: str
+    display_name: str
+    phone: str
+    channel: str = Field(default="whatsapp", pattern="^(sms|whatsapp)$")
+    opted_in: bool = True
+
+
 class DispatchRequest(BaseModel):
     customer_refs: list[str] = Field(min_length=1)
 
 
+def _get_venue(slug: str):
+    venues = load_venues(venues_path())
+    if slug not in venues:
+        raise HTTPException(status_code=404, detail=f"Venue '{slug}' not found")
+    return venues[slug]
+
+
+def _join_result_dict(result) -> dict:
+    return asdict(result)
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "venue": VENUE_NAME}
+    return {
+        "status": "ok",
+        "venue": VENUE_NAME,
+        "join_url": f"{JOIN_BASE_URL.rstrip('/')}/join/{VENUE_SLUG}",
+    }
+
+
+@app.get("/join/{venue_slug}", response_class=HTMLResponse)
+def join_page_get(venue_slug: str, phone: str = "", lookup: str = ""):
+    """Permanent venue QR landing page — guest onboarding and return lookup."""
+    venue = _get_venue(venue_slug)
+    join_result = None
+    if phone and lookup:
+        orders, _, _ = load_orders()
+        registry = load_registry()
+        rules = load_rules()
+        result = recognize_guest(venue, registry, phone, orders, rules)
+        if result:
+            join_result = _join_result_dict(result)
+    return render_join_page(venue.name, venue_slug, join_result=join_result)
+
+
+@app.post("/join/{venue_slug}", response_class=HTMLResponse)
+async def join_page_post(
+    venue_slug: str,
+    display_name: str = Form(...),
+    phone: str = Form(...),
+    opted_in: str = Form(default=""),
+):
+    """Handle guest join form from permanent venue QR."""
+    venue = _get_venue(venue_slug)
+    orders, _, _ = load_orders()
+    registry = load_registry()
+    rules = load_rules()
+    try:
+        result = join_guest(
+            venue, registry, display_name, phone, orders, rules,
+            opted_in=opted_in.lower() in ("true", "1", "on", "yes"),
+            channel="whatsapp",
+        )
+        save_customers(registry_path(), registry)
+        return render_join_page(venue.name, venue_slug, join_result=_join_result_dict(result))
+    except Exception as e:
+        return render_join_page(venue.name, venue_slug, error=str(e))
+
+
+@app.post("/qr/join")
+def qr_join(req: QRJoinRequest):
+    """JSON API for guest onboarding from permanent venue QR."""
+    venue = _get_venue(req.venue_slug)
+    orders, _, _ = load_orders()
+    registry = load_registry()
+    rules = load_rules()
+    result = join_guest(
+        venue, registry, req.display_name, req.phone, orders, rules,
+        opted_in=req.opted_in, channel=req.channel,
+    )
+    save_customers(registry_path(), registry)
+    return _join_result_dict(result)
+
+
+@app.get("/qr/recognize")
+def qr_recognize(phone: str, venue_slug: str = "sugar-rush"):
+    """Look up returning guest by phone."""
+    venue = _get_venue(venue_slug)
+    orders, _, _ = load_orders()
+    registry = load_registry()
+    rules = load_rules()
+    result = recognize_guest(venue, registry, phone, orders, rules)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Guest not found")
+    return _join_result_dict(result)
 
 
 @app.post("/qr/scan", response_model=QRScanResponse)
@@ -103,6 +202,8 @@ def customer_report_summary():
     report = run_customer_agent(
         orders, menu, staff, registry, venue_name=VENUE_NAME, rules=rules,
     )
+    venues = load_venues(venues_path())
+    default_slug = next(iter(venues), "sugar-rush")
     return {
         "venue_name": report.venue_name,
         "tagline": report.tagline,
@@ -113,6 +214,7 @@ def customer_report_summary():
         "messages_ready": report.messages_ready,
         "total_winback_at_risk": report.total_winback_at_risk,
         "merchant_dashboard": "/merchant/dashboard",
+        "join_url": f"{JOIN_BASE_URL}/join/{default_slug}",
         "top_lapse_alerts": [
             {
                 "customer_ref": a.customer_ref,

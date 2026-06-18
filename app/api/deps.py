@@ -8,8 +8,11 @@ from pathlib import Path
 from app.ingest import load_dataset
 from app.ingest.loader import load_customers, load_loyalty_rules, save_customers, save_loyalty_rules
 from app.models.canonical import LoyaltyCustomer, LoyaltyRules
+from app.services.messaging import ConsoleMessageDispatcher, FileOutboxDispatcher, get_dispatcher
 
 VENUE_NAME = os.environ.get("ASAAN_VENUE_NAME", "Sugar Rush")
+VENUE_SLUG = os.environ.get("ASAAN_VENUE_SLUG", "sugar-rush")
+JOIN_BASE_URL = os.environ.get("ASAAN_JOIN_BASE_URL", "http://localhost:8000")
 
 
 def data_dir() -> Path:
@@ -34,8 +37,18 @@ def rules_path() -> Path:
     return data_dir() / "loyalty_rules.json"
 
 
+def venues_path() -> Path:
+    return data_dir() / "venues.json"
+
+
 def outbox_path() -> Path:
     return outbox_dir() / "messages_outbox.jsonl"
+
+
+def get_message_dispatcher():
+    """Twilio WhatsApp when credentials set, else console; always logged to outbox."""
+    inner = get_dispatcher()
+    return FileOutboxDispatcher(outbox_path(), inner)
 
 
 def load_registry() -> dict[str, LoyaltyCustomer]:

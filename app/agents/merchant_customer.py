@@ -21,7 +21,12 @@ from app.agents.customer import (
     run_customer_agent,
 )
 from app.models.canonical import LoyaltyCustomer, LoyaltyRules, MenuItem, Order, Staff
-from app.services.messaging import SentMessage, dispatch_incentives, FileOutboxDispatcher, ConsoleMessageDispatcher
+from app.services.messaging import (
+    FileOutboxDispatcher,
+    SentMessage,
+    dispatch_incentives,
+    get_dispatcher,
+)
 
 
 @dataclass
@@ -238,7 +243,7 @@ def approve_and_send(
                 to_send.append(inc)
                 break
 
-    dispatcher = FileOutboxDispatcher(outbox_path, ConsoleMessageDispatcher())
+    dispatcher = FileOutboxDispatcher(outbox_path, get_dispatcher())
     result = dispatch_incentives(to_send, dispatcher, require_phone=True)
 
     skipped_pending = [
