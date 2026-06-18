@@ -8,5 +8,6 @@ competitor — that history is what powers new-dish and review-trend detection.
 from app.storage.base import SnapshotStore
 from app.storage.jsonstore import JsonFileStore
 from app.storage.factory import get_store
+from app.storage.contract import assert_store_conforms
 
-__all__ = ["SnapshotStore", "JsonFileStore", "get_store"]
+__all__ = ["SnapshotStore", "JsonFileStore", "get_store", "assert_store_conforms"]
