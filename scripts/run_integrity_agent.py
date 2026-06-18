@@ -16,27 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.pos import RestaurantConfig, build_connector
+from app.pos import build_connector
 from app.agents.integrity_agent import run_integrity_agent
-
-DATA = Path(__file__).resolve().parent.parent / "data"
-
-# Restaurant registry. Different venues, different POS systems — same pipeline.
-RESTAURANTS = {
-    "roastery": RestaurantConfig(
-        venue_name="Roastery (Islamabad)",
-        pos_type="csv",
-        connection={"base_dir": str(DATA)},
-        mapping="cafe_generic",
-    ),
-    # Example of a second venue on a cloud POS (needs real base_url / api_key):
-    # "downtown": RestaurantConfig(
-    #     venue_name="Downtown Bistro",
-    #     pos_type="rest",
-    #     connection={"base_url": "https://api.examplepos.com/v1", "api_key": "..."},
-    #     mapping="cafe_generic",
-    # ),
-}
+from app.venues import RESTAURANTS
 
 
 def _money(v: float) -> str:
