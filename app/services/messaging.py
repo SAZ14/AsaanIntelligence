@@ -66,6 +66,49 @@ def whatsapp_address(phone: str) -> str:
     return f"whatsapp:{normalized}"
 
 
+def parse_twilio_whatsapp_phone(raw: str) -> str:
+    """Strip Twilio whatsapp: prefix and normalize to E.164."""
+    value = raw.strip()
+    if value.lower().startswith("whatsapp:"):
+        value = value.split(":", 1)[1]
+    return normalize_phone(value)
+
+
+def twilio_whatsapp_digits(from_number: str | None = None) -> str:
+    """Digits-only WhatsApp number for wa.me links (no + prefix)."""
+    raw = from_number or os.environ.get("TWILIO_WHATSAPP_FROM", "")
+    if not raw:
+        return ""
+    return parse_twilio_whatsapp_phone(raw).lstrip("+")
+
+
+def send_whatsapp_text(
+    to_phone: str,
+    body: str,
+    *,
+    use_twilio: bool | None = None,
+) -> str:
+    """Send a plain WhatsApp text reply. Returns provider message sid or empty."""
+    if use_twilio is None:
+        use_twilio = bool(
+            os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"),
+        )
+    to_addr = whatsapp_address(parse_twilio_whatsapp_phone(to_phone))
+    if not use_twilio:
+        print(f"[WHATSAPP AGENT] → {to_addr}\n  {body}\n")
+        return ""
+    from twilio.rest import Client
+
+    account_sid = os.environ["TWILIO_ACCOUNT_SID"]
+    auth_token = os.environ["TWILIO_AUTH_TOKEN"]
+    from_number = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    if not from_number.startswith("whatsapp:"):
+        from_number = f"whatsapp:{from_number}"
+    client = Client(account_sid, auth_token)
+    msg = client.messages.create(body=body, from_=from_number, to=to_addr)
+    return msg.sid
+
+
 class ConsoleMessageDispatcher(MessageDispatcher):
     """Log messages to stdout — for dev and CLI demos."""
 

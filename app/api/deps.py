@@ -45,6 +45,10 @@ def outbox_path() -> Path:
     return outbox_dir() / "messages_outbox.jsonl"
 
 
+def sessions_path() -> Path:
+    return data_dir() / "whatsapp_sessions.json"
+
+
 def get_message_dispatcher():
     """Twilio WhatsApp when credentials set, else console; always logged to outbox."""
     inner = get_dispatcher()

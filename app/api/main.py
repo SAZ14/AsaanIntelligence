@@ -14,7 +14,6 @@ from app.api.deps import (
     VENUE_NAME,
     VENUE_SLUG,
     build_merchant_dashboard,
-    get_message_dispatcher,
     load_orders,
     load_registry,
     load_rules,
@@ -22,12 +21,16 @@ from app.api.deps import (
     venues_path,
 )
 from app.api.merchant import router as merchant_router
+from app.api.webhooks import router as webhooks_router
 from app.ingest.loader import save_customers
 from app.report.guest_join_render import render_join_page
 from app.services.guest import join_guest, load_venues, recognize_guest
+from app.services.messaging import twilio_whatsapp_digits
+from app.services.whatsapp_agent import build_whatsapp_qr_url
 
 app = FastAPI(title="Asaan Intelligence API", version="0.1.0")
 app.include_router(merchant_router)
+app.include_router(webhooks_router)
 
 
 class QRScanRequest(BaseModel):
@@ -71,9 +74,17 @@ def _join_result_dict(result) -> dict:
 
 @app.get("/health")
 def health():
+    wa_digits = twilio_whatsapp_digits()
+    whatsapp_url = ""
+    if wa_digits:
+        whatsapp_url = build_whatsapp_qr_url(
+            f"+{wa_digits}", VENUE_NAME,
+        )
     return {
         "status": "ok",
         "venue": VENUE_NAME,
+        "whatsapp_join_url": whatsapp_url,
+        "whatsapp_webhook": "/webhooks/twilio/whatsapp",
         "join_url": f"{JOIN_BASE_URL.rstrip('/')}/join/{VENUE_SLUG}",
     }
 

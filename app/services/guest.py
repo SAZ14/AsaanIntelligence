@@ -18,6 +18,7 @@ class VenueConfig:
     name: str
     currency: str = "PKR"
     join_slug: str = ""
+    whatsapp_greeting: str = ""
 
 
 @dataclass
@@ -48,6 +49,7 @@ def load_venues(path: Path) -> dict[str, VenueConfig]:
             name=data.get("name", slug),
             currency=data.get("currency", "PKR"),
             join_slug=data.get("join_slug", slug),
+            whatsapp_greeting=data.get("whatsapp_greeting", ""),
         )
     return venues
 
