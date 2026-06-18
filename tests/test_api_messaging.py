@@ -63,7 +63,7 @@ def test_save_and_load_customers(tmp_path):
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     import shutil
-    for name in ("sales_detail.csv", "menu.csv", "staff.csv", "customers.csv"):
+    for name in ("sales_detail.csv", "menu.csv", "staff.csv", "customers.csv", "loyalty_rules.json"):
         shutil.copy(DATA / name, tmp_path / name)
     monkeypatch.setenv("ASAAN_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ASAAN_OUTBOX_DIR", str(tmp_path / "output"))

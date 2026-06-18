@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from app.analysis.retention import CustomerProfile, analyze_retention
-from app.models.canonical import LoyaltyCustomer, MenuItem, Order, Staff
+from app.models.canonical import LoyaltyCustomer, LoyaltyRules, MenuItem, Order, Staff
 
 TAGLINE = "You never quietly lose a high-value guest again."
 
@@ -136,13 +136,15 @@ def _percentile(values: list[float], pct: float) -> float:
 def _build_order_stats(
     orders: list[Order],
     period_end: date,
+    rules: LoyaltyRules | None = None,
 ) -> dict[str, OrderStats]:
+    rules = rules or LoyaltyRules()
     by_customer: dict[str, OrderStats] = defaultdict(OrderStats)
     item_counts: dict[str, Counter[str]] = defaultdict(Counter)
     channel_counts: dict[str, Counter[str]] = defaultdict(Counter)
     order_tickets: dict[str, dict[str, float]] = defaultdict(dict)
 
-    streak_start = period_end - timedelta(days=STREAK_WINDOW_DAYS)
+    streak_start = period_end - timedelta(days=rules.streak_window_days)
 
     for o in orders:
         cref = o.customer_ref
@@ -244,7 +246,9 @@ def _urgency(profile: CustomerProfile, segment: str) -> str:
 def _build_incentives(
     enriched: EnrichedCustomer,
     venue_name: str,
+    rules: LoyaltyRules | None = None,
 ) -> list[CustomerIncentive]:
+    rules = rules or LoyaltyRules()
     p = enriched.profile
     stats = enriched.order_stats
     name = enriched.display_name
@@ -259,15 +263,16 @@ def _build_incentives(
     fav = stats.favorite_items[0] if stats.favorite_items else "your usual"
 
     if p.is_lapsed_regular:
+        pct = rules.winback_lapsed_discount_pct
         out.append(CustomerIncentive(
             customer_ref=cref,
             display_name=name,
             incentive_type="winback_lapsed",
-            discount_pct=WINBACK_LAPSED_DISCOUNT_PCT,
-            reward_text=f"{WINBACK_LAPSED_DISCOUNT_PCT}% off your next visit",
+            discount_pct=pct,
+            reward_text=f"{pct:.0f}% off your next visit",
             message=(
                 f"Hi {name}, we haven't seen you at {venue_name} in {p.days_since_last} days — "
-                f"and we miss you. Enjoy {WINBACK_LAPSED_DISCOUNT_PCT}% off your next order. "
+                f"and we miss you. Enjoy {pct:.0f}% off your next order. "
                 f"Your table (and your {fav}) are waiting."
             ),
             channel=channel,
@@ -276,15 +281,16 @@ def _build_incentives(
             trigger_reason=f"lapsed regular, {p.days_since_last}d since last visit",
         ))
     elif p.is_lapsing:
+        pct = rules.winback_lapsing_discount_pct
         out.append(CustomerIncentive(
             customer_ref=cref,
             display_name=name,
             incentive_type="winback_lapsing",
-            discount_pct=WINBACK_LAPSING_DISCOUNT_PCT,
-            reward_text=f"{WINBACK_LAPSING_DISCOUNT_PCT}% off this week",
+            discount_pct=pct,
+            reward_text=f"{pct:.0f}% off this week",
             message=(
                 f"Hi {name}, it's been a little while since your last visit to {venue_name}. "
-                f"Drop by this week for {WINBACK_LAPSING_DISCOUNT_PCT}% off — "
+                f"Drop by this week for {pct:.0f}% off — "
                 f"you usually come every {p.median_cadence_days:.0f} days and we'd love to see you."
             ),
             channel=channel,
@@ -293,9 +299,11 @@ def _build_incentives(
             trigger_reason=f"lapsing ({p.lapse_multiplier:.1f}x normal cadence)",
         ))
 
+    interval = rules.milestone_visit_interval
+    milestone_pct = rules.milestone_discount_pct
     if (
-        p.visit_count >= MILESTONE_VISIT_INTERVAL
-        and p.visit_count % MILESTONE_VISIT_INTERVAL == 0
+        p.visit_count >= interval
+        and p.visit_count % interval == 0
         and not p.is_lapsing
         and not p.is_lapsed_regular
     ):
@@ -303,12 +311,12 @@ def _build_incentives(
             customer_ref=cref,
             display_name=name,
             incentive_type="visit_milestone",
-            discount_pct=MILESTONE_DISCOUNT_PCT,
-            reward_text=f"{MILESTONE_DISCOUNT_PCT}% off — {p.visit_count} visits!",
+            discount_pct=milestone_pct,
+            reward_text=f"{milestone_pct:.0f}% off — {p.visit_count} visits!",
             message=(
                 f"Hi {name}, you've visited {venue_name} {p.visit_count} times — "
                 f"thank you for being part of our regulars. "
-                f"Here's {MILESTONE_DISCOUNT_PCT}% off your next order on us."
+                f"Here's {milestone_pct:.0f}% off your next order on us."
             ),
             channel=channel,
             phone=phone,
@@ -316,34 +324,35 @@ def _build_incentives(
             trigger_reason=f"{p.visit_count}th visit milestone",
         ))
 
-    if stats.recent_visit_count >= STREAK_MIN_VISITS and not p.is_lapsing:
+    if stats.recent_visit_count >= rules.streak_min_visits and not p.is_lapsing:
         out.append(CustomerIncentive(
             customer_ref=cref,
             display_name=name,
             incentive_type="visit_streak",
             discount_pct=None,
-            reward_text=STREAK_REWARD,
+            reward_text=rules.streak_reward,
             message=(
-                f"Hi {name}, {stats.recent_visit_count} visits in the last {STREAK_WINDOW_DAYS} days — "
+                f"Hi {name}, {stats.recent_visit_count} visits in the last {rules.streak_window_days} days — "
                 f"you're on a roll at {venue_name}! "
-                f"Enjoy a {STREAK_REWARD} next time you scan in."
+                f"Enjoy a {rules.streak_reward} next time you scan in."
             ),
             channel=channel,
             phone=phone,
             priority=4,
-            trigger_reason=f"{stats.recent_visit_count} visits in {STREAK_WINDOW_DAYS}d",
+            trigger_reason=f"{stats.recent_visit_count} visits in {rules.streak_window_days}d",
         ))
 
+    corp_pct = rules.corporate_discount_pct
     if enriched.segment == "corporate" and p.visit_count >= 1 and not p.is_lapsing:
         out.append(CustomerIncentive(
             customer_ref=cref,
             display_name=name,
             incentive_type="corporate_thanks",
-            discount_pct=CORPORATE_DISCOUNT_PCT,
-            reward_text=f"{CORPORATE_DISCOUNT_PCT}% off your next booking",
+            discount_pct=corp_pct,
+            reward_text=f"{corp_pct:.0f}% off your next booking",
             message=(
                 f"Hi {name}, thank you for choosing {venue_name} for your team. "
-                f"We'd love to host you again — {CORPORATE_DISCOUNT_PCT}% off your next booking."
+                f"We'd love to host you again — {corp_pct:.0f}% off your next booking."
             ),
             channel=channel,
             phone=phone,
@@ -410,9 +419,11 @@ def run_customer_agent(
     staff: dict[str, Staff],
     registry: dict[str, LoyaltyCustomer] | None = None,
     venue_name: str = "your venue",
+    rules: LoyaltyRules | None = None,
 ) -> CustomerAgentReport:
     """Run the Customer Agent: retention + segmentation + incentives + lapse alerts."""
     registry = registry or {}
+    rules = rules or LoyaltyRules()
     retention = analyze_retention(orders, menu, staff)
 
     if not orders:
@@ -422,7 +433,7 @@ def run_customer_agent(
     period_start = min(o.datetime.date() for o in orders)
     period_days = max(1, (period_end - period_start).days + 1)
 
-    order_stats = _build_order_stats(orders, period_end)
+    order_stats = _build_order_stats(orders, period_end, rules)
 
     all_tickets = [
         sum(p.amount for p in o.payments)
@@ -487,7 +498,7 @@ def run_customer_agent(
 
     incentives: list[CustomerIncentive] = []
     for e in enriched_list:
-        incentives.extend(_build_incentives(e, venue_name))
+        incentives.extend(_build_incentives(e, venue_name, rules))
     incentives.sort(key=lambda i: i.priority)
 
     tier_counts = Counter(e.loyalty_tier for e in enriched_list)
@@ -528,6 +539,25 @@ def run_customer_agent(
         total_winback_at_risk=winback_at_risk,
         messages_ready=len(sendable),
     )
+
+
+def get_incentives_for_customer(
+    report: CustomerAgentReport,
+    customer_ref: str,
+) -> list[CustomerIncentive]:
+    """Return draft incentives for a single guest."""
+    return [i for i in report.incentives if i.customer_ref == customer_ref]
+
+
+def get_customer_profile(
+    report: CustomerAgentReport,
+    customer_ref: str,
+) -> EnrichedCustomer | None:
+    """Return enriched profile for a single guest."""
+    for c in report.customers:
+        if c.profile.customer_ref == customer_ref:
+            return c
+    return None
 
 
 def link_qr_scan(

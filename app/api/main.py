@@ -1,53 +1,24 @@
-"""FastAPI service — QR scan registration and incentive message dispatch."""
+"""FastAPI service — QR guest registration and merchant Customer Agent control."""
 
 from __future__ import annotations
-
-import os
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.customer import link_qr_scan, run_customer_agent
-from app.ingest import load_dataset
-from app.ingest.loader import load_customers, save_customers
-from app.models.canonical import LoyaltyCustomer
-from app.services.messaging import ConsoleMessageDispatcher, DispatchReport, FileOutboxDispatcher, dispatch_incentives
-
-def _data_dir() -> Path:
-    return Path(os.environ.get(
-        "ASAAN_DATA_DIR",
-        Path(__file__).resolve().parent.parent.parent / "data",
-    ))
-
-
-def _outbox_dir() -> Path:
-    return Path(os.environ.get(
-        "ASAAN_OUTBOX_DIR",
-        Path(__file__).resolve().parent.parent.parent / "output",
-    ))
-
-
-VENUE_NAME = os.environ.get("ASAAN_VENUE_NAME", "Sugar Rush")
+from app.api.deps import (
+    VENUE_NAME,
+    build_merchant_dashboard,
+    load_orders,
+    load_registry,
+    load_rules,
+    registry_path,
+)
+from app.api.merchant import router as merchant_router
+from app.ingest.loader import save_customers
 
 app = FastAPI(title="Asaan Intelligence API", version="0.1.0")
-
-
-def _registry_path() -> Path:
-    return _data_dir() / "customers.csv"
-
-
-def _load_registry() -> dict[str, LoyaltyCustomer]:
-    return load_customers(_registry_path())
-
-
-def _load_orders():
-    d = _data_dir()
-    return load_dataset(
-        d / "sales_detail.csv",
-        d / "menu.csv",
-        d / "staff.csv",
-    )
+app.include_router(merchant_router)
 
 
 class QRScanRequest(BaseModel):
@@ -67,15 +38,7 @@ class QRScanResponse(BaseModel):
 
 
 class DispatchRequest(BaseModel):
-    limit: int | None = Field(default=10, ge=1, le=100)
-    require_phone: bool = True
-
-
-class DispatchResponse(BaseModel):
-    sent: int
-    skipped: int
-    failed: int
-    messages: list[dict]
+    customer_refs: list[str] = Field(min_length=1)
 
 
 @app.get("/health")
@@ -86,7 +49,7 @@ def health():
 @app.post("/qr/scan", response_model=QRScanResponse)
 def qr_scan(req: QRScanRequest):
     """Register or update a guest from a QR scan — persists to customers.csv."""
-    registry = _load_registry()
+    registry = load_registry()
     entry = link_qr_scan(
         registry,
         qr_token=req.qr_token,
@@ -96,7 +59,7 @@ def qr_scan(req: QRScanRequest):
         channel=req.channel,
     )
     entry.opted_in = req.opted_in
-    save_customers(_registry_path(), registry)
+    save_customers(registry_path(), registry)
     return QRScanResponse(
         customer_ref=entry.customer_ref,
         qr_token=entry.qr_token,
@@ -108,52 +71,38 @@ def qr_scan(req: QRScanRequest):
 @app.get("/qr/lookup/{qr_token}")
 def qr_lookup(qr_token: str):
     """Resolve a QR token to a customer profile."""
-    registry = _load_registry()
+    registry = load_registry()
     for c in registry.values():
         if c.qr_token == qr_token:
             return c.model_dump()
     raise HTTPException(status_code=404, detail="QR token not found")
 
 
-@app.post("/messages/dispatch", response_model=DispatchResponse)
-def messages_dispatch(req: DispatchRequest):
-    """Run Customer Agent and dispatch ready incentive messages."""
-    orders, menu, staff = _load_orders()
-    registry = _load_registry()
-    report = run_customer_agent(orders, menu, staff, registry, venue_name=VENUE_NAME)
+@app.post("/messages/dispatch")
+def messages_dispatch_deprecated(req: DispatchRequest):
+    """Deprecated — use POST /merchant/incentives/approve instead."""
+    from app.agents.merchant_customer import approve_and_send
+    from app.api.deps import outbox_path
 
-    outbox = _outbox_dir() / "messages_outbox.jsonl"
-    dispatcher = FileOutboxDispatcher(outbox, ConsoleMessageDispatcher())
-    result: DispatchReport = dispatch_incentives(
-        report.incentives,
-        dispatcher,
-        require_phone=req.require_phone,
-        limit=req.limit,
-    )
-
-    all_msgs = result.sent + result.skipped + result.failed
-    return DispatchResponse(
-        sent=len(result.sent),
-        skipped=len(result.skipped),
-        failed=len(result.failed),
-        messages=[{
-            "customer_ref": m.customer_ref,
-            "display_name": m.display_name,
-            "channel": m.channel,
-            "phone": m.phone,
-            "incentive_type": m.incentive_type,
-            "status": m.status,
-            "message": m.message[:200],
-        } for m in all_msgs],
-    )
+    dash = build_merchant_dashboard()
+    sent, skipped = approve_and_send(dash, req.customer_refs, outbox_path())
+    return {
+        "deprecated": True,
+        "use_instead": "POST /merchant/incentives/approve",
+        "sent": len(sent),
+        "skipped": len(skipped),
+    }
 
 
 @app.get("/customer/report/summary")
 def customer_report_summary():
-    """Return Customer Agent summary JSON for dashboards."""
-    orders, menu, staff = _load_orders()
-    registry = _load_registry()
-    report = run_customer_agent(orders, menu, staff, registry, venue_name=VENUE_NAME)
+    """Return Customer Agent summary JSON (legacy guest-facing dashboard)."""
+    orders, menu, staff = load_orders()
+    registry = load_registry()
+    rules = load_rules()
+    report = run_customer_agent(
+        orders, menu, staff, registry, venue_name=VENUE_NAME, rules=rules,
+    )
     return {
         "venue_name": report.venue_name,
         "tagline": report.tagline,
@@ -163,6 +112,7 @@ def customer_report_summary():
         "incentives_count": len(report.incentives),
         "messages_ready": report.messages_ready,
         "total_winback_at_risk": report.total_winback_at_risk,
+        "merchant_dashboard": "/merchant/dashboard",
         "top_lapse_alerts": [
             {
                 "customer_ref": a.customer_ref,

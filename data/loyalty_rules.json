@@ -1,0 +1,10 @@
+{
+  "milestone_visit_interval": 5,
+  "milestone_discount_pct": 10,
+  "winback_lapsed_discount_pct": 15,
+  "winback_lapsing_discount_pct": 10,
+  "corporate_discount_pct": 5,
+  "streak_window_days": 7,
+  "streak_min_visits": 3,
+  "streak_reward": "complimentary dessert on your next visit"
+}

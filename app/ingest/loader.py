@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections import defaultdict
 from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from app.models.canonical import LineItem, LoyaltyCustomer, MenuItem, Order, Payment, Review, Staff
+from app.models.canonical import (
+    LineItem,
+    LoyaltyCustomer,
+    LoyaltyRules,
+    MenuItem,
+    Order,
+    Payment,
+    Review,
+    Staff,
+)
 from app.ingest.mappings import cafe_generic as default_mapping
 
 CUSTOMER_CSV_FIELDS = ["customer_ref", "qr_token", "display_name", "phone", "channel", "opted_in"]
@@ -167,6 +177,22 @@ def save_customers(
                 m["channel"]: c.channel,
                 m["opted_in"]: "true" if c.opted_in else "false",
             })
+
+
+def load_loyalty_rules(path: Path) -> LoyaltyRules:
+    """Load merchant loyalty rules. Returns defaults if file missing."""
+    if not path.exists():
+        return LoyaltyRules()
+    with open(path, encoding="utf-8") as f:
+        return LoyaltyRules.model_validate(json.load(f))
+
+
+def save_loyalty_rules(path: Path, rules: LoyaltyRules) -> None:
+    """Persist merchant loyalty rules to JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rules.model_dump(), f, indent=2)
+        f.write("\n")
 
 
 def load_dataset(
