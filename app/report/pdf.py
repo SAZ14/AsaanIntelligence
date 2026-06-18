@@ -1,13 +1,15 @@
-"""Phone-friendly PDF audit report — zero dependencies.
+"""Phone-friendly PDF audit report — zero dependencies, "Asaan Intelligence" style.
 
-HTML reports don't open nicely on a phone, so this renders the same audit as a
-clean A4 PDF using a tiny hand-rolled writer over the 14 standard PDF fonts
-(Helvetica / Helvetica-Bold for prose, Courier for aligned tables). No external
-libraries, so it builds anywhere.
+HTML reports don't open nicely on a phone, so this renders the audit as a clean,
+branded A4 PDF using a tiny hand-rolled writer over the standard PDF fonts
+(Helvetica / Helvetica-Bold / Courier) plus filled rectangles for colour. No
+external libraries, so it builds anywhere.
 
-``build_audit_pdf(...)`` returns the PDF bytes; ``write_audit_pdf(...)`` saves
-them. The layout covers the owner essentials: headline leakage & profit, profit
-& reconciliation, leakage breakdown, priority actions, and team integrity.
+Design: green Asaan Intelligence header, KPI cards, a factual "bottom line",
+leakage bars, colour-coded priority actions, and a team-integrity table. The
+copy is generated from the exact figures — no filler.
+
+``build_audit_pdf(...)`` returns the bytes; ``write_audit_pdf(...)`` saves them.
 """
 
 from __future__ import annotations
@@ -23,13 +25,24 @@ PAGE_W, PAGE_H = 595, 842  # A4 in points
 MARGIN = 50
 USABLE_W = PAGE_W - 2 * MARGIN
 
+# ── Asaan Intelligence palette ──
+GREEN_DARK = (11, 94, 79)     # brand deep green
+GREEN = (22, 163, 74)         # accent green
+GREEN_MID = (15, 124, 90)
+GREEN_LT = (232, 245, 238)    # tint
+INK = (26, 32, 28)
+MUTED = (107, 114, 128)
+RED = (192, 57, 43)
+AMBER = (217, 119, 6)
+WHITE = (255, 255, 255)
+TRACK = (228, 231, 235)
+
 
 def _money(v: float) -> str:
     return f"PKR {v:,.0f}"
 
 
 def _sanitize(s: str) -> str:
-    # Standard PDF fonts are Latin-1; drop anything outside it (e.g. emoji).
     return str(s).encode("latin-1", "ignore").decode("latin-1")
 
 
@@ -37,16 +50,25 @@ def _escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-class _PDF:
-    """Minimal text PDF: pages of positioned text lines with auto page-breaks."""
+def _rg(c) -> str:
+    return f"{c[0] / 255:.3f} {c[1] / 255:.3f} {c[2] / 255:.3f}"
 
+
+class _PDF:
     def __init__(self) -> None:
         self._pages: list[str] = []
         self._ops: list[str] = []
         self.y = PAGE_H - MARGIN
 
-    # ── page handling ──
+    # ── pages ──
+    def _footer(self) -> None:
+        self._ops.append(f"{_rg(TRACK)} rg {MARGIN} 44 {USABLE_W} 0.8 re f\n")
+        self._abs(MARGIN, 30, "Asaan Intelligence  -  Restaurant Integrity", "F1", 8, MUTED)
+        self._abs_right(PAGE_W - MARGIN, 30, f"{date.today():%d %b %Y}", "F1", 8, MUTED)
+
     def _flush(self) -> None:
+        if self._ops:
+            self._footer()
         self._pages.append("".join(self._ops))
         self._ops = []
         self.y = PAGE_H - MARGIN
@@ -58,56 +80,89 @@ class _PDF:
         self.y -= dy
 
     def _ensure(self, height: float) -> None:
-        if self.y - height < MARGIN:
+        if self.y - height < MARGIN + 20:
             self.page_break()
 
-    # ── drawing ──
-    def _draw(self, text: str, x: float, font: str, size: int) -> None:
+    # ── primitives ──
+    def rect(self, x: float, y: float, w: float, h: float, color) -> None:
+        self._ops.append(f"{_rg(color)} rg {x:.1f} {y:.1f} {w:.1f} {h:.1f} re f\n")
+
+    def _abs(self, x: float, y: float, text: str, font: str, size: int, color) -> None:
         t = _escape(_sanitize(text))
-        self._ops.append(f"BT /{font} {size} Tf 1 0 0 1 {x:.1f} {self.y:.1f} Tm ({t}) Tj ET\n")
+        self._ops.append(
+            f"{_rg(color)} rg BT /{font} {size} Tf 1 0 0 1 {x:.1f} {y:.1f} Tm ({t}) Tj ET\n"
+        )
+
+    def _abs_right(self, right: float, y: float, text: str, font: str, size: int, color) -> None:
+        cw = 0.6 if font == "F3" else (0.55 if font == "F2" else 0.5)
+        w = len(_sanitize(text)) * cw * size
+        self._abs(right - w, y, text, font, size, color)
 
     def _wrap(self, text: str, size: int, char_w: float, indent: float) -> list[str]:
         max_chars = max(8, int((USABLE_W - indent) / (char_w * size)))
-        words = text.split(" ")
-        lines: list[str] = []
-        cur = ""
-        for w in words:
+        out, cur = [], ""
+        for w in text.split(" "):
             cand = w if not cur else f"{cur} {w}"
             if len(cand) <= max_chars:
                 cur = cand
             else:
                 if cur:
-                    lines.append(cur)
+                    out.append(cur)
                 cur = w
         if cur:
-            lines.append(cur)
-        return lines or [""]
+            out.append(cur)
+        return out or [""]
 
-    def line(self, text: str, size: int = 11, bold: bool = False,
-             indent: float = 0, mono: bool = False, gap: float = 1.5) -> None:
+    def line(self, text: str, size: int = 11, bold: bool = False, indent: float = 0,
+             mono: bool = False, gap: float = 1.5, color=INK) -> None:
         font = "F3" if mono else ("F2" if bold else "F1")
         char_w = 0.6 if mono else (0.55 if bold else 0.5)
         for chunk in self._wrap(text, size, char_w, indent):
             self._ensure(size * gap)
-            self._draw(chunk, MARGIN + indent, font, size)
+            self._abs(MARGIN + indent, self.y, chunk, font, size, color)
             self.y -= size * gap
 
-    def heading(self, text: str, size: int = 13) -> None:
-        self.space(6)
-        self._ensure(size * 1.6)
-        self._draw(_sanitize(text).upper(), MARGIN, "F2", size)
-        self.y -= size * 0.5
-        self._ensure(2)
-        self._ops.append(f"{MARGIN} {self.y:.1f} m {PAGE_W - MARGIN} {self.y:.1f} l S\n")
-        self.y -= size * 1.0
-
-    def kv(self, label: str, value: str, size: int = 11) -> None:
+    def bullet(self, text: str, size: int = 10) -> None:
         self._ensure(size * 1.5)
-        self._draw(label, MARGIN, "F1", size)
-        # right-align value via a rough width estimate
-        vw = len(_sanitize(value)) * 0.5 * size
-        self._draw(value, PAGE_W - MARGIN - vw, "F2", size)
+        self.rect(MARGIN + 1, self.y + 2, 3, 3, GREEN)
+        for i, chunk in enumerate(self._wrap(text, size, 0.5, 14)):
+            if i:
+                self._ensure(size * 1.4)
+            self._abs(MARGIN + 14, self.y, chunk, "F1", size, INK)
+            self.y -= size * 1.4
+        self.y -= size * 0.2
+
+    def heading(self, text: str, size: int = 12) -> None:
+        self.space(8)
+        self._ensure(size * 2)
+        self.rect(MARGIN, self.y - 2, 16, size, GREEN)
+        self._abs(MARGIN + 24, self.y, _sanitize(text).upper(), "F2", size, GREEN_DARK)
+        self.y -= size * 0.7
+        self.rect(MARGIN, self.y, USABLE_W, 0.8, TRACK)
+        self.y -= size * 1.1
+
+    def kv(self, label: str, value: str, size: int = 11, value_color=INK) -> None:
+        self._ensure(size * 1.6)
+        self._abs(MARGIN, self.y, label, "F1", size, MUTED)
+        self._abs_right(PAGE_W - MARGIN, self.y, value, "F2", size, value_color)
+        self.y -= size * 1.6
+
+    def bar(self, label: str, value: float, maxval: float, color, size: int = 10) -> None:
+        self._ensure(size * 2.6)
+        self._abs(MARGIN, self.y, label, "F1", size, INK)
+        self._abs_right(PAGE_W - MARGIN, self.y, _money(value), "F2", size, color)
+        self.y -= size * 1.15
+        self.rect(MARGIN, self.y, USABLE_W, 6, TRACK)
+        w = USABLE_W * (value / maxval if maxval > 0 else 0)
+        if w > 0:
+            self.rect(MARGIN, self.y, max(w, 1.5), 6, color)
         self.y -= size * 1.5
+
+    def status_row(self, text: str, status_color, size: int = 10) -> None:
+        self._ensure(size * 1.6)
+        self.rect(MARGIN, self.y - 0.5, 7, 7, status_color)
+        self._abs(MARGIN + 14, self.y, text, "F3", size, INK)
+        self.y -= size * 1.6
 
     # ── output ──
     def output(self) -> bytes:
@@ -148,80 +203,168 @@ class _PDF:
         return out
 
 
+# ── content helpers ──
+
+def _header(pdf: _PDF, venue_name: str, period: int) -> None:
+    pdf.rect(0, PAGE_H - 96, PAGE_W, 96, GREEN_DARK)
+    pdf.rect(0, PAGE_H - 100, PAGE_W, 4, GREEN)
+    pdf._abs(MARGIN, PAGE_H - 44, "ASAAN INTELLIGENCE", "F2", 19, WHITE)
+    pdf._abs(MARGIN, PAGE_H - 62, "Restaurant Integrity Report", "F1", 11, GREEN_LT)
+    pdf._abs(MARGIN, PAGE_H - 84, f"{_sanitize(venue_name)}  -  {period}-day period", "F2", 11, WHITE)
+    pdf._abs_right(PAGE_W - MARGIN, PAGE_H - 84, f"{date.today():%d %b %Y}", "F1", 10, GREEN_LT)
+    pdf.y = PAGE_H - 96 - 26
+
+
+def _cards(pdf: _PDF, integ: IntegrityReport, rec: ReconciliationReport) -> None:
+    gap = 12
+    w = (USABLE_W - 2 * gap) / 3
+    h = 66
+    top = pdf.y
+    bottom = top - h
+    cards = [
+        ("MONTHLY LEAKAGE", _money(integ.estimated_leakage_monthly), RED),
+        ("GROSS PROFIT", _money(rec.gross_profit), GREEN),
+        ("REVENUE", _money(rec.gross_collected), GREEN_DARK),
+    ]
+    subs = [
+        f"{integ.estimated_leakage_period:,.0f} this period".replace(",", ","),
+        f"{rec.gross_margin:.0%} margin",
+        f"{period_days(rec)} day total",
+    ]
+    for i, (label, value, accent) in enumerate(cards):
+        x = MARGIN + i * (w + gap)
+        pdf.rect(x, bottom, w, h, GREEN_LT)
+        pdf.rect(x, top - 4, w, 4, accent)
+        pdf._abs(x + 10, top - 20, label, "F2", 8, MUTED)
+        pdf._abs(x + 10, top - 42, value, "F2", 14, accent)
+        pdf._abs(x + 10, top - 56, _sanitize(subs[i]), "F1", 8, MUTED)
+    pdf.y = bottom - 20
+
+
+def period_days(rec: ReconciliationReport) -> int:
+    return rec.period_days or 0
+
+
+def _insights(integ: IntegrityReport, rec: ReconciliationReport) -> list[str]:
+    """Short, strictly factual bottom-line bullets derived from the numbers."""
+    out: list[str] = []
+    bl = integ.venue_baseline
+    staff = integ.staff_integrity
+    total_leak = sum(s.total_leakage for s in staff) or 0.0
+    worst = next((s for s in staff if s.staff_id == integ.worst_offender), None)
+
+    if worst and total_leak > 0:
+        share = worst.total_leakage / total_leak
+        out.append(
+            f"{worst.staff_name} ({worst.staff_id}) accounts for {share:.0%} of all detected "
+            f"leakage - integrity score {worst.integrity_score:.0f}/100, the lowest on the team."
+        )
+        if bl.comp_rate > 0 and worst.comp_rate > bl.comp_rate:
+            out.append(
+                f"Their comp rate of {worst.comp_rate:.1%} is "
+                f"{worst.comp_rate / bl.comp_rate:.1f}x the venue average of {bl.comp_rate:.1%}."
+            )
+        if bl.void_rate > 0 and worst.theft_void_count > 0:
+            out.append(
+                f"{worst.theft_void_count} items were voided after being sent to the kitchen on "
+                f"cash orders - the classic serve, collect cash, void signature."
+            )
+
+    if integ.flagged_events:
+        e = integ.flagged_events[0]
+        out.append(
+            f"Largest single flag: {e.item_name} ({_money(e.value)}) - {e.flag_type.replace('_', ' ')} "
+            f"by {e.staff_name}."
+        )
+
+    if rec.books_balanced:
+        out.append(
+            f"Payments reconcile exactly across {rec.total_orders:,} orders and tax is applied "
+            f"correctly - the loss is behavioural, not a till error."
+        )
+    else:
+        out.append(
+            f"{rec.payment_mismatch_count} payment mismatch(es) and {rec.tax_anomaly_count} tax "
+            f"anomaly(ies) detected - books do not fully reconcile."
+        )
+
+    digital = sum(m.share_pct for m in rec.by_method if m.method != "cash")
+    if digital > 0:
+        out.append(
+            f"{digital:.0%} of revenue is digital; the remaining cash is where leakage concentrates."
+        )
+    return out
+
+
 def build_audit_pdf(
     integrity: IntegrityReport,
     reconciliation: ReconciliationReport,
     venue_name: str = "Restaurant",
     summary: str = "",
 ) -> bytes:
-    rec = reconciliation
-    integ = integrity
+    integ, rec = integrity, reconciliation
     period = rec.period_days or integ.venue_baseline.period_days
     pdf = _PDF()
 
-    # Title
-    pdf.line(venue_name, size=20, bold=True, gap=1.3)
-    pdf.line(f"Integrity Audit  -  {period}-day period  -  generated {date.today():%d %b %Y}",
-             size=10, gap=2.0)
+    _header(pdf, venue_name, period)
+    _cards(pdf, integ, rec)
 
-    # Headline
-    pdf.heading("Headline")
-    pdf.kv("Estimated leakage (monthly)", _money(integ.estimated_leakage_monthly))
-    pdf.kv("Gross profit", f"{_money(rec.gross_profit)}  ({rec.gross_margin:.0%} margin)")
-    pdf.kv("Revenue collected", _money(rec.gross_collected))
-
+    # Bottom line
+    pdf.heading("The Bottom Line")
     if summary:
+        pdf.line(summary, size=10, gap=1.45)
         pdf.space(4)
-        pdf.line(summary, size=10, gap=1.5)
+    for b in _insights(integ, rec):
+        pdf.bullet(b)
 
     # Profit & reconciliation
     pdf.heading("Profit & Reconciliation")
     pdf.kv("Net sales (ex-tax)", _money(rec.net_sales))
-    pdf.kv("COGS (sold)", _money(rec.cogs_sold))
-    pdf.kv("Gross profit", f"{_money(rec.gross_profit)}  ({rec.gross_margin:.0%})")
-    pdf.kv("Wasted COGS (comp / fired-then-voided)", _money(rec.wasted_cogs))
+    pdf.kv("Cost of goods sold", _money(rec.cogs_sold))
+    pdf.kv("Gross profit", f"{_money(rec.gross_profit)}  ({rec.gross_margin:.0%})", value_color=GREEN)
+    pdf.kv("Wasted COGS (comp / fired-then-voided)", _money(rec.wasted_cogs), value_color=AMBER)
     pdf.kv("Tax collected", _money(rec.tax_collected))
-    pdf.kv("Books balanced", "yes" if rec.books_balanced else "NO - needs review")
-    pdf.kv("Payment mismatches", f"{rec.payment_mismatch_count} ({_money(rec.payment_mismatch_abs_value)})")
-    pdf.kv("Tax anomalies", f"{rec.tax_anomaly_count} ({_money(rec.tax_anomaly_value)})")
+    pdf.kv("Books balanced", "YES" if rec.books_balanced else "NO - REVIEW",
+           value_color=GREEN if rec.books_balanced else RED)
+    pdf.space(4)
+    pdf.line(f"{'METHOD':<10}{'ORDERS':>9}{'COLLECTED':>17}{'SHARE':>8}", size=9, mono=True, color=MUTED)
+    for mb in rec.by_method:
+        pdf.line(f"{mb.method:<10}{mb.orders:>9,}{_money(mb.gross_collected):>17}{mb.share_pct:>7.0%}",
+                 size=10, mono=True)
 
-    if rec.by_method:
-        pdf.space(4)
-        pdf.line(f"{'Method':<10}{'Orders':>8}{'Collected':>16}{'Share':>8}", size=10, mono=True)
-        for mb in rec.by_method:
-            pdf.line(f"{mb.method:<10}{mb.orders:>8,}{_money(mb.gross_collected):>16}{mb.share_pct:>7.0%}",
-                     size=10, mono=True)
-
-    # Leakage
-    pdf.heading("Leakage")
-    pdf.kv("Estimated (this period)", _money(integ.estimated_leakage_period))
-    pdf.kv("Estimated (monthly)", _money(integ.estimated_leakage_monthly))
-    pdf.kv("Theft voids", _money(integ.suspected_theft_value))
-    pdf.kv("Excess comps", _money(integ.excess_comp_value))
-    pdf.kv("Excess discounts", _money(integ.excess_discount_value))
+    # Leakage breakdown
+    pdf.heading("Where The Money Leaks")
+    maxv = max(integ.suspected_theft_value, integ.excess_comp_value,
+               integ.excess_discount_value, 1.0)
+    pdf.bar("Theft voids (cash, voided after firing)", integ.suspected_theft_value, maxv, RED)
+    pdf.bar("Excess comps (above venue baseline)", integ.excess_comp_value, maxv, AMBER)
+    pdf.bar("Excess discounts (above venue baseline)", integ.excess_discount_value, maxv, GREEN_MID)
+    pdf.space(2)
+    pdf.kv("Estimated leakage / month", _money(integ.estimated_leakage_monthly), value_color=RED)
 
     # Priority actions
     findings = build_findings(integ, rec)
     if findings:
         pdf.heading("Priority Actions")
-        pdf.line(f"{'#':<3}{'Severity':<9}{'Issue':<16}{'Who':<18}{'Impact':>12}", size=10, mono=True)
-        for f in findings[:8]:
+        sev_color = {"high": RED, "medium": AMBER, "low": GREEN_MID}
+        for f in findings[:7]:
             issue = f.category.replace("_", " ")
-            pdf.line(f"{f.rank:<3}{f.severity:<9}{issue:<16}{f.subject[:17]:<18}{_money(f.monetary_impact):>12}",
-                     size=10, mono=True)
+            row = f"{f.rank}. {f.severity.upper():6} {issue:<15} {f.subject[:20]:<20} {_money(f.monetary_impact):>12}"
+            pdf.status_row(row, sev_color.get(f.severity, GREEN_MID))
+            if f.recommended_action:
+                pdf.line(f.recommended_action, size=9, indent=14, color=MUTED, gap=1.4)
 
     # Team integrity
     roster = sorted(integ.staff_integrity, key=lambda s: s.integrity_score)
     if roster:
         pdf.heading("Team Integrity (worst to best)")
-        pdf.line(f"{'Staff':<22}{'Score':>7}{'Leakage':>14}", size=10, mono=True)
+        pdf.line(f"     {'STAFF':<22}{'SCORE':>7}{'LEAKAGE':>15}", size=9, mono=True, color=MUTED)
         for s in roster:
+            color = RED if s.integrity_score < 90 else (AMBER if s.integrity_score < 99 else GREEN)
             who = f"{s.staff_name} ({s.staff_id})"
             leak = _money(s.total_leakage) if s.total_leakage > 0 else "-"
-            pdf.line(f"{who:<22}{s.integrity_score:>6.0f}{leak:>14}", size=10, mono=True)
+            pdf.status_row(f"{who:<22}{s.integrity_score:>7.0f}{leak:>15}", color)
 
-    pdf.space(10)
-    pdf.line("Generated by AsaanPay Integrity Agent", size=9, gap=1.0)
     return pdf.output()
 
 
