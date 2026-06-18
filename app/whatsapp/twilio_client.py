@@ -45,19 +45,29 @@ def _ensure_whatsapp(number: str) -> str:
     return number if number.startswith("whatsapp:") else f"whatsapp:{number}"
 
 
-def send_whatsapp(to_number: str, body: str) -> str:
-    """Send a WhatsApp message to the owner. Returns the message SID."""
+def send_whatsapp(to_number: str, body: str, media_url: str | None = None) -> str:
+    """Send a WhatsApp message to the owner. Returns the message SID.
+
+    ``media_url`` attaches a file (e.g. a hosted PDF report). Twilio fetches it,
+    so it must be a publicly reachable URL.
+    """
     sid, token, sender = _creds()
     to = _ensure_whatsapp(to_number)
 
     if _TwilioClient is not None:
         client = _TwilioClient(sid, token)
-        msg = client.messages.create(from_=sender, to=to, body=body)
+        kwargs = {"from_": sender, "to": to, "body": body}
+        if media_url:
+            kwargs["media_url"] = [media_url]
+        msg = client.messages.create(**kwargs)
         return msg.sid
 
     # Dependency-free fallback: raw REST call.
     url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
-    data = parse.urlencode({"From": sender, "To": to, "Body": body}).encode()
+    fields = {"From": sender, "To": to, "Body": body}
+    if media_url:
+        fields["MediaUrl"] = media_url
+    data = parse.urlencode(fields).encode()
     auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
     req = request.Request(url, data=data, headers={
         "Authorization": f"Basic {auth}",
