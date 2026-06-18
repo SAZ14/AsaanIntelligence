@@ -23,7 +23,12 @@ from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, Request, Response
 
+from app.agents.integrity_agent import run_integrity_agent
+from app.pos import build_connector
+from app.report.pdf import build_audit_pdf
 from app.whatsapp.service import IntegrityWhatsAppService
+
+REPORT_COMMANDS = {"report", "pdf", "document"}
 
 try:  # optional: only needed for signature verification
     from twilio.request_validator import RequestValidator
@@ -31,10 +36,11 @@ except Exception:  # pragma: no cover
     RequestValidator = None  # type: ignore
 
 
-def _twiml(message: str) -> str:
+def _twiml(message: str, media_urls: list[str] | None = None) -> str:
+    media = "".join(f"<Media>{escape(u)}</Media>" for u in (media_urls or []))
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f"<Response><Message>{escape(message)}</Message></Response>"
+        f"<Response><Message><Body>{escape(message)}</Body>{media}</Message></Response>"
     )
 
 
@@ -55,6 +61,25 @@ def create_app(service: IntegrityWhatsAppService | None = None) -> FastAPI:
     def health() -> dict:
         return {"status": "ok"}
 
+    @app.get("/report/{venue}.pdf")
+    def report_pdf(venue: str) -> Response:
+        if venue not in svc.restaurants:
+            return Response(status_code=404, content="unknown venue")
+        config = svc.restaurants[venue]
+        data = build_connector(config).fetch()
+        r = run_integrity_agent(
+            data.orders, data.menu, data.staff,
+            venue_name=config.venue_name, use_llm=False,
+        )
+        pdf = build_audit_pdf(
+            r.integrity, r.reconciliation,
+            venue_name=config.venue_name, summary=r.executive_summary,
+        )
+        return Response(
+            content=pdf, media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="audit_{venue}.pdf"'},
+        )
+
     @app.post("/whatsapp")
     async def whatsapp(request: Request) -> Response:
         # Twilio posts application/x-www-form-urlencoded; parse it from the raw
@@ -67,7 +92,17 @@ def create_app(service: IntegrityWhatsAppService | None = None) -> FastAPI:
         from_number = params.get("From", "")
         body = params.get("Body", "")
         reply = svc.handle_message(from_number, body)
-        return Response(content=_twiml(reply), media_type="application/xml")
+
+        # If the owner asked for the PDF, attach it as media. Twilio fetches the
+        # URL, so this host must be publicly reachable.
+        media: list[str] = []
+        first = body.strip().lower().split()
+        if first and first[0] in REPORT_COMMANDS:
+            venue = svc.resolve_venue(from_number)
+            if venue and venue in svc.restaurants:
+                media = [f"{str(request.base_url).rstrip('/')}/report/{venue}.pdf"]
+
+        return Response(content=_twiml(reply, media), media_type="application/xml")
 
     return app
 

@@ -172,3 +172,30 @@ def test_webhook_returns_twiml():
     assert "application/xml" in resp.headers["content-type"]
     assert "<Response><Message>" in resp.text
     assert "Profit" in resp.text
+
+
+def test_report_command_attaches_pdf_media():
+    pytest.importorskip("fastapi")
+    starlette_testclient = pytest.importorskip("starlette.testclient")
+    from app.whatsapp.webhook import create_app
+
+    client = starlette_testclient.TestClient(create_app(_service()))
+    resp = client.post("/whatsapp", data={"From": "whatsapp:+923001234567", "Body": "report"})
+    assert resp.status_code == 200
+    assert "<Media>" in resp.text
+    assert "/report/roastery.pdf" in resp.text
+
+
+def test_pdf_endpoint_serves_pdf():
+    pytest.importorskip("fastapi")
+    starlette_testclient = pytest.importorskip("starlette.testclient")
+    from app.whatsapp.webhook import create_app
+
+    client = starlette_testclient.TestClient(create_app(_service()))
+    resp = client.get("/report/roastery.pdf")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF-1.")
+
+    missing = client.get("/report/nope.pdf")
+    assert missing.status_code == 404

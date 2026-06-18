@@ -27,6 +27,7 @@ HELP_TEXT = (
     "• *findings* – top issues to act on\n"
     "• *staff* – team integrity scores\n"
     "• *staff <name>* – drill into one person\n"
+    "• *report* – full PDF audit\n"
     "• *refresh* – re-pull latest POS data\n"
     "Or just ask, e.g. \"who is my worst staff member?\""
 )
@@ -218,6 +219,9 @@ class IntegrityWhatsAppService:
             if cmd in ("refresh", "reload", "update"):
                 self.get_report(venue_key, force=True)
                 return "🔄 Re-pulled the latest POS data. Ask away."
+            if cmd in ("report", "pdf", "document"):
+                # The webhook attaches the generated PDF as media.
+                return f"📄 Here's your full PDF audit for {self.restaurants[venue_key].venue_name}."
 
             report = self.get_report(venue_key)
 
