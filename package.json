@@ -1,0 +1,12 @@
+{
+  "name": "asaanpay-audit-scripts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node helper scripts (Apify Instagram scraping test)",
+  "scripts": {
+    "test:apify": "node scripts/test_apify_instagram.js"
+  },
+  "dependencies": {
+    "apify-client": "^2.23.4"
+  }
+}
