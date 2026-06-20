@@ -5,3 +5,7 @@ __pycache__/
 dist/
 .venv/
 output/
+
+# secrets & per-install config (keep the .example versions)
+.env
+venues.toml

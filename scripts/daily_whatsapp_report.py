@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""End-of-day inventory report for the owner, delivered over WhatsApp (Twilio).
+"""End-of-day inventory report for owners, delivered over WhatsApp (Twilio).
 
-Run this once a day (e.g. from cron at closing time). By default it prints the
-message it would send (dry run). Pass --send to actually deliver it via Twilio
-using the credentials in the environment (see app/notify/whatsapp.py).
+Multi-venue: reads venues.toml and sends each owner their own venue's report.
+If venues.toml is missing it falls back to the single `data/` folder.
+
+By default it prints the messages it would send (dry run). Pass --send to
+deliver via Twilio (account credentials come from the environment; each venue's
+recipient comes from venues.toml).
 
 Usage:
-  python scripts/daily_whatsapp_report.py                 # dry run (print only)
-  python scripts/daily_whatsapp_report.py --send          # send via Twilio
+  python scripts/daily_whatsapp_report.py                      # dry run, all venues
+  python scripts/daily_whatsapp_report.py --send               # send all venues
+  python scripts/daily_whatsapp_report.py --venue "Sugar Rush" # just one venue
   python scripts/daily_whatsapp_report.py --as-of 2026-05-31   # pick the day
 """
 
@@ -16,8 +20,10 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
+from app.config import VenueConfig, load_venues
 from app.ingest import load_dataset
 from app.ingest.loader import load_ingredients, load_recipes, load_stock_receipts
 from app.agents.inventory import (
@@ -26,54 +32,74 @@ from app.agents.inventory import (
     run_inventory_agent,
 )
 
-DATA = Path(__file__).resolve().parent.parent / "data"
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--send", action="store_true",
-                        help="actually send via Twilio (otherwise print only)")
-    parser.add_argument("--as-of", metavar="YYYY-MM-DD",
-                        help="day to report on (default: latest day in the data)")
-    args = parser.parse_args()
-
+def build_message(data_dir: Path, venue_name: str, as_of_arg: str | None) -> str:
     orders, menu, staff = load_dataset(
-        DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",
+        data_dir / "sales_detail.csv", data_dir / "menu.csv", data_dir / "staff.csv",
     )
-    ingredients = load_ingredients(DATA / "ingredients.csv")
-    recipes = load_recipes(DATA / "recipes.csv")
-    receipts = load_stock_receipts(DATA / "stock_receipts.csv")
+    ingredients = load_ingredients(data_dir / "ingredients.csv")
+    recipes = load_recipes(data_dir / "recipes.csv")
+    receipts = load_stock_receipts(data_dir / "stock_receipts.csv")
 
-    if args.as_of:
-        as_of = datetime.strptime(args.as_of, "%Y-%m-%d").date()
+    if as_of_arg:
+        as_of = datetime.strptime(as_of_arg, "%Y-%m-%d").date()
     elif orders:
         as_of = max(o.datetime.date() for o in orders)
     else:
         as_of = date.today()
 
     report = run_inventory_agent(
-        orders, menu, ingredients, recipes, receipts, with_reorder_plan=False,
+        orders, menu, ingredients, recipes, receipts,
+        venue_name=venue_name, with_reorder_plan=False,
     )
     movement = compute_daily_movement(orders, recipes, ingredients, as_of)
-    message = render_whatsapp_report(report, movement)
+    return render_whatsapp_report(report, movement)
 
-    print("─" * 50)
-    print(message)
-    print("─" * 50)
-    print(f"({len(message)} chars)")
 
-    if args.send:
-        from app.notify import send_whatsapp
-        try:
-            sid = send_whatsapp(message)
-            print(f"\nSent via Twilio. Message SID: {sid}")
-        except Exception as e:
-            print(f"\nNOT sent: {e}")
-            print("Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, "
-                  "OWNER_WHATSAPP_TO and install twilio (pip install twilio).")
-            sys.exit(1)
+def venues_to_process(args) -> list[VenueConfig]:
+    config_path = ROOT / "venues.toml"
+    if config_path.exists():
+        venues = load_venues(config_path)
     else:
-        print("\nDry run — pass --send to deliver via Twilio.")
+        # Fall back to the single bundled data/ folder.
+        venues = [VenueConfig(name="Sugar Rush", data_dir="data")]
+    if args.venue:
+        venues = [v for v in venues if v.name.lower() == args.venue.lower()]
+        if not venues:
+            sys.exit(f"No venue named {args.venue!r} in venues.toml")
+    return venues
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--send", action="store_true",
+                        help="actually send via Twilio (otherwise print only)")
+    parser.add_argument("--venue", help="only process this venue (by name)")
+    parser.add_argument("--as-of", metavar="YYYY-MM-DD",
+                        help="day to report on (default: latest day in the data)")
+    args = parser.parse_args()
+
+    for venue in venues_to_process(args):
+        data_dir = venue.resolve_dir(ROOT)
+        message = build_message(data_dir, venue.name, args.as_of)
+
+        print("═" * 50)
+        print(f"VENUE: {venue.name}  →  {venue.owner_whatsapp or '(no number set)'}")
+        print("─" * 50)
+        print(message)
+        print("─" * 50)
+        print(f"({len(message)} chars)")
+
+        if args.send:
+            from app.notify import send_whatsapp
+            try:
+                sid = send_whatsapp(message, to=venue.owner_whatsapp or None)
+                print(f"Sent. Message SID: {sid}")
+            except Exception as e:
+                print(f"NOT sent for {venue.name}: {e}")
+        else:
+            print("Dry run — pass --send to deliver via Twilio.")
+        print()
 
 
 if __name__ == "__main__":
