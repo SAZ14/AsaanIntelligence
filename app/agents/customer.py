@@ -29,7 +29,7 @@ import json
 import os
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote
@@ -76,8 +76,9 @@ class LoyaltyCard:
     stamps: int = 0               # stamps on the CURRENT card
     total_scans: int = 0          # lifetime scans
     created_at: str = ""
-    updated_at: str = ""
+    updated_at: str = ""              # ISO timestamp of the last scan
     rewards: list[Reward] = field(default_factory=list)
+    last_nudged_at: str | None = None  # last re-engagement message (anti-spam)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -92,6 +93,7 @@ class LoyaltyCard:
             created_at=d.get("created_at", ""),
             updated_at=d.get("updated_at", ""),
             rewards=[Reward(**r) for r in d.get("rewards", [])],
+            last_nudged_at=d.get("last_nudged_at"),
         )
 
 
@@ -194,10 +196,15 @@ class SqliteCardStore:
                     created_at    TEXT,
                     updated_at    TEXT,
                     rewards       TEXT NOT NULL DEFAULT '[]',
+                    last_nudged_at TEXT,
                     PRIMARY KEY (restaurant_id, phone)
                 )
                 """
             )
+            # Migrate databases created before last_nudged_at existed.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)").fetchall()}
+            if "last_nudged_at" not in cols:
+                conn.execute("ALTER TABLE cards ADD COLUMN last_nudged_at TEXT")
             conn.execute("PRAGMA journal_mode=WAL")  # better concurrent reads/writes
             conn.commit()
             self._ready = True
@@ -213,6 +220,7 @@ class SqliteCardStore:
             created_at=row["created_at"] or "",
             updated_at=row["updated_at"] or "",
             rewards=[Reward(**r) for r in json.loads(row["rewards"])],
+            last_nudged_at=row["last_nudged_at"],
         )
 
     def get(self, phone: str) -> LoyaltyCard | None:
@@ -232,20 +240,23 @@ class SqliteCardStore:
             conn.execute(
                 """
                 INSERT INTO cards (restaurant_id, phone, tier_index, stamps,
-                                   total_scans, created_at, updated_at, rewards)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   total_scans, created_at, updated_at, rewards,
+                                   last_nudged_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(restaurant_id, phone) DO UPDATE SET
-                    tier_index  = excluded.tier_index,
-                    stamps      = excluded.stamps,
-                    total_scans = excluded.total_scans,
-                    created_at  = excluded.created_at,
-                    updated_at  = excluded.updated_at,
-                    rewards     = excluded.rewards
+                    tier_index    = excluded.tier_index,
+                    stamps        = excluded.stamps,
+                    total_scans   = excluded.total_scans,
+                    created_at    = excluded.created_at,
+                    updated_at    = excluded.updated_at,
+                    rewards       = excluded.rewards,
+                    last_nudged_at = excluded.last_nudged_at
                 """,
                 (
                     self.restaurant_id, card.phone, card.tier_index, card.stamps,
                     card.total_scans, card.created_at, card.updated_at,
                     json.dumps([asdict(r) for r in card.rewards]),
+                    card.last_nudged_at,
                 ),
             )
             conn.commit()
@@ -418,6 +429,124 @@ def build_wa_link(business_number: str, prefilled_text: str = DEFAULT_PREFILL) -
     """
     digits = "".join(ch for ch in business_number.replace("whatsapp:", "") if ch.isdigit())
     return f"https://wa.me/{digits}?text={quote(prefilled_text)}"
+
+
+# ── Re-engagement & VIP / events ──
+#
+# Built on the data every scan already records (total_scans + updated_at per
+# customer per venue). Two jobs:
+#   1. Win back loyal regulars who've gone quiet — a "we miss you" nudge.
+#   2. Surface the most loyal customers so the venue can invite them to events.
+#
+# NOTE ON WHATSAPP: these are PROACTIVE messages, usually sent days after the
+# customer's last message, i.e. outside WhatsApp's 24h service window — so in
+# production they must be sent as a Meta-approved message *template*. The code
+# is identical; you just register the wording as a template in Twilio. The
+# instant stamp reply (webhook) needs no template; only these pushes do.
+
+DEFAULT_LOYAL_MIN_SCANS = 3      # "loyal" = at least this many lifetime scans
+DEFAULT_INACTIVE_DAYS = 5        # quiet for this long → eligible for a nudge
+DEFAULT_NUDGE_COOLDOWN_DAYS = 5  # don't nudge the same person again this soon
+
+
+def _iso_to_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
+
+
+def days_since_last_scan(card: LoyaltyCard, today: date | None = None) -> int | None:
+    today = today or date.today()
+    last = _iso_to_date(card.updated_at)
+    return (today - last).days if last else None
+
+
+def is_loyal(card: LoyaltyCard, min_scans: int = DEFAULT_LOYAL_MIN_SCANS) -> bool:
+    return card.total_scans >= min_scans
+
+
+@dataclass
+class EngagementCandidate:
+    card: LoyaltyCard
+    days_inactive: int
+    message: str
+
+
+def format_miss_you_message(venue: str, days_inactive: int | None = None) -> str:
+    gap = f"It's been {days_inactive} days — " if days_inactive else ""
+    return (
+        f"Hey, we miss you at {venue}! \U0001F60A\n"
+        f"{gap}come back in for the best meal of your day. Your loyalty card is "
+        "waiting — your next scan gets you closer to a free treat. \U0001F381"
+    )
+
+
+def format_event_invite(venue: str, event_details: str) -> str:
+    return (
+        f"\U0001F389 You're one of {venue}'s most loyal regulars — so you're invited!\n"
+        f"{event_details}\n"
+        "Reply YES to reserve your spot. See you there!"
+    )
+
+
+def at_risk_loyal_customers(
+    program: LoyaltyProgram,
+    *,
+    min_scans: int = DEFAULT_LOYAL_MIN_SCANS,
+    inactive_days: int = DEFAULT_INACTIVE_DAYS,
+    cooldown_days: int = DEFAULT_NUDGE_COOLDOWN_DAYS,
+    today: date | None = None,
+) -> list[EngagementCandidate]:
+    """Loyal customers who've gone quiet and aren't on nudge cooldown.
+
+    Sorted most-loyal first. Pure read — sending/marking is a separate step so
+    you can preview before committing.
+    """
+    today = today or date.today()
+    out: list[EngagementCandidate] = []
+    for card in program.store.all():
+        if not is_loyal(card, min_scans):
+            continue
+        gap = days_since_last_scan(card, today)
+        if gap is None or gap < inactive_days:
+            continue
+        nudged = _iso_to_date(card.last_nudged_at)
+        if nudged is not None and (today - nudged).days < cooldown_days:
+            continue
+        out.append(EngagementCandidate(card, gap, format_miss_you_message(program.venue_name, gap)))
+    out.sort(key=lambda c: c.card.total_scans, reverse=True)
+    return out
+
+
+def send_reengagement(
+    program: LoyaltyProgram,
+    notifier,
+    candidates: list[EngagementCandidate],
+    *,
+    today: date | None = None,
+) -> list:
+    """Send each nudge and stamp ``last_nudged_at`` so they aren't re-spammed."""
+    today = today or date.today()
+    sent = []
+    for c in candidates:
+        sent.append(notifier.send(c.card.phone, c.message))
+        c.card.last_nudged_at = today.isoformat()
+        program.store.put(c.card)
+    return sent
+
+
+def top_loyal_customers(program: LoyaltyProgram, n: int = 10) -> list[LoyaltyCard]:
+    """The most loyal customers (by lifetime scans, then rewards earned)."""
+    cards = program.store.all()
+    cards.sort(key=lambda c: (c.total_scans, len(c.rewards)), reverse=True)
+    return cards[:n]
+
+
+def send_event_invites(notifier, venue: str, customers: list[LoyaltyCard], event_details: str) -> list:
+    return [notifier.send(c.phone, format_event_invite(venue, event_details)) for c in customers]
 
 
 # ── Multi-restaurant support ──

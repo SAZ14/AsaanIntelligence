@@ -163,6 +163,39 @@ handed over.
 
 ---
 
+## Part 6 — Win-back & loyal-customer events (`customer_engage.py`)
+
+Every scan records the customer's number, last-visit date and total visits, so
+you can win back loyal regulars who've gone quiet and find your VIPs for events.
+Run this **when you want** (manually, or on a schedule you choose — it is not
+automatic). DRY_RUN is on by default, so it previews before sending.
+
+```bash
+# Preview who'd get a "we miss you" nudge (loyal + quiet ≥5 days):
+python scripts/customer_engage.py --restaurant sugar_rush
+
+# Actually send them (and mark them so they aren't re-spammed):
+python scripts/customer_engage.py --restaurant sugar_rush --send
+
+# Your most loyal customers (event guest list):
+python scripts/customer_engage.py --restaurant sugar_rush --top 10
+
+# Invite the top 10 loyal customers to an event:
+python scripts/customer_engage.py --restaurant sugar_rush --top 10 \
+    --invite "Tasting night this Friday 7pm, on the house."
+```
+
+Tune with `--inactive-days` (default 5) and `--min-scans` (default 3 = "loyal").
+
+> ⚠️ **WhatsApp templates required.** These are *proactive* messages sent days
+> after the customer last wrote, i.e. outside WhatsApp's 24-hour service window.
+> WhatsApp only allows that via a **Meta-approved message template**. Register
+> the wording as a template in the Twilio/Meta console before sending live; the
+> code is identical. (The instant stamp reply needs no template — the customer
+> messaged first.)
+
+---
+
 ## What it costs (rough, monthly)
 
 | Thing | Cost |

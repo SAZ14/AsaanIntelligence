@@ -7,18 +7,29 @@ than hardcoded totals. No LLM and no network are involved anywhere.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from app.agents.customer import (
     DEFAULT_TIERS,
+    EngagementCandidate,
     InMemoryCardStore,
     JsonCardStore,
+    LoyaltyCard,
     LoyaltyProgram,
     Registry,
     SqliteCardStore,
     Tier,
+    at_risk_loyal_customers,
     build_restaurant,
     build_wa_link,
+    days_since_last_scan,
     format_card_status,
+    format_event_invite,
+    format_miss_you_message,
     load_registry,
+    send_event_invites,
+    send_reengagement,
+    top_loyal_customers,
 )
 from app.whatsapp import WhatsAppNotifier
 from app.whatsapp.webhook import process_scan, route, twiml_reply
@@ -187,6 +198,128 @@ def test_notifier_dry_run_sends_loyalty_message():
     msg = n.send(PHONE, result.message)
     assert msg.status == "dry_run"
     assert msg.to == "whatsapp:+923001234567"
+
+
+# ── Re-engagement & VIP / events ──
+
+TODAY = date(2026, 6, 20)
+
+
+def _card(phone, scans, days_since_scan, nudged_days_ago=None) -> LoyaltyCard:
+    c = LoyaltyCard(
+        phone=phone, stamps=1, total_scans=scans,
+        created_at=(TODAY - timedelta(days=days_since_scan)).isoformat(),
+        updated_at=(TODAY - timedelta(days=days_since_scan)).isoformat(),
+    )
+    if nudged_days_ago is not None:
+        c.last_nudged_at = (TODAY - timedelta(days=nudged_days_ago)).isoformat()
+    return c
+
+
+def _seeded_program(*cards) -> LoyaltyProgram:
+    prog = _program()
+    for c in cards:
+        prog.store.put(c)
+    return prog
+
+
+def test_days_since_last_scan():
+    assert days_since_last_scan(_card("+1", 5, 7), today=TODAY) == 7
+    assert days_since_last_scan(LoyaltyCard(phone="+1"), today=TODAY) is None
+
+
+def test_at_risk_selects_loyal_inactive_not_recently_nudged():
+    loyal_quiet = _card("+loyalquiet", scans=6, days_since_scan=7)        # ✓ include
+    loyal_recent = _card("+loyalrecent", scans=6, days_since_scan=1)      # ✗ still active
+    not_loyal = _card("+notloyal", scans=1, days_since_scan=10)           # ✗ not loyal
+    nudged = _card("+nudged", scans=6, days_since_scan=7, nudged_days_ago=2)  # ✗ cooldown
+    prog = _seeded_program(loyal_quiet, loyal_recent, not_loyal, nudged)
+
+    cands = at_risk_loyal_customers(prog, min_scans=3, inactive_days=5,
+                                    cooldown_days=5, today=TODAY)
+    assert [c.card.phone for c in cands] == ["+loyalquiet"]
+    assert cands[0].days_inactive == 7
+    assert "miss you" in cands[0].message.lower()
+
+
+def test_at_risk_sorted_most_loyal_first():
+    prog = _seeded_program(
+        _card("+a", scans=4, days_since_scan=8),
+        _card("+b", scans=12, days_since_scan=8),
+        _card("+c", scans=7, days_since_scan=8),
+    )
+    cands = at_risk_loyal_customers(prog, today=TODAY)
+    assert [c.card.phone for c in cands] == ["+b", "+c", "+a"]
+
+
+def test_send_reengagement_marks_and_prevents_respam():
+    prog = _seeded_program(_card("+loyalquiet", scans=6, days_since_scan=7))
+    n = WhatsAppNotifier(dry_run=True)
+
+    cands = at_risk_loyal_customers(prog, today=TODAY)
+    sent = send_reengagement(prog, n, cands, today=TODAY)
+    assert len(sent) == 1 and sent[0].status == "dry_run"
+
+    # Now marked as nudged today → a re-run finds nobody (cooldown).
+    assert prog.lookup("+loyalquiet").last_nudged_at == TODAY.isoformat()
+    assert at_risk_loyal_customers(prog, today=TODAY) == []
+
+
+def test_top_loyal_customers_ranked_by_scans():
+    prog = _seeded_program(
+        _card("+a", scans=4, days_since_scan=1),
+        _card("+b", scans=20, days_since_scan=1),
+        _card("+c", scans=9, days_since_scan=1),
+    )
+    tops = top_loyal_customers(prog, n=2)
+    assert [c.phone for c in tops] == ["+b", "+c"]
+
+
+def test_event_invite_send_and_format():
+    prog = _seeded_program(_card("+vip", scans=15, days_since_scan=1))
+    n = WhatsAppNotifier(dry_run=True)
+    sent = send_event_invites(n, "Sugar Rush", top_loyal_customers(prog, 5),
+                              "Tasting night Friday 7pm.")
+    assert len(sent) == 1
+    body = sent[0].body
+    assert "invited" in body and "Tasting night Friday 7pm." in body
+    assert "YES" in format_event_invite("Sugar Rush", "x")
+
+
+def test_last_nudged_at_persists_in_sqlite(tmp_path):
+    db = tmp_path / "loyalty.db"
+    store = SqliteCardStore(db, "x")
+    card = _card("+vip", scans=6, days_since_scan=7)
+    card.last_nudged_at = TODAY.isoformat()
+    store.put(card)
+
+    reloaded = SqliteCardStore(db, "x").get("+vip")
+    assert reloaded.last_nudged_at == TODAY.isoformat()
+
+
+def test_sqlite_migrates_old_db_without_last_nudged_at(tmp_path):
+    # Simulate a db created before the column existed.
+    import sqlite3
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE cards (restaurant_id TEXT, phone TEXT, tier_index INTEGER, "
+        "stamps INTEGER, total_scans INTEGER, created_at TEXT, updated_at TEXT, "
+        "rewards TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (restaurant_id, phone))"
+    )
+    conn.execute(
+        "INSERT INTO cards VALUES ('x','+old',0,2,2,'2026-06-10','2026-06-10','[]')"
+    )
+    conn.commit()
+    conn.close()
+
+    # Opening through SqliteCardStore should add the column and still work.
+    store = SqliteCardStore(db, "x")
+    card = store.get("+old")
+    assert card is not None and card.last_nudged_at is None
+    card.last_nudged_at = TODAY.isoformat()
+    store.put(card)
+    assert SqliteCardStore(db, "x").get("+old").last_nudged_at == TODAY.isoformat()
 
 
 # ── Multi-restaurant: separate QRs, separate tracking ──
