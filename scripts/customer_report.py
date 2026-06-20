@@ -1,71 +1,66 @@
 #!/usr/bin/env python3
-"""Print the Customer agent report for a dataset.
+"""Staff-facing loyalty tool — manual lookup and programme overview.
 
-Segments, the lapsed list with behavioural descriptors and recovery-adjusted
-values, and the recovery-adjusted total. Coverage is stated explicitly:
-retention is measured only over carded/wallet customers (~70% of orders);
-anonymous cash customers carry no customer_ref and are not recognised.
+Reads the same persistent store the webhook writes to (LOYALTY_STORE env var,
+default ``loyalty_cards.json``).
+
+    python scripts/customer_report.py                 # programme overview
+    python scripts/customer_report.py +923001234567   # look one customer up
+    python scripts/customer_report.py +923001234567 --redeem   # mark reward given
 """
 
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.ingest import load_dataset
-from app.agents.customer import run_from_dataset
+from app.agents.customer import JsonCardStore, LoyaltyProgram, format_card_status
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+STORE_PATH = Path(os.environ.get("LOYALTY_STORE", "loyalty_cards.json"))
+VENUE_NAME = os.environ.get("VENUE_NAME", "Sugar Rush")
 
 
-def _print_descriptor_table(rows, limit=15):
-    hdr = (f"    {'Ref':14s} {'Visits':>6} {'Cadence':>8} {'SinceLast':>10} "
-           f"{'AvgTicket':>11} {'Recoverable/mo':>16}  Top items")
-    print(hdr)
-    print("    " + "-" * (len(hdr) - 4))
-    for d in rows[:limit]:
-        cad = f"{d.median_cadence_days:.1f}d" if d.median_cadence_days else "n/a"
-        vip = " [VIP]" if d.is_vip else ""
-        items = ", ".join(d.top_items[:3])
-        print(f"    {d.customer_ref:14s} {d.visit_count:>6} {cad:>8} "
-              f"{d.days_since_last:>9}d {d.avg_ticket:>9,.0f} "
-              f"{d.recovery_adjusted_value:>13,.0f} PKR  {items}{vip}")
+def _overview(program: LoyaltyProgram) -> None:
+    cards = program.store.all()
+    pending = [(c, program.pending_rewards(c)) for c in cards]
+    rewards_waiting = sum(len(p) for _, p in pending)
+    total_scans = sum(c.total_scans for c in cards)
+
+    print("=" * 70)
+    print(f"LOYALTY PROGRAMME — {VENUE_NAME}")
+    print("=" * 70)
+    print(f"  Members (unique WhatsApp numbers): {len(cards)}")
+    print(f"  Lifetime scans:                    {total_scans}")
+    print(f"  Rewards waiting to be handed over: {rewards_waiting}")
+    if rewards_waiting:
+        print("\n  Customers with rewards to collect:")
+        for c, p in pending:
+            if p:
+                print(f"    {c.phone:18s} {', '.join(r.reward for r in p)}")
+    print("\n  Tip: pass a phone number to look a single customer up.")
 
 
 def main() -> None:
-    orders, menu, staff = load_dataset(
-        DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",
-    )
-    report = run_from_dataset(orders, menu, staff)
+    program = LoyaltyProgram(venue_name=VENUE_NAME, store=JsonCardStore(STORE_PATH))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    redeem = "--redeem" in sys.argv
 
-    print("=" * 78)
-    print(f"CUSTOMER AGENT REPORT — {report.venue_name}")
-    print("=" * 78)
-    print(f"  Recognised customers: {report.unique_customers}")
-    print(f"  Coverage:             {report.coverage_order_pct:.1%} of orders / "
-          f"{report.coverage_revenue_pct:.1%} of revenue carry a customer_ref.")
-    print("  NOTE: anonymous cash customers have no customer_ref and are NOT")
-    print("        recognised — segments and win-back cover carded/wallet only.")
+    if not args:
+        _overview(program)
+        return
 
-    seg = report.segments
-    print("\n  Segments (frequency tiers partition all recognised customers;")
-    print("  VIP is a cross-cutting value tier — top 20% by spend):")
-    print(f"    Regulars:    {len(seg.regulars):>4}")
-    print(f"    New:         {len(seg.new):>4}")
-    print(f"    Occasional:  {len(seg.occasional):>4}")
-    print(f"    VIPs:        {len(seg.vips):>4}  (overlaps the tiers above)")
+    phone = args[0]
+    card = program.lookup(phone)
+    if card is None:
+        print(f"No loyalty card found for {phone}.")
+        return
 
-    print("\n" + "=" * 78)
-    print(f"LAPSED REGULARS — win-back targets ({len(report.lapsed)} winnable)")
-    print("=" * 78)
-    print(f"  Lapsed regulars detected (all): {report.lapsed_regular_count}")
-    print(f"  Of which lapsed VIPs:           {len(report.lapsed_vips)}")
-    _print_descriptor_table(report.lapsed)
-
-    print("\n  Recovery-adjusted opportunity (the ONLY win-back figure reported,")
-    print(f"  at {report.recovery_rate:.0%} assumed recovery of observed spend rate):")
-    print(f"    Tier A (lapsed regulars):   PKR {report.total_recoverable_monthly:,.0f}/mo")
-    print(f"    Tier A+B (incl. at-risk):   PKR {report.total_recoverable_with_at_risk:,.0f}/mo")
+    print(format_card_status(card, program))
+    if redeem:
+        given = program.redeem(phone)
+        print(f"\n→ Marked '{given.reward}' as handed over." if given
+              else "\n→ Nothing pending to redeem.")
 
 
 if __name__ == "__main__":

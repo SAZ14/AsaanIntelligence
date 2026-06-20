@@ -1,276 +1,310 @@
-"""Customer agent — a thin live wrapper over the deterministic retention core.
+"""Customer agent — WhatsApp digital loyalty stamp-card engine.
 
-This module does NOT recompute retention analytics. It imports
-``analyze_retention`` (``app/analysis/retention.py``) for the per-customer
-profiles + lapse detection, and reuses ``compute_headlines`` /
-``_observed_monthly_spend`` (``app/report/render.py``) for the
-recovery-adjusted win-back maths. On top of that it adds purely
-customer-facing concerns: segmentation, behavioural descriptors, and the
-recovery-adjusted value per lapsed customer.
+This replaces the previous retention / win-back Customer agent. The model is
+now a loyalty programme driven entirely by QR scans:
 
-WIN-BACK VALUE — IMPORTANT
-    The only win-back figure this agent reports is the *recovery-adjusted*
-    one from ``compute_headlines`` (observed monthly spend × recovery rate,
-    default 30%). The naive ``CustomerProfile.winback_value`` field in
-    retention.py (days_since_last / cadence × avg_ticket) is intentionally
-    NEVER read here — it overstates the opportunity. Do not surface it.
+    customer scans the venue QR  →  it opens WhatsApp to the business (a wa.me
+    click-to-chat link)  →  sending the pre-filled message registers ONE scan
+    →  the agent adds a stamp and replies with a plain-text progress message,
+    delivered straight to the customer's WhatsApp.
 
-PRIVACY
-    Customers are recognised by their tokenised payment reference
-    (``customer_ref``) only. There are no names anywhere in this agent's
-    output — descriptors and alerts describe *behaviour*, not identity.
+When every stamp on a card is filled the customer unlocks that tier's reward
+(handed over manually by staff via a phone-number lookup) and is automatically
+promoted to the next, better tier.
+
+Design choices
+--------------
+- **Identity = the customer's WhatsApp number.** The wa.me click-to-chat flow
+  captures it on the very first scan, so there is no signup, no payment token
+  and no name to manage.
+- **No LLM anywhere.** Every reply is a deterministic template, so each scan
+  costs nothing, never rate-limits and always responds instantly. (This is a
+  hard requirement — keep it that way.)
+- **Plain text only** — a unicode progress bar, not a rendered card image.
 """
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from datetime import date
-
-from app.analysis.retention import (
-    MIN_VISITS_FOR_CADENCE,
-    CustomerProfile,
-    RetentionReport,
-    analyze_retention,
-)
-from app.models.canonical import MenuItem, Order, Staff
-from app.report.render import (
-    DEFAULT_RECOVERY_RATE,
-    HeadlineNumbers,
-    _observed_monthly_spend,
-    compute_headlines,
-)
-
-# Re-export the integrity/operations report types only to build the empty
-# placeholders compute_headlines needs (its win-back maths reads neither).
-from app.analysis.integrity import IntegrityReport, VenueBaseline
-from app.analysis.retention import OperationsReport
-
-# ── Segmentation thresholds ──
-VIP_SPEND_PERCENTILE = 0.80   # top 20% of identified customers by total spend
-NEW_MAX_VISITS = 2            # "new" customers have at most this many visits
-NEW_WINDOW_DAYS = 14          # ...and first showed up within this window of period end
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Protocol
+from urllib.parse import quote
 
 
-# ── Output types ──
+# ── Programme configuration ──
+
+@dataclass(frozen=True)
+class Tier:
+    """One card in the loyalty ladder."""
+    name: str
+    stamps_required: int
+    reward: str
+
+
+# Default ladder: completing a card promotes the customer to the next tier,
+# which carries a better reward. The top tier loops (resets) forever.
+DEFAULT_TIERS: list[Tier] = [
+    Tier(name="Silver", stamps_required=5, reward="a free ice cream"),
+    Tier(name="Gold", stamps_required=8, reward="a free sundae"),
+    Tier(name="Platinum", stamps_required=10, reward="a free dessert platter"),
+]
+
+DEFAULT_PREFILL = "Hi! I'd like to collect my loyalty stamp \U0001F3AB"
+
+
+# ── Stored state ──
 
 @dataclass
-class CustomerDescriptor:
-    """Behavioural fingerprint of one customer — no personal identity."""
-    customer_ref: str
-    visit_count: int
-    median_cadence_days: float | None
-    days_since_last: int
-    last_visit: date | None
-    avg_ticket: float
-    total_spend: float
-    top_items: list[str] = field(default_factory=list)
-    is_vip: bool = False
-    # Recovery-adjusted monthly value (observed spend rate × recovery rate).
-    recovery_adjusted_value: float = 0.0
+class Reward:
+    """A reward the customer has unlocked but may not yet have collected."""
+    tier_name: str
+    reward: str
+    earned_at: str                 # ISO timestamp
+    redeemed: bool = False
+    redeemed_at: str | None = None
 
 
 @dataclass
-class CustomerSegments:
-    # Frequency tiers (a partition of all identified customers):
-    regulars: list[CustomerDescriptor] = field(default_factory=list)
-    new: list[CustomerDescriptor] = field(default_factory=list)
-    occasional: list[CustomerDescriptor] = field(default_factory=list)
-    # Value tier (cross-cutting — VIPs may also be regulars/occasional):
-    vips: list[CustomerDescriptor] = field(default_factory=list)
+class LoyaltyCard:
+    """A customer's loyalty state, keyed by their WhatsApp number."""
+    phone: str
+    tier_index: int = 0            # position in the tier ladder (current card)
+    stamps: int = 0               # stamps on the CURRENT card
+    total_scans: int = 0          # lifetime scans
+    created_at: str = ""
+    updated_at: str = ""
+    rewards: list[Reward] = field(default_factory=list)
 
+    def to_dict(self) -> dict:
+        return asdict(self)
 
-@dataclass
-class CustomerAgentReport:
-    venue_name: str = ""
-    recovery_rate: float = DEFAULT_RECOVERY_RATE
-    unique_customers: int = 0
-    coverage_order_pct: float = 0.0
-    coverage_revenue_pct: float = 0.0
-    segments: CustomerSegments = field(default_factory=CustomerSegments)
-    lapsed: list[CustomerDescriptor] = field(default_factory=list)
-    lapsed_vips: list[CustomerDescriptor] = field(default_factory=list)
-    lapsed_regular_count: int = 0
-    # The only win-back numbers we report — both recovery-adjusted:
-    total_recoverable_monthly: float = 0.0            # Tier A (lapsed regulars)
-    total_recoverable_with_at_risk: float = 0.0       # Tier A + B
-
-
-# ── Helpers ──
-
-def _period_days(orders: list[Order]) -> int:
-    if not orders:
-        return 0
-    dates = [o.datetime.date() for o in orders]
-    return (max(dates) - min(dates)).days + 1
-
-
-def recovery_headlines(
-    retention: RetentionReport,
-    orders: list[Order] | None = None,
-    recovery_rate: float = DEFAULT_RECOVERY_RATE,
-) -> HeadlineNumbers:
-    """Reuse ``compute_headlines`` for win-back only.
-
-    The Tier A/B win-back fields in HeadlineNumbers depend solely on the
-    retention report, so we hand compute_headlines empty integrity/operations
-    placeholders (period_days keeps the revenue ratio sensible) rather than
-    coupling the Customer agent to the Integrity agent.
-    """
-    period_days = _period_days(orders) if orders else 0
-    integrity = IntegrityReport(venue_baseline=VenueBaseline(period_days=period_days))
-    operations = OperationsReport()
-    return compute_headlines(integrity, retention, operations, recovery_rate=recovery_rate)
-
-
-def _percentile(values: list[float], pct: float) -> float:
-    if not values:
-        return 0.0
-    s = sorted(values)
-    idx = min(len(s) - 1, int(pct * (len(s) - 1) + 0.5))
-    return s[idx]
-
-
-def _top_items_by_customer(orders: list[Order], top_n: int = 3) -> dict[str, list[str]]:
-    """Most-ordered item names per customer_ref (voids/comps excluded)."""
-    counts: dict[str, Counter] = defaultdict(Counter)
-    for o in orders:
-        if not o.customer_ref:
-            continue
-        for li in o.line_items:
-            if li.is_void or li.is_comp:
-                continue
-            counts[o.customer_ref][li.item_name] += li.qty
-    return {ref: [name for name, _ in c.most_common(top_n)] for ref, c in counts.items()}
-
-
-# ── Main agent ──
-
-def run_customer_agent(
-    retention: RetentionReport,
-    orders: list[Order],
-    menu: dict[str, MenuItem] | None = None,
-    staff: dict[str, Staff] | None = None,
-    *,
-    venue_name: str = "Sugar Rush",
-    recovery_rate: float = DEFAULT_RECOVERY_RATE,
-    headlines: HeadlineNumbers | None = None,
-) -> CustomerAgentReport:
-    """Build the live Customer agent report from an existing RetentionReport.
-
-    ``retention`` is the output of ``analyze_retention``; pass ``headlines`` to
-    reuse already-computed win-back numbers, otherwise they are derived here
-    via ``recovery_headlines`` (which calls ``compute_headlines``).
-    """
-    if headlines is None:
-        headlines = recovery_headlines(retention, orders, recovery_rate)
-
-    top_items = _top_items_by_customer(orders)
-    rate = headlines.recovery_rate
-
-    def _descriptor(p: CustomerProfile, vip: bool = False) -> CustomerDescriptor:
-        return CustomerDescriptor(
-            customer_ref=p.customer_ref,
-            visit_count=p.visit_count,
-            median_cadence_days=p.median_cadence_days,
-            days_since_last=p.days_since_last,
-            last_visit=p.last_visit,
-            avg_ticket=p.avg_ticket,
-            total_spend=p.total_spend,
-            top_items=top_items.get(p.customer_ref, []),
-            is_vip=vip,
-            recovery_adjusted_value=_observed_monthly_spend(p) * rate,
+    @classmethod
+    def from_dict(cls, d: dict) -> "LoyaltyCard":
+        return cls(
+            phone=d["phone"],
+            tier_index=d.get("tier_index", 0),
+            stamps=d.get("stamps", 0),
+            total_scans=d.get("total_scans", 0),
+            created_at=d.get("created_at", ""),
+            updated_at=d.get("updated_at", ""),
+            rewards=[Reward(**r) for r in d.get("rewards", [])],
         )
 
-    profiles = retention.customers
-    period_end = max((p.last_visit for p in profiles if p.last_visit), default=None)
 
-    # VIP = top-spend tier among repeat customers (cross-cutting value tier).
-    spend_cut = _percentile([p.total_spend for p in profiles], VIP_SPEND_PERCENTILE)
-    vip_refs = {
-        p.customer_ref for p in profiles
-        if p.visit_count >= 2 and p.total_spend >= spend_cut and spend_cut > 0
-    }
+@dataclass
+class ScanResult:
+    """Outcome of a single scan — the updated card and the reply to send."""
+    card: LoyaltyCard
+    message: str
+    is_first_scan: bool = False
+    completed_tier: Tier | None = None   # the card just completed (if any)
+    promoted_to: Tier | None = None      # the tier of the fresh card afterwards
 
-    def _is_regular(p: CustomerProfile) -> bool:
-        return (
-            p.median_cadence_days is not None
-            and p.median_cadence_days <= retention.cadence_threshold_days
-            and p.visit_count >= MIN_VISITS_FOR_CADENCE
+
+# ── Persistence ──
+
+class CardStore(Protocol):
+    """Anything that can persist loyalty cards by phone number."""
+    def get(self, phone: str) -> LoyaltyCard | None: ...
+    def put(self, card: LoyaltyCard) -> None: ...
+    def all(self) -> list[LoyaltyCard]: ...
+
+
+@dataclass
+class InMemoryCardStore:
+    """Non-persistent store — used by tests and the demo runner."""
+    _cards: dict[str, LoyaltyCard] = field(default_factory=dict)
+
+    def get(self, phone: str) -> LoyaltyCard | None:
+        return self._cards.get(phone)
+
+    def put(self, card: LoyaltyCard) -> None:
+        self._cards[card.phone] = card
+
+    def all(self) -> list[LoyaltyCard]:
+        return list(self._cards.values())
+
+
+@dataclass
+class JsonCardStore:
+    """File-backed store — survives across processes (used by the webhook)."""
+    path: Path
+
+    def __post_init__(self) -> None:
+        self.path = Path(self.path)
+
+    def _load(self) -> dict[str, dict]:
+        if not self.path.exists():
+            return {}
+        return json.loads(self.path.read_text() or "{}")
+
+    def get(self, phone: str) -> LoyaltyCard | None:
+        raw = self._load().get(phone)
+        return LoyaltyCard.from_dict(raw) if raw else None
+
+    def put(self, card: LoyaltyCard) -> None:
+        data = self._load()
+        data[card.phone] = card.to_dict()
+        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+
+    def all(self) -> list[LoyaltyCard]:
+        return [LoyaltyCard.from_dict(v) for v in self._load().values()]
+
+
+# ── Message formatting (deterministic, no LLM) ──
+
+def _progress_bar(stamps: int, required: int) -> str:
+    filled = "▰" * max(0, stamps)
+    empty = "▱" * max(0, required - stamps)
+    return f"[{filled}{empty}] {stamps}/{required}"
+
+
+# ── The loyalty programme ──
+
+@dataclass
+class LoyaltyProgram:
+    venue_name: str = "Sugar Rush"
+    tiers: list[Tier] = field(default_factory=lambda: list(DEFAULT_TIERS))
+    store: CardStore = field(default_factory=InMemoryCardStore)
+
+    # -- helpers --
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def current_tier(self, card: LoyaltyCard) -> Tier:
+        return self.tiers[min(card.tier_index, len(self.tiers) - 1)]
+
+    # -- the one entry point the QR flow calls --
+    def record_scan(self, phone: str) -> ScanResult:
+        """Register one scan for ``phone`` and return the reply to send back."""
+        phone = phone.strip()
+        existing = self.store.get(phone)
+        first = existing is None
+        card = existing or LoyaltyCard(phone=phone, created_at=self._now())
+
+        card.stamps += 1
+        card.total_scans += 1
+        card.updated_at = self._now()
+
+        tier = self.current_tier(card)
+        completed: Tier | None = None
+        promoted: Tier | None = None
+
+        if card.stamps >= tier.stamps_required:
+            completed = tier
+            card.rewards.append(
+                Reward(tier_name=tier.name, reward=tier.reward, earned_at=self._now())
+            )
+            # Promote to the next tier; the top tier loops on itself.
+            if card.tier_index < len(self.tiers) - 1:
+                card.tier_index += 1
+            card.stamps = 0
+            promoted = self.current_tier(card)
+
+        self.store.put(card)
+        message = self._build_message(card, tier, completed, promoted, first)
+        return ScanResult(
+            card=card, message=message, is_first_scan=first,
+            completed_tier=completed, promoted_to=promoted,
         )
 
-    def _is_new(p: CustomerProfile) -> bool:
-        if p.visit_count > NEW_MAX_VISITS or p.first_visit is None or period_end is None:
-            return False
-        return (period_end - p.first_visit).days <= NEW_WINDOW_DAYS
+    def _build_message(
+        self,
+        card: LoyaltyCard,
+        worked_tier: Tier,
+        completed: Tier | None,
+        promoted: Tier | None,
+        first: bool,
+    ) -> str:
+        venue = self.venue_name
 
-    segments = CustomerSegments()
-    for p in profiles:
-        d = _descriptor(p, vip=p.customer_ref in vip_refs)
-        if d.is_vip:
-            segments.vips.append(d)
-        # Frequency partition: regular > new > occasional.
-        if _is_regular(p):
-            segments.regulars.append(d)
-        elif _is_new(p):
-            segments.new.append(d)
-        else:
-            segments.occasional.append(d)
+        if completed is not None and promoted is not None:
+            lines = [
+                f"\U0001F3C6 Card complete at {venue}! You've unlocked "
+                f"{completed.reward.upper()}.",
+                "Show this message to our staff to claim it. \U0001F381",
+            ]
+            if promoted.name != completed.name:
+                lines.append(
+                    f"You've leveled up to a {promoted.name} card — collect "
+                    f"{promoted.stamps_required} stamps for {promoted.reward}!"
+                )
+            else:
+                lines.append(
+                    f"Your {promoted.name} card has reset — collect "
+                    f"{promoted.stamps_required} more for {promoted.reward} again!"
+                )
+            lines.append(_progress_bar(0, promoted.stamps_required))
+            return "\n".join(lines)
 
-    # Lapsed list = Tier A winnable (lapsed regulars within the recovery window),
-    # so it stays consistent with total_recoverable_monthly.
-    lapsed = [_descriptor(p, vip=p.customer_ref in vip_refs) for p in headlines.tier_a_winnable]
-    lapsed.sort(key=lambda d: d.recovery_adjusted_value, reverse=True)
-    lapsed_vips = [d for d in lapsed if d.is_vip]
+        required = worked_tier.stamps_required
+        if first:
+            return "\n".join([
+                f"\U0001F389 Welcome to {venue} Rewards!",
+                f"You earned your 1st stamp on your {worked_tier.name} card.",
+                _progress_bar(card.stamps, required),
+                f"Collect {required} stamps and {worked_tier.reward} is on us — "
+                "scan the QR on every visit to fill it up!",
+            ])
 
-    return CustomerAgentReport(
-        venue_name=venue_name,
-        recovery_rate=rate,
-        unique_customers=retention.unique_customers,
-        coverage_order_pct=retention.coverage_order_pct,
-        coverage_revenue_pct=retention.coverage_revenue_pct,
-        segments=segments,
-        lapsed=lapsed,
-        lapsed_vips=lapsed_vips,
-        lapsed_regular_count=retention.lapsed_regular_count,
-        total_recoverable_monthly=headlines.monthly_winback_tier_a,
-        total_recoverable_with_at_risk=headlines.monthly_winback_total,
-    )
+        remaining = required - card.stamps
+        nudge = (
+            "Just 1 more to go!" if remaining == 1
+            else f"{remaining} more and you've earned {worked_tier.reward}."
+        )
+        return "\n".join([
+            f"⭐ Stamp added at {venue}!",
+            _progress_bar(card.stamps, required),
+            f"{nudge} See you soon!",
+        ])
+
+    # -- staff-facing (manual redemption) --
+    def lookup(self, phone: str) -> LoyaltyCard | None:
+        return self.store.get(phone.strip())
+
+    @staticmethod
+    def pending_rewards(card: LoyaltyCard) -> list[Reward]:
+        return [r for r in card.rewards if not r.redeemed]
+
+    def redeem(self, phone: str, tier_name: str | None = None) -> Reward | None:
+        """Mark the customer's oldest unredeemed reward as given. Staff action."""
+        card = self.store.get(phone.strip())
+        if card is None:
+            return None
+        for r in card.rewards:
+            if not r.redeemed and (tier_name is None or r.tier_name == tier_name):
+                r.redeemed = True
+                r.redeemed_at = self._now()
+                self.store.put(card)
+                return r
+        return None
 
 
-def run_from_dataset(
-    orders: list[Order],
-    menu: dict[str, MenuItem],
-    staff: dict[str, Staff],
-    *,
-    venue_name: str = "Sugar Rush",
-    recovery_rate: float = DEFAULT_RECOVERY_RATE,
-) -> CustomerAgentReport:
-    """Convenience: run retention analysis then the Customer agent."""
-    retention = analyze_retention(orders, menu, staff)
-    return run_customer_agent(
-        retention, orders, menu, staff,
-        venue_name=venue_name, recovery_rate=recovery_rate,
-    )
-
-
-# ── WhatsApp alert formatting ──
-
-def format_lapsed_vip_alert(d: CustomerDescriptor, venue_name: str = "Sugar Rush") -> str:
-    """Owner-facing alert describing a lapsed VIP by behaviour, never identity."""
-    if not d.median_cadence_days:
-        cadence = "on an irregular cadence"
-    elif round(d.median_cadence_days) <= 1:
-        cadence = "almost daily"
+def format_card_status(card: LoyaltyCard, program: LoyaltyProgram) -> str:
+    """Plain-text summary for staff looking a customer up by phone."""
+    tier = program.current_tier(card)
+    pending = program.pending_rewards(card)
+    lines = [
+        f"Customer {card.phone}",
+        f"Current card: {tier.name}  {_progress_bar(card.stamps, tier.stamps_required)}",
+        f"Lifetime scans: {card.total_scans}",
+    ]
+    if pending:
+        lines.append("REWARDS TO HAND OVER:")
+        lines.extend(f"  • {r.reward}  ({r.tier_name}, earned {r.earned_at})" for r in pending)
     else:
-        cadence = f"about every {d.median_cadence_days:.0f} days"
-    items = ", ".join(d.top_items) if d.top_items else "a mix of items"
-    return (
-        f"[{venue_name}] Lapsed regular alert\n"
-        f"Customer {d.customer_ref} (recognised by payment token only — no name on file).\n"
-        f"Behaviour: visited {d.visit_count}x {cadence}, "
-        f"avg ticket PKR {d.avg_ticket:,.0f}; usual order: {items}.\n"
-        f"Last seen {d.days_since_last} days ago — well past their usual cadence.\n"
-        f"Recovery-adjusted value if won back: ~PKR {d.recovery_adjusted_value:,.0f}/month.\n"
-        f"Suggested action: queue a win-back offer."
-    )
+        lines.append("No rewards pending — nothing to hand over.")
+    return "\n".join(lines)
+
+
+def build_wa_link(business_number: str, prefilled_text: str = DEFAULT_PREFILL) -> str:
+    """The wa.me click-to-chat URL the printed QR should encode.
+
+    Scanning it opens WhatsApp to the venue with ``prefilled_text`` ready to
+    send; sending it is what registers a scan.
+    """
+    digits = "".join(ch for ch in business_number.replace("whatsapp:", "") if ch.isdigit())
+    return f"https://wa.me/{digits}?text={quote(prefilled_text)}"
