@@ -6,3 +6,4 @@ dist/
 .venv/
 output/
 .env
+node_modules/
