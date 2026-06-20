@@ -302,7 +302,7 @@ def render_whatsapp_report(
     snapshot > healthy count. Uses WhatsApp *bold* markup.
     """
     when = _fmt_date(movement.as_of) if movement else _fmt_date(report.period_end)
-    lines: list[str] = [f"*{report.venue_name} — Daily Stock Report*", when, ""]
+    lines: list[str] = [f"🧾 *{report.venue_name} — Daily Stock Report*", f"📅 {when}", ""]
 
     if report.oversold:
         lines.append("⚠️ *OVERSOLD — check waste/theft*")
@@ -329,9 +329,9 @@ def render_whatsapp_report(
 
     if movement and movement.order_count:
         lines.append(
-            f"*Today:* {movement.order_count} orders · "
-            f"PKR {movement.revenue:,.0f} sales · "
-            f"PKR {movement.cogs:,.0f} ingredient cost"
+            f"📊 *Today:* {movement.order_count} orders · "
+            f"💰 PKR {movement.revenue:,.0f} sales · "
+            f"🥘 PKR {movement.cogs:,.0f} ingredient cost"
         )
 
     healthy = sum(1 for s in report.ingredients if s.status == "ok")
