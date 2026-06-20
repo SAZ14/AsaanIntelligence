@@ -19,20 +19,40 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 TARGET_URL = "https://www.instagram.com/anatummyisb/"
+
+
+def _username_from_url(url: str) -> str:
+    """Extract the handle from an Instagram profile URL."""
+    return url.rstrip("/").rsplit("/", 1)[-1].lstrip("@").lower()
+
+
+TARGET_USERNAME = _username_from_url(TARGET_URL)
 ACTOR_ID = "apify/instagram-scraper"
+
+# Tightened input: scrape the target profile's OWN posts only.
+#   - `username` pins the Actor to this handle's grid (more reliable than a bare
+#     directUrl, which can pull in tagged/mention posts from other accounts).
+#   - `directUrls` is kept as a belt-and-suspenders hint.
+#   - `onlyPostsNewerThan` is intentionally omitted so we always get the latest N.
 ACTOR_INPUT = {
     "resultsType": "posts",
+    "username": [TARGET_USERNAME],
     "directUrls": [TARGET_URL],
     "resultsLimit": 10,
 }
 
 WHATSAPP_CHAR_LIMIT = 1500
 REPORT_MODEL = "claude-sonnet-4-6"
+
+# How long to poll Twilio for a terminal delivery status after sending.
+TWILIO_POLL_ATTEMPTS = 6
+TWILIO_POLL_INTERVAL_S = 5
 
 
 # ── Secret masking ──
@@ -209,6 +229,24 @@ def scrape_posts(apify_token: str) -> list[NormalizedPost]:
         ))
 
     print(f"  Normalized : {len(posts)} posts")
+
+    # Keep only posts actually authored by the target handle. The Actor can return
+    # tagged/mention posts from other accounts; analyzing those would misrepresent
+    # the owner's reputation.
+    owners = sorted({p.owner_username for p in posts if p.owner_username})
+    own = [p for p in posts if p.owner_username.lower() == TARGET_USERNAME]
+    print(f"  Owners seen: {owners or '(none reported)'}")
+    if own:
+        print(f"  Kept {len(own)}/{len(posts)} posts authored by @{TARGET_USERNAME}.")
+        return own
+
+    # No posts matched the target handle — don't silently analyze the wrong account.
+    print(
+        f"  ⚠️  None of the scraped posts are authored by @{TARGET_USERNAME}.\n"
+        f"      The Actor returned posts from: {owners or '(unknown)'}.\n"
+        f"      This usually means the profile is private/empty or the handle has\n"
+        f"      changed. Proceeding with the raw results, clearly labelled."
+    )
     return posts
 
 
@@ -318,7 +356,19 @@ def run_agent(posts: list[NormalizedPost], env: EnvCheck) -> str:
             report = build_report_fallback(posts)
     else:
         print("  ANTHROPIC_API_KEY not set -> using deterministic fallback report.")
+        print("  NOTE: to get the real LLM analysis, add ANTHROPIC_API_KEY to the")
+        print("        environment (e.g. an sk-ant-... key) and re-run; the agent")
+        print(f"        will then use {REPORT_MODEL} instead of this heuristic.")
         report = build_report_fallback(posts)
+
+    # If the scraped posts aren't authored by the target handle, prepend a clear
+    # warning so the owner isn't misled about whose account this describes.
+    if posts and not all(p.owner_username.lower() == TARGET_USERNAME for p in posts):
+        seen = sorted({p.owner_username for p in posts if p.owner_username})
+        report = (
+            f"⚠️ Heads up: these posts are from {seen or 'unknown accounts'}, "
+            f"not @{TARGET_USERNAME}. Verify the handle.\n\n" + report
+        )
 
     # Enforce the WhatsApp character limit.
     if len(report) > WHATSAPP_CHAR_LIMIT:
@@ -378,11 +428,35 @@ def send_whatsapp(report: str, env: EnvCheck) -> None:
 
     try:
         from twilio.rest import Client
-        from twilio.base.exceptions import TwilioRestException
 
         client = Client(env.twilio_sid, env.twilio_auth)
         message = client.messages.create(body=report, from_=from_addr, to=to_addr)
-        print(f"  SENT ✅  message SID: {message.sid}  status: {message.status}")
+        sid = message.sid
+        print(f"  ACCEPTED ✅  message SID: {sid}  initial status: {message.status}")
+
+        # 'queued'/'accepted' only means Twilio took the request — it is NOT proof of
+        # delivery. Poll for a terminal status so window/sandbox failures surface here.
+        terminal = {"delivered", "read", "failed", "undelivered", "canceled"}
+        final = message
+        for attempt in range(1, TWILIO_POLL_ATTEMPTS + 1):
+            if final.status in terminal:
+                break
+            time.sleep(TWILIO_POLL_INTERVAL_S)
+            final = client.messages(sid).fetch()
+            print(f"    poll {attempt}/{TWILIO_POLL_ATTEMPTS}: status = {final.status}")
+
+        print(f"  Final status : {final.status}")
+        if final.status in ("failed", "undelivered"):
+            code = getattr(final, "error_code", None)
+            emsg = getattr(final, "error_message", None) or ""
+            print(f"    error code   : {code}")
+            print(f"    error message: {emsg}")
+            print(f"    diagnosis    : {classify_twilio_error(code, None, emsg)}")
+        elif final.status in ("delivered", "read"):
+            print("  Delivered to the recipient's WhatsApp. 🎉")
+        else:
+            print("  Not yet terminal — Twilio is still attempting delivery. "
+                  "Check the message SID later or configure a status callback.")
     except Exception as e:  # noqa: BLE001
         # Report is already printed above (step 4); here we diagnose the failure.
         code = getattr(e, "code", None)
