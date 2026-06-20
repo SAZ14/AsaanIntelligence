@@ -15,3 +15,8 @@ venue_qr.png
 restaurants.json
 loyalty_data/
 qr_posters/
+
+# SQLite loyalty database (per-deployment runtime data)
+*.db
+*.db-wal
+*.db-shm

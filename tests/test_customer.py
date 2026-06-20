@@ -13,6 +13,7 @@ from app.agents.customer import (
     JsonCardStore,
     LoyaltyProgram,
     Registry,
+    SqliteCardStore,
     Tier,
     build_restaurant,
     build_wa_link,
@@ -232,18 +233,68 @@ def test_unknown_number_is_handled_gracefully():
     assert "isn't set up" in reply
 
 
-def test_load_registry_gives_each_restaurant_its_own_store(tmp_path):
+def test_load_registry_shares_one_sqlite_db_isolated_per_venue(tmp_path):
     config = tmp_path / "restaurants.json"
     config.write_text(
         '[{"id":"a","name":"Cafe A","whatsapp_number":"+111","reward":"a free A"},'
         ' {"id":"b","name":"Cafe B","whatsapp_number":"+222","reward":"a free B"}]'
     )
-    reg = load_registry(config, store_dir=tmp_path / "stores")
+    db = tmp_path / "loyalty.db"
+    reg = load_registry(config, db_path=db)
     reg.by_id("a").program.record_scan("+923001234567")
 
-    # Persisted to a per-restaurant file; the other venue stays empty.
-    assert (tmp_path / "stores" / "a.json").exists()
-    assert not (tmp_path / "stores" / "b.json").exists()
-    reg2 = load_registry(config, store_dir=tmp_path / "stores")
+    # One shared database file; the venues stay isolated within it.
+    assert db.exists()
+    reg2 = load_registry(config, db_path=db)
     assert reg2.by_id("a").program.lookup("+923001234567").stamps == 1
     assert reg2.by_id("b").program.lookup("+923001234567") is None
+
+
+# ── SQLite store (the production storage) ──
+
+def test_sqlite_store_persists_across_program_instances(tmp_path):
+    db = tmp_path / "loyalty.db"
+    p1 = LoyaltyProgram(store=SqliteCardStore(db, "sugar_rush"))
+    for _ in range(3):
+        p1.record_scan(PHONE)
+
+    # A fresh program reading the same db file sees the saved progress.
+    p2 = LoyaltyProgram(store=SqliteCardStore(db, "sugar_rush"))
+    card = p2.lookup(PHONE)
+    assert card is not None and card.stamps == 3 and card.total_scans == 3
+
+
+def test_sqlite_separates_restaurants_in_one_db(tmp_path):
+    db = tmp_path / "loyalty.db"
+    a = LoyaltyProgram(store=SqliteCardStore(db, "a"))
+    b = LoyaltyProgram(store=SqliteCardStore(db, "b"))
+    a.record_scan(PHONE)
+    a.record_scan(PHONE)
+    b.record_scan(PHONE)
+
+    assert a.lookup(PHONE).stamps == 2
+    assert b.lookup(PHONE).stamps == 1
+    assert {c.phone for c in a.store.all()} == {PHONE}  # only its own venue's cards
+
+
+def test_sqlite_preserves_earned_rewards(tmp_path):
+    db = tmp_path / "loyalty.db"
+    p1 = LoyaltyProgram(store=SqliteCardStore(db, "x"))  # default single tier, 5 stamps
+    for _ in range(DEFAULT_TIERS[0].stamps_required):
+        p1.record_scan(PHONE)
+
+    p2 = LoyaltyProgram(store=SqliteCardStore(db, "x"))
+    card = p2.lookup(PHONE)
+    assert len(card.rewards) == 1
+    assert card.rewards[0].reward == DEFAULT_TIERS[0].reward
+    assert card.rewards[0].redeemed is False
+    # Redemption persists too.
+    p2.redeem(PHONE)
+    assert LoyaltyProgram(store=SqliteCardStore(db, "x")).pending_rewards(p2.lookup(PHONE)) == []
+
+
+def test_constructing_sqlite_store_touches_no_disk(tmp_path):
+    # Building a store (e.g. for QR generation) must not create the db file.
+    db = tmp_path / "loyalty.db"
+    SqliteCardStore(db, "a")
+    assert not db.exists()

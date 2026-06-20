@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -153,6 +154,113 @@ class JsonCardStore:
 
     def all(self) -> list[LoyaltyCard]:
         return [LoyaltyCard.from_dict(v) for v in self._load().values()]
+
+
+@dataclass
+class SqliteCardStore:
+    """SQLite-backed store — the recommended production store.
+
+    SQLite is built into Python (no dependency, no server, no cost): the whole
+    database is a single file on disk. One shared database holds every
+    restaurant's cards in a ``cards`` table keyed by ``(restaurant_id, phone)``,
+    so a SqliteCardStore is scoped to one ``restaurant_id`` and only ever sees
+    its own venue's cards. Writes are transactional, so two scans landing at the
+    same instant can't corrupt a count (unlike the plain JSON store).
+
+    The table is created lazily on first use, so merely constructing a store
+    (e.g. to read a venue's config for QR generation) touches no disk.
+    """
+    db_path: str | Path
+    restaurant_id: str = "default"
+    _ready: bool = field(default=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.db_path = Path(self.db_path)
+
+    def _conn(self) -> sqlite3.Connection:
+        if self.db_path.parent and not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        if not self._ready:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cards (
+                    restaurant_id TEXT NOT NULL,
+                    phone         TEXT NOT NULL,
+                    tier_index    INTEGER NOT NULL DEFAULT 0,
+                    stamps        INTEGER NOT NULL DEFAULT 0,
+                    total_scans   INTEGER NOT NULL DEFAULT 0,
+                    created_at    TEXT,
+                    updated_at    TEXT,
+                    rewards       TEXT NOT NULL DEFAULT '[]',
+                    PRIMARY KEY (restaurant_id, phone)
+                )
+                """
+            )
+            conn.execute("PRAGMA journal_mode=WAL")  # better concurrent reads/writes
+            conn.commit()
+            self._ready = True
+        return conn
+
+    @staticmethod
+    def _row_to_card(row: sqlite3.Row) -> LoyaltyCard:
+        return LoyaltyCard(
+            phone=row["phone"],
+            tier_index=row["tier_index"],
+            stamps=row["stamps"],
+            total_scans=row["total_scans"],
+            created_at=row["created_at"] or "",
+            updated_at=row["updated_at"] or "",
+            rewards=[Reward(**r) for r in json.loads(row["rewards"])],
+        )
+
+    def get(self, phone: str) -> LoyaltyCard | None:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM cards WHERE restaurant_id = ? AND phone = ?",
+                (self.restaurant_id, phone),
+            ).fetchone()
+        finally:
+            conn.close()
+        return self._row_to_card(row) if row else None
+
+    def put(self, card: LoyaltyCard) -> None:
+        conn = self._conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO cards (restaurant_id, phone, tier_index, stamps,
+                                   total_scans, created_at, updated_at, rewards)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(restaurant_id, phone) DO UPDATE SET
+                    tier_index  = excluded.tier_index,
+                    stamps      = excluded.stamps,
+                    total_scans = excluded.total_scans,
+                    created_at  = excluded.created_at,
+                    updated_at  = excluded.updated_at,
+                    rewards     = excluded.rewards
+                """,
+                (
+                    self.restaurant_id, card.phone, card.tier_index, card.stamps,
+                    card.total_scans, card.created_at, card.updated_at,
+                    json.dumps([asdict(r) for r in card.rewards]),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def all(self) -> list[LoyaltyCard]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM cards WHERE restaurant_id = ?", (self.restaurant_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self._row_to_card(r) for r in rows]
 
 
 # ── Message formatting (deterministic, no LLM) ──
@@ -352,14 +460,26 @@ def build_restaurant(
     reward: str = "a free treat",
     tiers: list[Tier] | None = None,
     store: CardStore | None = None,
+    db_path: str | Path | None = None,
     store_dir: str | Path | None = None,
 ) -> Restaurant:
-    """Build one restaurant. Cards persist to ``<store_dir>/<id>.json`` when a
-    directory is given, else they live in memory (tests/demo)."""
+    """Build one restaurant and pick where its cards persist.
+
+    Storage precedence:
+      1. ``store``      — an explicit CardStore (tests / custom backends)
+      2. ``db_path``    — SQLite database shared by all venues (recommended)
+      3. ``store_dir``  — legacy JSON file per venue (``<store_dir>/<id>.json``)
+      4. in-memory      — nothing persisted (demo)
+    """
     if tiers is None:
         tiers = [Tier(name="Loyalty", stamps_required=stamps_required, reward=reward)]
     if store is None:
-        store = JsonCardStore(Path(store_dir) / f"{id}.json") if store_dir else InMemoryCardStore()
+        if db_path is not None:
+            store = SqliteCardStore(db_path, restaurant_id=id)
+        elif store_dir is not None:
+            store = JsonCardStore(Path(store_dir) / f"{id}.json")
+        else:
+            store = InMemoryCardStore()
     program = LoyaltyProgram(venue_name=name, tiers=tiers, store=store)
     return Restaurant(id=id, whatsapp_number=whatsapp_number, program=program)
 
@@ -380,11 +500,18 @@ class Registry:
         return list(self.restaurants)
 
 
-def load_registry(config_path: str | Path, store_dir: str | Path = "loyalty_data") -> Registry:
+def load_registry(
+    config_path: str | Path,
+    db_path: str | Path | None = "loyalty.db",
+    store_dir: str | Path | None = None,
+) -> Registry:
     """Build a Registry from a JSON list of restaurants.
 
     Each entry: ``{"id", "name", "whatsapp_number", "stamps_required"?,
     "reward"?, "tiers"? [{"name","stamps_required","reward"}, ...]}``.
+
+    Pass ``store_dir`` to use the legacy per-venue JSON files; otherwise all
+    venues share the single SQLite database at ``db_path``.
     """
     data = json.loads(Path(config_path).read_text())
     restaurants = [
@@ -395,6 +522,7 @@ def load_registry(config_path: str | Path, store_dir: str | Path = "loyalty_data
             stamps_required=e.get("stamps_required", 5),
             reward=e.get("reward", "a free treat"),
             tiers=[Tier(**t) for t in e["tiers"]] if e.get("tiers") else None,
+            db_path=None if store_dir else db_path,
             store_dir=store_dir,
         )
         for e in data
@@ -404,23 +532,25 @@ def load_registry(config_path: str | Path, store_dir: str | Path = "loyalty_data
 
 def build_default_registry(
     config_path: str | Path | None = None,
-    store_dir: str | Path = "loyalty_data",
+    db_path: str | Path = "loyalty.db",
 ) -> Registry:
     """Shared entry point for the webhook and the staff scripts.
 
-    Uses the restaurants config file if present (env ``RESTAURANTS_CONFIG``,
-    default ``restaurants.json``); otherwise falls back to a single restaurant
-    described by env vars, so a fresh checkout runs with zero config.
+    Storage defaults to a single SQLite database (env ``LOYALTY_DB``, default
+    ``loyalty.db``). Uses the restaurants config file if present (env
+    ``RESTAURANTS_CONFIG``, default ``restaurants.json``); otherwise falls back
+    to a single restaurant described by env vars, so a fresh checkout runs with
+    zero config.
     """
     config_path = Path(config_path or os.environ.get("RESTAURANTS_CONFIG", "restaurants.json"))
-    store_dir = Path(os.environ.get("LOYALTY_DIR", str(store_dir)))
+    db_path = Path(os.environ.get("LOYALTY_DB", str(db_path)))
     if config_path.exists():
-        return load_registry(config_path, store_dir)
+        return load_registry(config_path, db_path=db_path)
     return Registry([
         build_restaurant(
             id=os.environ.get("VENUE_ID", "default"),
             name=os.environ.get("VENUE_NAME", "Sugar Rush"),
             whatsapp_number=os.environ.get("WHATSAPP_FROM", "whatsapp:+14155238886"),
-            store_dir=store_dir,
+            db_path=db_path,
         )
     ])

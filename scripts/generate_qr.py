@@ -89,7 +89,7 @@ def main() -> None:
         sys.exit("qrcode not installed. Run: pip install -e .[qr]  (or: pip install 'qrcode[pil]')")
 
     if args.config:
-        registry = load_registry(args.config, store_dir="loyalty_data")
+        registry = load_registry(args.config)  # config only; no storage touched
         targets = registry.all() if args.all else (
             [registry.by_id(args.restaurant)] if args.restaurant else registry.all()
         )
