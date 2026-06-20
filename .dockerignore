@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+qr_posters/
+*.png
+*.db
+*.db-wal
+*.db-shm
+.venv/
