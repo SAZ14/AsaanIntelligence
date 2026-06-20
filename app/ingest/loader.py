@@ -6,7 +6,17 @@ from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from app.models.canonical import LineItem, MenuItem, Order, Payment, Review, Staff
+from app.models.canonical import (
+    Ingredient,
+    LineItem,
+    MenuItem,
+    Order,
+    Payment,
+    RecipeComponent,
+    Review,
+    Staff,
+    StockReceipt,
+)
 from app.ingest.mappings import cafe_generic as default_mapping
 
 
@@ -117,6 +127,65 @@ def load_reviews(
                 text=_get(row, m, "text"),
             ))
     return reviews
+
+
+def load_ingredients(
+    path: Path, mapping: dict[str, str] | None = None
+) -> dict[str, Ingredient]:
+    m = mapping or default_mapping.INGREDIENTS
+    items: dict[str, Ingredient] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            iid = _get(row, m, "ingredient_id")
+            cost_raw = _get(row, m, "unit_cost")
+            reorder_raw = _get(row, m, "reorder_level")
+            pack_size_raw = _get(row, m, "pack_size")
+            items[iid] = Ingredient(
+                ingredient_id=iid,
+                name=_get(row, m, "name"),
+                unit=_get(row, m, "unit"),
+                unit_cost=float(cost_raw) if cost_raw else None,
+                reorder_level=float(reorder_raw) if reorder_raw else 0.0,
+                pack_unit=_get(row, m, "pack_unit"),
+                pack_size=float(pack_size_raw) if pack_size_raw else 1.0,
+            )
+    return items
+
+
+def load_recipes(
+    path: Path, mapping: dict[str, str] | None = None
+) -> dict[str, list[RecipeComponent]]:
+    """Return recipes indexed by menu SKU -> list of ingredient components."""
+    m = mapping or default_mapping.RECIPES
+    recipes: dict[str, list[RecipeComponent]] = defaultdict(list)
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            sku = _get(row, m, "sku")
+            recipes[sku].append(RecipeComponent(
+                sku=sku,
+                ingredient_id=_get(row, m, "ingredient_id"),
+                qty_per_unit=float(_get(row, m, "qty_per_unit")),
+            ))
+    return dict(recipes)
+
+
+def load_stock_receipts(
+    path: Path, mapping: dict[str, str] | None = None
+) -> list[StockReceipt]:
+    m = mapping or default_mapping.STOCK_RECEIPTS
+    receipts: list[StockReceipt] = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            cost_raw = _get(row, m, "unit_cost")
+            receipts.append(StockReceipt(
+                receipt_id=_get(row, m, "receipt_id"),
+                datetime=dt.fromisoformat(_get(row, m, "datetime")),
+                ingredient_id=_get(row, m, "ingredient_id"),
+                qty=float(_get(row, m, "qty")),
+                unit_cost=float(cost_raw) if cost_raw else None,
+                unit=_get(row, m, "unit"),
+            ))
+    return receipts
 
 
 def load_dataset(

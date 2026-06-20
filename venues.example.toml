@@ -1,0 +1,19 @@
+# Multi-venue config. Copy this to `venues.toml` and add one [[venue]] block per
+# restaurant. The SAME code serves every venue — you never re-code; you just add
+# an entry here plus that venue's CSV folder.
+#
+# Twilio ACCOUNT credentials are shared across all venues (set once in the
+# environment / .env). Only `owner_whatsapp` differs per venue.
+
+[[venue]]
+name = "Sugar Rush"
+data_dir = "data"                       # uses the bundled demo data
+owner_whatsapp = "whatsapp:+923001234567"
+
+[[venue]]
+name = "The Burger Joint"
+data_dir = "venues/burger_joint"        # this venue's own CSV folder
+owner_whatsapp = "whatsapp:+923009998877"
+
+# To add a 3rd, 4th, 50th restaurant: copy a block, change the name, point
+# data_dir at its folder of CSVs, and set the owner's number. That's it.
