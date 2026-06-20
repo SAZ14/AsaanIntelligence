@@ -32,7 +32,13 @@ logger = logging.getLogger("whatsapp_webhook")
 app = FastAPI(title="Asaan Intelligence WhatsApp Webhook")
 
 # Phrases that trigger the full Instagram reputation report.
-REPORT_TRIGGERS = ("bad comments", "bad reviews", "check instagram", "anatummy")
+REPORT_TRIGGERS = (
+    "bad comments",
+    "bad reviews",
+    "check instagram",
+    "anatummy",
+    "instagram",
+)
 
 ACK_MESSAGE = (
     "On it — pulling your Anatummy Instagram report now ⏳ "
@@ -98,8 +104,13 @@ def generate_and_send_report(to_addr: str, from_addr: str) -> None:
 
 
 @app.get("/")
-def health() -> dict[str, str]:
+def root() -> dict[str, str]:
     return {"status": "ok", "endpoint": "POST /whatsapp/incoming"}
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 @app.post("/whatsapp/incoming")

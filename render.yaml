@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: asaan-whatsapp-webhook
+    runtime: python
+    plan: free
+    # Build the FastAPI app's dependencies.
+    buildCommand: pip install -r requirements.txt
+    # $PORT is provided by Render; the app must bind to it.
+    startCommand: uvicorn app.whatsapp_webhook:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Secrets are NOT committed. Set their values in the Render dashboard
+      # (Environment tab) or via `sync: false`, which prompts for them on deploy.
+      - key: APIFY_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      # Non-secret config can be set here directly.
+      - key: TWILIO_WHATSAPP_NUMBER
+        value: "whatsapp:+14155238886"
+      - key: TWILIO_WHATSAPP_FROM
+        value: "whatsapp:+14155238886"
+      - key: OWNER_NUMBER
+        value: "whatsapp:+16292595668"
+      - key: TWILIO_WHATSAPP_TO
+        value: "whatsapp:+16292595668"
+      - key: DRY_RUN
+        value: "0"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
