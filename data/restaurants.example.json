@@ -1,0 +1,16 @@
+[
+  {
+    "id": "sugar_rush",
+    "name": "Sugar Rush",
+    "whatsapp_number": "+14155238886",
+    "stamps_required": 5,
+    "reward": "a free ice cream"
+  },
+  {
+    "id": "burger_lab",
+    "name": "Burger Lab",
+    "whatsapp_number": "+14155551234",
+    "stamps_required": 5,
+    "reward": "a free burger"
+  }
+]

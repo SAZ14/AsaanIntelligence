@@ -12,12 +12,15 @@ from app.agents.customer import (
     InMemoryCardStore,
     JsonCardStore,
     LoyaltyProgram,
+    Registry,
     Tier,
+    build_restaurant,
     build_wa_link,
     format_card_status,
+    load_registry,
 )
 from app.whatsapp import WhatsAppNotifier
-from app.whatsapp.webhook import process_scan, twiml_reply
+from app.whatsapp.webhook import process_scan, route, twiml_reply
 
 
 PHONE = "+923001234567"
@@ -51,27 +54,41 @@ def test_each_scan_adds_one_stamp():
         assert result.completed_tier is None
 
 
-# ── Completing a card unlocks a reward and promotes ──
+# ── Default is a single tier that loops ──
 
-def test_completing_card_unlocks_reward_and_promotes():
+def test_default_single_tier_completes_and_resets():
     prog = _program()
-    silver = DEFAULT_TIERS[0]
+    tier = DEFAULT_TIERS[0]
+    assert len(DEFAULT_TIERS) == 1   # default programme is intentionally simple
+
     result = None
-    for _ in range(silver.stamps_required):
+    for _ in range(tier.stamps_required):
         result = prog.record_scan(PHONE)
 
-    # Last scan completed the Silver card.
-    assert result.completed_tier == silver
-    assert result.promoted_to == DEFAULT_TIERS[1]
-    # Fresh card has reset to zero stamps on the new (Gold) tier.
+    # Completing the card unlocks the reward and starts a fresh one (loops).
+    assert result.completed_tier == tier
+    assert result.promoted_to == tier            # same tier, reset
     assert result.card.stamps == 0
-    assert result.card.tier_index == 1
-    # Exactly one reward unlocked, not yet redeemed.
+    assert result.card.tier_index == 0
     assert len(result.card.rewards) == 1
-    assert result.card.rewards[0].reward == silver.reward
     assert result.card.rewards[0].redeemed is False
-    # Message congratulates + introduces the better tier.
-    assert silver.reward.upper() in result.message
+    assert tier.reward.upper() in result.message
+    assert "reset" in result.message
+
+
+# ── Multi-tier ladders still work when configured ──
+
+def test_completing_card_promotes_when_multi_tier():
+    prog = LoyaltyProgram(tiers=[
+        Tier("Silver", 3, "a free coffee"),
+        Tier("Gold", 5, "a free cake"),
+    ])
+    result = None
+    for _ in range(3):
+        result = prog.record_scan(PHONE)
+    assert result.completed_tier.name == "Silver"
+    assert result.promoted_to.name == "Gold"
+    assert result.card.tier_index == 1
     assert "Gold" in result.message
 
 
@@ -169,3 +186,64 @@ def test_notifier_dry_run_sends_loyalty_message():
     msg = n.send(PHONE, result.message)
     assert msg.status == "dry_run"
     assert msg.to == "whatsapp:+923001234567"
+
+
+# ── Multi-restaurant: separate QRs, separate tracking ──
+
+def _registry() -> Registry:
+    return Registry([
+        build_restaurant("sugar_rush", "Sugar Rush", "+14155238886",
+                         stamps_required=5, reward="a free ice cream"),
+        build_restaurant("burger_lab", "Burger Lab", "+14155551234",
+                         stamps_required=5, reward="a free burger"),
+    ])
+
+
+def test_registry_routes_by_to_number():
+    reg = _registry()
+    assert reg.by_number("whatsapp:+1 415 523 8886").id == "sugar_rush"
+    assert reg.by_number("+14155551234").id == "burger_lab"
+    assert reg.by_number("+10000000000") is None
+
+
+def test_each_restaurant_has_its_own_qr_and_reward():
+    reg = _registry()
+    sr, bl = reg.by_id("sugar_rush"), reg.by_id("burger_lab")
+    assert sr.wa_link() != bl.wa_link()
+    assert "14155238886" in sr.wa_link()
+    assert "a free ice cream" in sr.reward_line()
+    assert "a free burger" in bl.reward_line()
+
+
+def test_same_customer_tracked_independently_per_restaurant():
+    reg = _registry()
+    # Customer scans at Sugar Rush twice, Burger Lab once — routed by To number.
+    route("whatsapp:+923001234567", "+14155238886", reg)
+    route("whatsapp:+923001234567", "+14155238886", reg)
+    route("whatsapp:+923001234567", "+14155551234", reg)
+
+    assert reg.by_id("sugar_rush").program.lookup("+923001234567").stamps == 2
+    assert reg.by_id("burger_lab").program.lookup("+923001234567").stamps == 1
+
+
+def test_unknown_number_is_handled_gracefully():
+    reg = _registry()
+    reply = route("whatsapp:+923001234567", "+19998887777", reg)
+    assert "isn't set up" in reply
+
+
+def test_load_registry_gives_each_restaurant_its_own_store(tmp_path):
+    config = tmp_path / "restaurants.json"
+    config.write_text(
+        '[{"id":"a","name":"Cafe A","whatsapp_number":"+111","reward":"a free A"},'
+        ' {"id":"b","name":"Cafe B","whatsapp_number":"+222","reward":"a free B"}]'
+    )
+    reg = load_registry(config, store_dir=tmp_path / "stores")
+    reg.by_id("a").program.record_scan("+923001234567")
+
+    # Persisted to a per-restaurant file; the other venue stays empty.
+    assert (tmp_path / "stores" / "a.json").exists()
+    assert not (tmp_path / "stores" / "b.json").exists()
+    reg2 = load_registry(config, store_dir=tmp_path / "stores")
+    assert reg2.by_id("a").program.lookup("+923001234567").stamps == 1
+    assert reg2.by_id("b").program.lookup("+923001234567") is None

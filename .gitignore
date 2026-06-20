@@ -10,3 +10,8 @@ output/
 loyalty_cards.json
 demo_cards.json
 venue_qr.png
+
+# Loyalty: per-deployment config, runtime stores, generated posters
+restaurants.json
+loyalty_data/
+qr_posters/
