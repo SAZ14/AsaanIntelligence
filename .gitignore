@@ -20,3 +20,4 @@ qr_posters/
 *.db
 *.db-wal
 *.db-shm
+*.png
