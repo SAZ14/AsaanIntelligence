@@ -5,3 +5,8 @@ __pycache__/
 dist/
 .venv/
 output/
+
+# Loyalty runtime/generated artifacts
+loyalty_cards.json
+demo_cards.json
+venue_qr.png
