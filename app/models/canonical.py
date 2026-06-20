@@ -59,6 +59,35 @@ class Review(BaseModel):
     text: str
 
 
+class Ingredient(BaseModel):
+    """A raw stock item that menu items are made from (chicken, milk, beans)."""
+    ingredient_id: str
+    name: str
+    unit: str  # "piece", "g", "ml", "slice", "can", ...
+    unit_cost: float | None = None  # cost per single unit
+    reorder_level: float = 0.0  # remaining qty at/below which to reorder
+
+
+class RecipeComponent(BaseModel):
+    """One ingredient line in a menu item's recipe (bill of materials).
+
+    qty_per_unit is how much of `ingredient_id` is consumed to make ONE `sku`.
+    e.g. Chicken Sandwich (SAN) -> CHICKEN, qty_per_unit=1.
+    """
+    sku: str
+    ingredient_id: str
+    qty_per_unit: float
+
+
+class StockReceipt(BaseModel):
+    """A delivery of an ingredient into stock (450 pieces of chicken arrive)."""
+    receipt_id: str
+    datetime: datetime
+    ingredient_id: str
+    qty: float
+    unit_cost: float | None = None
+
+
 class Order(BaseModel):
     order_id: str
     datetime: datetime

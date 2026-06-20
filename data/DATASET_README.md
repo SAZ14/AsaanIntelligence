@@ -33,6 +33,49 @@ Regenerate or tweak anytime with `generate_data.py` (seed is fixed at 42, so out
 
 **`staff.csv`** — staff_id, name, role.
 
+### Inventory files (for the Inventory Management agent)
+
+**`ingredients.csv`** — the raw stock items menu items are made from.
+
+| column | meaning |
+|---|---|
+| ingredient_id | stable id used by recipes & receipts |
+| name | display name |
+| unit | unit of measure (piece, g, ml, slice, can, …) |
+| unit_cost | cost per single unit (PKR) |
+| reorder_level | remaining qty at/below which the agent raises a LOW alert |
+
+**`recipes.csv`** — the bill of materials: one row per ingredient in a menu item.
+
+| column | meaning |
+|---|---|
+| sku | menu item SKU (matches `menu.csv`) |
+| ingredient_id | ingredient consumed |
+| qty_per_unit | how much of that ingredient ONE unit of the SKU uses |
+
+e.g. `SAN,CHICKEN,1` — each Chicken Sandwich consumes 1 chicken piece.
+
+**`stock_receipts.csv`** — deliveries of ingredients into stock.
+
+| column | meaning |
+|---|---|
+| receipt_id | delivery id |
+| datetime | when it arrived |
+| ingredient_id | what was delivered |
+| qty | how much (in the ingredient's unit) |
+| unit_cost | cost per unit on this delivery (PKR) |
+
+The agent replays `sales_detail.csv` against `recipes.csv`, depletes the totals
+from `stock_receipts.csv`, and reports remaining stock, low/out/oversold alerts,
+theoretical cost of goods used, and days-to-stockout. A line item only consumes
+ingredients if it was actually made — a plain void (cancelled before the kitchen
+fired it) consumes nothing, while a `void_after_fire` or a comp still does.
+
+**Planted scenario:** 450 chicken pieces are delivered (250 + 200) and 292
+sandwiches are made over the period → **158 chicken left**. Avocado is delivered
+short (300 vs 334 used) so it surfaces as **OVERSOLD** — a waste/theft/under-delivery
+flag. Run it with `python scripts/inventory_report.py`.
+
 ---
 
 ## ANSWER KEY — what your engine should detect

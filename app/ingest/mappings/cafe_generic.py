@@ -50,3 +50,25 @@ REVIEWS = {
     "reviewer_name": "reviewer_name",
     "text": "text",
 }
+
+INGREDIENTS = {
+    "ingredient_id": "ingredient_id",
+    "name": "name",
+    "unit": "unit",
+    "unit_cost": "unit_cost",
+    "reorder_level": "reorder_level",
+}
+
+RECIPES = {
+    "sku": "sku",
+    "ingredient_id": "ingredient_id",
+    "qty_per_unit": "qty_per_unit",
+}
+
+STOCK_RECEIPTS = {
+    "receipt_id": "receipt_id",
+    "datetime": "datetime",
+    "ingredient_id": "ingredient_id",
+    "qty": "qty",
+    "unit_cost": "unit_cost",
+}
