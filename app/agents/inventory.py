@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 import anthropic
 
@@ -245,6 +246,101 @@ def find_unmapped_items(
     ]
     unmapped.sort(key=lambda u: u.qty_prepared, reverse=True)
     return unmapped
+
+
+# ── Daily movement (for the end-of-day owner report) ──
+
+@dataclass
+class DailyMovement:
+    """Trading activity for a single day, for the end-of-day summary."""
+    as_of: str = ""
+    order_count: int = 0
+    revenue: float = 0.0  # PKR taken across prepared line items
+    cogs: float = 0.0  # theoretical ingredient cost of what was made that day
+
+
+def compute_daily_movement(
+    orders: list[Order],
+    recipes: dict[str, list[RecipeComponent]],
+    ingredients: dict[str, Ingredient],
+    as_of: date,
+) -> DailyMovement:
+    day_orders = [o for o in orders if o.datetime.date() == as_of]
+    # line_amount is already post-discount and 0 for voided/comped lines.
+    revenue = sum(li.line_amount for o in day_orders for li in o.line_items)
+    consumed, _ = compute_consumption(day_orders, recipes)
+    cogs = sum(
+        qty * ingredients[iid].unit_cost
+        for iid, qty in consumed.items()
+        if iid in ingredients and ingredients[iid].unit_cost is not None
+    )
+    return DailyMovement(
+        as_of=str(as_of),
+        order_count=len(day_orders),
+        revenue=round(revenue, 2),
+        cogs=round(cogs, 2),
+    )
+
+
+# ── WhatsApp report rendering (deterministic, owner-facing) ──
+
+def _fmt_date(iso: str) -> str:
+    try:
+        return datetime.strptime(iso, "%Y-%m-%d").strftime("%a, %d %b %Y")
+    except (ValueError, TypeError):
+        return iso
+
+
+def render_whatsapp_report(
+    report: InventoryReport,
+    movement: DailyMovement | None = None,
+    max_reorder_items: int = 8,
+) -> str:
+    """Build a concise, owner-friendly WhatsApp message (kept well under 1600 chars).
+
+    Priority order: oversold (money leaking) > reorder now > today's trading
+    snapshot > healthy count. Uses WhatsApp *bold* markup.
+    """
+    when = _fmt_date(movement.as_of) if movement else _fmt_date(report.period_end)
+    lines: list[str] = [f"*{report.venue_name} — Daily Stock Report*", when, ""]
+
+    if report.oversold:
+        lines.append("⚠️ *OVERSOLD — check waste/theft*")
+        for st in report.oversold:
+            lines.append(f"• {st.name}: short {abs(st.remaining_qty):g} {st.unit}")
+        lines.append("")
+
+    alerts = report.out_of_stock + sorted(
+        report.low_stock,
+        key=lambda s: (s.days_to_stockout is None, s.days_to_stockout or 0),
+    )
+    if alerts:
+        lines.append("🔴 *Reorder now*")
+        for st in alerts[:max_reorder_items]:
+            if st.status == "out":
+                lines.append(f"• {st.name} — OUT")
+            else:
+                dts = f" (~{st.days_to_stockout:g}d)" if st.days_to_stockout else ""
+                lines.append(f"• {st.name} — {st.remaining_qty:g} {st.unit} left{dts}")
+        extra = len(alerts) - max_reorder_items
+        if extra > 0:
+            lines.append(f"• …+{extra} more")
+        lines.append("")
+
+    if movement and movement.order_count:
+        lines.append(
+            f"*Today:* {movement.order_count} orders · "
+            f"PKR {movement.revenue:,.0f} sales · "
+            f"PKR {movement.cogs:,.0f} ingredient cost"
+        )
+
+    healthy = sum(1 for s in report.ingredients if s.status == "ok")
+    lines.append(f"✅ {healthy} ingredients healthy")
+
+    if not report.oversold and not alerts:
+        lines.append("All stock above reorder level — nothing to order today.")
+
+    return "\n".join(lines).strip()
 
 
 # ── Optional LLM layer: human-readable reorder plan ──

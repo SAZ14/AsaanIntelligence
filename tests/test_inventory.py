@@ -11,7 +11,9 @@ from datetime import datetime, timedelta
 from app.agents.inventory import (
     build_inventory_status,
     compute_consumption,
+    compute_daily_movement,
     receipt_base_qty,
+    render_whatsapp_report,
     run_inventory_agent,
     sum_receipts,
     was_prepared,
@@ -240,6 +242,55 @@ class TestEndToEnd:
         )
         unmapped_skus = {u.sku for u in report.unmapped_items}
         assert "WTR" in unmapped_skus
+
+    def test_daily_movement_counts_only_that_day(self):
+        orders = [
+            _order("O1", datetime(2026, 5, 1, 12, 0), [_line("SAN", 2)]),
+            _order("O2", datetime(2026, 5, 1, 13, 0), [_line("CAP", 1)]),
+            _order("O3", datetime(2026, 5, 2, 9, 0), [_line("SAN", 5)]),
+        ]
+        mv = compute_daily_movement(orders, _recipes(), _ingredients(),
+                                    datetime(2026, 5, 1).date())
+        assert mv.order_count == 2
+        assert mv.as_of == "2026-05-01"
+        # COGS for day 1: 2 sandwiches (chicken 220 + bread 2*25) + 1 cap (bean 18*3.5 + milk 150*0.25)
+        assert mv.cogs == 2 * (220 + 2 * 25) + (18 * 3.5 + 150 * 0.25)
+
+
+class TestWhatsAppReport:
+    def _report_with_alerts(self):
+        ings = {
+            "AVOCADO": Ingredient(ingredient_id="AVOCADO", name="Avocado",
+                                  unit="piece", unit_cost=120, reorder_level=50),
+            "EGG": Ingredient(ingredient_id="EGG", name="Egg", unit="piece",
+                              unit_cost=35, reorder_level=100),
+            "CHICKEN": Ingredient(ingredient_id="CHICKEN", name="Chicken Portion",
+                                  unit="piece", unit_cost=220, reorder_level=50),
+        }
+        receipts = [
+            StockReceipt(receipt_id="R1", datetime=datetime(2026, 5, 1),
+                         ingredient_id="AVOCADO", qty=300, unit_cost=120),
+            StockReceipt(receipt_id="R2", datetime=datetime(2026, 5, 1),
+                         ingredient_id="EGG", qty=920, unit_cost=35),
+            StockReceipt(receipt_id="R3", datetime=datetime(2026, 5, 1),
+                         ingredient_id="CHICKEN", qty=450, unit_cost=220),
+        ]
+        consumed = {"AVOCADO": 334, "EGG": 870, "CHICKEN": 292}
+        statuses = build_inventory_status(ings, receipts, consumed, days_in_period=35)
+        from app.agents.inventory import InventoryReport
+        return InventoryReport(venue_name="Sugar Rush", period_end="2026-05-31",
+                               days_in_period=35, ingredients=statuses)
+
+    def test_message_includes_venue_and_alerts(self):
+        msg = render_whatsapp_report(self._report_with_alerts())
+        assert "Sugar Rush" in msg
+        assert "OVERSOLD" in msg and "Avocado" in msg  # oversold surfaced
+        assert "Egg" in msg  # low stock surfaced
+        assert "healthy" in msg  # healthy count line
+
+    def test_message_under_whatsapp_limit(self):
+        msg = render_whatsapp_report(self._report_with_alerts())
+        assert len(msg) <= 1600
 
     def test_full_run_produces_balanced_numbers(self):
         orders = [
