@@ -6,6 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.config import load_env
+
+load_env()  # populate os.environ (e.g. ANTHROPIC_API_KEY) from .env
+
 from app.ingest import load_dataset
 from app.ingest.loader import load_reviews
 from app.agents.reputation import run_reputation_agent
