@@ -111,11 +111,35 @@ def was_prepared(li: LineItem) -> bool:
 
 # ── Deterministic depletion engine ──
 
-def sum_receipts(receipts: list[StockReceipt]) -> dict[str, tuple[float, float]]:
-    """Aggregate deliveries per ingredient -> (total_qty, total_cost)."""
+def receipt_base_qty(
+    receipt: StockReceipt,
+    ingredients: dict[str, Ingredient] | None = None,
+) -> float:
+    """Convert a delivery's qty into the ingredient's base (recipe) unit.
+
+    A receipt recorded in the ingredient's pack_unit (e.g. 500 litres) is
+    multiplied by pack_size to get base units (500 * 1000 = 500000 ml).
+    Anything else (blank unit, or already the base unit) is taken as-is.
+    """
+    ing = ingredients.get(receipt.ingredient_id) if ingredients else None
+    if ing and receipt.unit and receipt.unit == ing.pack_unit and ing.pack_size:
+        return receipt.qty * ing.pack_size
+    return receipt.qty
+
+
+def sum_receipts(
+    receipts: list[StockReceipt],
+    ingredients: dict[str, Ingredient] | None = None,
+) -> dict[str, tuple[float, float]]:
+    """Aggregate deliveries per ingredient -> (total_base_qty, total_cost).
+
+    Quantities are normalised to the ingredient's base unit; cost is taken as
+    qty * unit_cost (unit_cost is per the receipt's own unit, so the total is
+    correct regardless of whether the delivery was in packs or base units).
+    """
     totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
     for r in receipts:
-        totals[r.ingredient_id][0] += r.qty
+        totals[r.ingredient_id][0] += receipt_base_qty(r, ingredients)
         if r.unit_cost is not None:
             totals[r.ingredient_id][1] += r.qty * r.unit_cost
     return {k: (v[0], v[1]) for k, v in totals.items()}
@@ -159,7 +183,7 @@ def build_inventory_status(
     consumed: dict[str, float],
     days_in_period: int,
 ) -> list[IngredientStatus]:
-    received = sum_receipts(receipts)
+    received = sum_receipts(receipts, ingredients)
     statuses: list[IngredientStatus] = []
 
     # Cover every ingredient we know about, plus any that only appear in

@@ -1,21 +1,21 @@
-ingredient_id,name,unit,unit_cost,reorder_level
-BEAN,Coffee Beans,g,3.5,5000
-MILK,Milk,ml,0.25,20000
-CHOC,Chocolate Syrup,ml,0.8,1000
-MATCHA,Matcha Powder,g,12,200
-CUP,Paper Cup,piece,15,300
-CROISSANT,Butter Croissant,piece,180,40
-PAINCHOC,Pain au Chocolat,piece,220,40
-CAKESLICE,Cake Slice,piece,260,30
-CHEESECAKE,Cheesecake Slice,piece,320,25
-BREAD,Bread Slice,slice,25,150
-AVOCADO,Avocado,piece,120,50
-EGG,Egg,piece,35,100
-SAUSAGE,Sausage,piece,90,80
-CHICKEN,Chicken Portion,piece,220,50
-PASTA,Pasta Portion,portion,140,40
-SAUCE,Pasta Sauce,ml,0.6,2000
-LETTUCE,Lettuce Head,piece,80,30
-TOMATO,Tomato,piece,30,60
-SODA,Imported Soda Can,can,380,40
-WATERBOT,Bottled Water,bottle,60,50
+ingredient_id,name,unit,unit_cost,reorder_level,pack_unit,pack_size
+BEAN,Coffee Beans,g,3.5,5000,kg,1000
+MILK,Milk,ml,0.25,20000,litre,1000
+CHOC,Chocolate Syrup,ml,0.8,1000,,
+MATCHA,Matcha Powder,g,12,200,,
+CUP,Paper Cup,piece,15,300,sleeve,50
+CROISSANT,Butter Croissant,piece,180,40,,
+PAINCHOC,Pain au Chocolat,piece,220,40,,
+CAKESLICE,Cake Slice,piece,260,30,,
+CHEESECAKE,Cheesecake Slice,piece,320,25,,
+BREAD,Bread Slice,slice,25,150,loaf,25
+AVOCADO,Avocado,piece,120,50,,
+EGG,Egg,piece,35,100,dozen,12
+SAUSAGE,Sausage,piece,90,80,,
+CHICKEN,Chicken Portion,piece,220,50,,
+PASTA,Pasta Portion,portion,140,40,,
+SAUCE,Pasta Sauce,ml,0.6,2000,,
+LETTUCE,Lettuce Head,piece,80,30,,
+TOMATO,Tomato,piece,30,60,,
+SODA,Imported Soda Can,can,380,40,case,24
+WATERBOT,Bottled Water,bottle,60,50,case,24

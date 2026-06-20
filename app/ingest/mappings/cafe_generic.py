@@ -57,6 +57,8 @@ INGREDIENTS = {
     "unit": "unit",
     "unit_cost": "unit_cost",
     "reorder_level": "reorder_level",
+    "pack_unit": "pack_unit",
+    "pack_size": "pack_size",
 }
 
 RECIPES = {
@@ -71,4 +73,5 @@ STOCK_RECEIPTS = {
     "ingredient_id": "ingredient_id",
     "qty": "qty",
     "unit_cost": "unit_cost",
+    "unit": "unit",
 }

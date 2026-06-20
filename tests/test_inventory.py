@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from app.agents.inventory import (
     build_inventory_status,
     compute_consumption,
+    receipt_base_qty,
     run_inventory_agent,
     sum_receipts,
     was_prepared,
@@ -143,6 +144,51 @@ class TestReceipts:
         totals = sum_receipts(receipts)
         assert totals["CHICKEN"][0] == 450
         assert totals["CHICKEN"][1] == 450 * 220
+
+
+# ── Multi-unit conversions ──
+
+class TestUnitConversions:
+    def _milk(self) -> dict[str, Ingredient]:
+        return {"MILK": Ingredient(ingredient_id="MILK", name="Milk", unit="ml",
+                                   unit_cost=0.25, reorder_level=1000,
+                                   pack_unit="litre", pack_size=1000)}
+
+    def test_pack_unit_converts_to_base_units(self):
+        r = StockReceipt(receipt_id="R", datetime=datetime(2026, 5, 1),
+                         ingredient_id="MILK", qty=500, unit_cost=250, unit="litre")
+        assert receipt_base_qty(r, self._milk()) == 500_000
+
+    def test_blank_unit_taken_as_base(self):
+        r = StockReceipt(receipt_id="R", datetime=datetime(2026, 5, 1),
+                         ingredient_id="MILK", qty=2000, unit_cost=0.25)
+        assert receipt_base_qty(r, self._milk()) == 2000
+
+    def test_unknown_unit_falls_back_to_base(self):
+        r = StockReceipt(receipt_id="R", datetime=datetime(2026, 5, 1),
+                         ingredient_id="MILK", qty=5, unit_cost=1, unit="gallon")
+        assert receipt_base_qty(r, self._milk()) == 5
+
+    def test_sum_receipts_converts_and_costs_total(self):
+        receipts = [StockReceipt(receipt_id="R", datetime=datetime(2026, 5, 1),
+                                 ingredient_id="MILK", qty=500, unit_cost=250,
+                                 unit="litre")]
+        totals = sum_receipts(receipts, self._milk())
+        qty, cost = totals["MILK"]
+        assert qty == 500_000  # base units
+        assert cost == 500 * 250  # cost is per pack, total unchanged
+
+    def test_consumption_in_base_units_balances_pack_receipt(self):
+        """A litre delivery should net correctly against ml consumption."""
+        ings = self._milk()
+        receipts = [StockReceipt(receipt_id="R", datetime=datetime(2026, 5, 1),
+                                 ingredient_id="MILK", qty=10, unit_cost=250,
+                                 unit="litre")]  # 10 L = 10000 ml
+        statuses = build_inventory_status(ings, receipts, {"MILK": 7500},
+                                          days_in_period=5)
+        st = statuses[0]
+        assert st.received_qty == 10_000
+        assert st.remaining_qty == 2_500
 
 
 # ── Status classification ──

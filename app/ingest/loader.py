@@ -139,12 +139,15 @@ def load_ingredients(
             iid = _get(row, m, "ingredient_id")
             cost_raw = _get(row, m, "unit_cost")
             reorder_raw = _get(row, m, "reorder_level")
+            pack_size_raw = _get(row, m, "pack_size")
             items[iid] = Ingredient(
                 ingredient_id=iid,
                 name=_get(row, m, "name"),
                 unit=_get(row, m, "unit"),
                 unit_cost=float(cost_raw) if cost_raw else None,
                 reorder_level=float(reorder_raw) if reorder_raw else 0.0,
+                pack_unit=_get(row, m, "pack_unit"),
+                pack_size=float(pack_size_raw) if pack_size_raw else 1.0,
             )
     return items
 
@@ -180,6 +183,7 @@ def load_stock_receipts(
                 ingredient_id=_get(row, m, "ingredient_id"),
                 qty=float(_get(row, m, "qty")),
                 unit_cost=float(cost_raw) if cost_raw else None,
+                unit=_get(row, m, "unit"),
             ))
     return receipts
 

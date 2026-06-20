@@ -41,9 +41,17 @@ Regenerate or tweak anytime with `generate_data.py` (seed is fixed at 42, so out
 |---|---|
 | ingredient_id | stable id used by recipes & receipts |
 | name | display name |
-| unit | unit of measure (piece, g, ml, slice, can, …) |
-| unit_cost | cost per single unit (PKR) |
-| reorder_level | remaining qty at/below which the agent raises a LOW alert |
+| unit | base/recipe unit of measure (piece, g, ml, slice, can, …) |
+| unit_cost | cost per single base unit (PKR) |
+| reorder_level | remaining base-unit qty at/below which the agent raises a LOW alert |
+| pack_unit | optional purchase unit (litre, kg, dozen, sleeve, loaf, case) |
+| pack_size | base units per pack, e.g. 1000 (ml/litre), 12 (dozen), 25 (loaf) |
+
+Recipes are always written in the **base unit** (ml, g, piece). Stock can be
+bought in a larger **pack unit**: set `pack_unit` + `pack_size`, then record a
+delivery in that unit (see `stock_receipts.csv`'s `unit` column) and the agent
+converts it to base units automatically. e.g. milk bought by the litre, beans by
+the kg, eggs by the dozen — all consumed in ml/g/piece.
 
 **`recipes.csv`** — the bill of materials: one row per ingredient in a menu item.
 
@@ -62,8 +70,9 @@ e.g. `SAN,CHICKEN,1` — each Chicken Sandwich consumes 1 chicken piece.
 | receipt_id | delivery id |
 | datetime | when it arrived |
 | ingredient_id | what was delivered |
-| qty | how much (in the ingredient's unit) |
-| unit_cost | cost per unit on this delivery (PKR) |
+| qty | how much was delivered (in `unit` below) |
+| unit_cost | cost per unit on this delivery (PKR, per `unit`) |
+| unit | unit `qty`/`unit_cost` are in; blank = base unit, or the ingredient's `pack_unit` (e.g. litre) |
 
 The agent replays `sales_detail.csv` against `recipes.csv`, depletes the totals
 from `stock_receipts.csv`, and reports remaining stock, low/out/oversold alerts,
