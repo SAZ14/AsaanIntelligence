@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -253,8 +254,11 @@ Reply format: issue_class,sentiment"""
                     ra.issue_class = issue
                 if sent in ("positive", "negative", "neutral", "mixed"):
                     ra.sentiment = sent
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — surface, don't swallow
+            print(
+                f"[classify] {ra.review_id}: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
 
     return reviews
 
