@@ -40,8 +40,10 @@ from app.whatsapp import WhatsAppNotifier
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--restaurant", help="restaurant id (default: all venues)")
-    ap.add_argument("--inactive-days", type=int, default=5, help="quiet for N days → nudge")
-    ap.add_argument("--min-scans", type=int, default=3, help="'loyal' = at least N scans")
+    ap.add_argument("--inactive-days", type=int,
+                    help="override: quiet for N days → nudge (default: the venue's setting)")
+    ap.add_argument("--min-scans", type=int,
+                    help="override: 'loyal' = at least N scans (default: the venue's setting)")
     ap.add_argument("--send", action="store_true", help="actually send the nudges + mark them")
     ap.add_argument("--top", type=int, help="list the top N loyal customers")
     ap.add_argument("--invite", help="event text; sends an invite to the --top N loyal customers")
@@ -78,11 +80,16 @@ def main() -> None:
                 print(f"  {c.phone:18s} {c.total_scans:>3} scans, {len(c.rewards)} reward(s) earned")
             continue
 
-        # Re-engagement nudges.
+        # Re-engagement nudges. Use this venue's owner-set policy unless the
+        # CLI overrides it.
+        inactive_days = args.inactive_days if args.inactive_days is not None else r.inactive_days
+        min_scans = args.min_scans if args.min_scans is not None else r.min_scans
         cands = at_risk_loyal_customers(
-            prog, min_scans=args.min_scans, inactive_days=args.inactive_days,
+            prog, min_scans=min_scans, inactive_days=inactive_days,
+            cooldown_days=r.nudge_cooldown_days,
         )
-        print(f"{len(cands)} loyal customer(s) quiet for ≥{args.inactive_days} days:")
+        print(f"{len(cands)} loyal customer(s) quiet for ≥{inactive_days} days "
+              f"(venue policy: ≥{r.min_scans} scans = loyal):")
         if args.send:
             send_reengagement(prog, notifier, cands)
         for c in cands:

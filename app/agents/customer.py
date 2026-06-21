@@ -566,6 +566,11 @@ class Restaurant:
     id: str
     whatsapp_number: str
     program: LoyaltyProgram
+    # Owner-configurable re-engagement policy (set per venue in restaurants.json;
+    # these are the defaults until the owner changes them).
+    inactive_days: int = DEFAULT_INACTIVE_DAYS
+    min_scans: int = DEFAULT_LOYAL_MIN_SCANS
+    nudge_cooldown_days: int = DEFAULT_NUDGE_COOLDOWN_DAYS
 
     @property
     def name(self) -> str:
@@ -591,6 +596,9 @@ def build_restaurant(
     store: CardStore | None = None,
     db_path: str | Path | None = None,
     store_dir: str | Path | None = None,
+    inactive_days: int = DEFAULT_INACTIVE_DAYS,
+    min_scans: int = DEFAULT_LOYAL_MIN_SCANS,
+    nudge_cooldown_days: int = DEFAULT_NUDGE_COOLDOWN_DAYS,
 ) -> Restaurant:
     """Build one restaurant and pick where its cards persist.
 
@@ -599,6 +607,9 @@ def build_restaurant(
       2. ``db_path``    — SQLite database shared by all venues (recommended)
       3. ``store_dir``  — legacy JSON file per venue (``<store_dir>/<id>.json``)
       4. in-memory      — nothing persisted (demo)
+
+    ``inactive_days`` / ``min_scans`` / ``nudge_cooldown_days`` are the
+    owner-set re-engagement policy for this venue.
     """
     if tiers is None:
         tiers = [Tier(name="Loyalty", stamps_required=stamps_required, reward=reward)]
@@ -610,7 +621,11 @@ def build_restaurant(
         else:
             store = InMemoryCardStore()
     program = LoyaltyProgram(venue_name=name, tiers=tiers, store=store)
-    return Restaurant(id=id, whatsapp_number=whatsapp_number, program=program)
+    return Restaurant(
+        id=id, whatsapp_number=whatsapp_number, program=program,
+        inactive_days=inactive_days, min_scans=min_scans,
+        nudge_cooldown_days=nudge_cooldown_days,
+    )
 
 
 @dataclass
@@ -653,6 +668,9 @@ def load_registry(
             tiers=[Tier(**t) for t in e["tiers"]] if e.get("tiers") else None,
             db_path=None if store_dir else db_path,
             store_dir=store_dir,
+            inactive_days=e.get("inactive_days", DEFAULT_INACTIVE_DAYS),
+            min_scans=e.get("min_scans", DEFAULT_LOYAL_MIN_SCANS),
+            nudge_cooldown_days=e.get("nudge_cooldown_days", DEFAULT_NUDGE_COOLDOWN_DAYS),
         )
         for e in data
     ]

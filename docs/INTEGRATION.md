@@ -137,6 +137,11 @@ One entry per restaurant. Copy `data/restaurants.example.json` and edit:
 
 - `whatsapp_number` — that venue's WhatsApp number (the one customers message).
 - `stamps_required` / `reward` — tweak freely per venue.
+- `inactive_days` — **owner-set**: quiet for this many days → eligible for a
+  "we miss you" nudge (default 5).
+- `min_scans` — how many visits counts as "loyal" (default 3).
+- `nudge_cooldown_days` — don't nudge the same person again within this many
+  days (default 5).
 
 This file is gitignored (it's per-deployment). Adding a new restaurant = one new
 entry here + its QR poster. No code changes.

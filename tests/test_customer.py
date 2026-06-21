@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from app.agents.customer import (
+    DEFAULT_INACTIVE_DAYS,
+    DEFAULT_LOYAL_MIN_SCANS,
     DEFAULT_TIERS,
     EngagementCandidate,
     InMemoryCardStore,
@@ -284,6 +286,21 @@ def test_event_invite_send_and_format():
     body = sent[0].body
     assert "invited" in body and "Tasting night Friday 7pm." in body
     assert "YES" in format_event_invite("Sugar Rush", "x")
+
+
+def test_engagement_policy_is_per_restaurant_from_config(tmp_path):
+    config = tmp_path / "restaurants.json"
+    config.write_text(
+        '[{"id":"a","name":"A","whatsapp_number":"+111","inactive_days":10,'
+        ' "min_scans":6,"nudge_cooldown_days":3},'
+        ' {"id":"b","name":"B","whatsapp_number":"+222"}]'
+    )
+    reg = load_registry(config, db_path=tmp_path / "l.db")
+    a, b = reg.by_id("a"), reg.by_id("b")
+    # Venue A uses the owner-set values; B falls back to the defaults.
+    assert (a.inactive_days, a.min_scans, a.nudge_cooldown_days) == (10, 6, 3)
+    assert b.inactive_days == DEFAULT_INACTIVE_DAYS
+    assert b.min_scans == DEFAULT_LOYAL_MIN_SCANS
 
 
 def test_last_nudged_at_persists_in_sqlite(tmp_path):
