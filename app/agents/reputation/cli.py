@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Run the Reputation agent on the main dataset and print the report."""
+"""Run the Reputation agent on the main dataset and print the report.
+
+Requires ANTHROPIC_API_KEY (it calls the Claude API).
+Run from the repo root:   python -m app.agents.reputation.cli
+"""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 
-from app.ingest import load_dataset
-from app.ingest.loader import load_reviews
-from app.agents.reputation import run_reputation_agent
+from app.core.ingest import load_dataset, load_reviews
+from app.agents.reputation.agent import run_reputation_agent
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+DATA = ROOT / "data"
 
 
 def main() -> None:

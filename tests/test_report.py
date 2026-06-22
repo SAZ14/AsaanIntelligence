@@ -1,9 +1,10 @@
 from pathlib import Path
 
-from app.ingest import load_dataset
-from app.analysis.integrity import analyze_integrity
-from app.analysis.retention import analyze_retention, analyze_operations
-from app.report.render import (
+from app.core.ingest import load_dataset
+from app.agents.integrity.analyzer import analyze_integrity
+from app.agents.retention.analyzer import analyze_retention
+from app.agents.operations.analyzer import analyze_operations
+from app.reporting.render import (
     generate_report, compute_headlines,
     _observed_monthly_spend, SANITY_WINBACK_PCT_WARN,
 )

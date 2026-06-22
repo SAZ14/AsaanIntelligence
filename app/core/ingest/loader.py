@@ -6,8 +6,8 @@ from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from app.models.canonical import LineItem, MenuItem, Order, Payment, Review, Staff
-from app.ingest.mappings import cafe_generic as default_mapping
+from app.core.models import LineItem, MenuItem, Order, Payment, Review, Staff
+from app.core.ingest.mappings import cafe_generic as default_mapping
 
 
 def _get(row: dict[str, str], mapping: dict[str, str], key: str) -> str:

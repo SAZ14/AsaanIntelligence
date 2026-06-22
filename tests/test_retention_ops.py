@@ -1,9 +1,10 @@
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
-from app.ingest import load_dataset
-from app.models.canonical import Order, LineItem, Payment, Staff, MenuItem
-from app.analysis.retention import analyze_retention, analyze_operations
+from app.core.ingest import load_dataset
+from app.core.models import Order, LineItem, Payment, Staff, MenuItem
+from app.agents.retention.analyzer import analyze_retention
+from app.agents.operations.analyzer import analyze_operations
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 HOLDOUT = DATA / "holdout"

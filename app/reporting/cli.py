@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Generate the HTML audit report from the main dataset."""
+"""Generate the combined HTML audit report from the main dataset.
+
+Pulls together every agent (integrity + retention + operations) into one
+owner-facing report. Run from the repo root:
+
+    python -m app.reporting.cli
+"""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
-from app.ingest import load_dataset
-from app.analysis.integrity import analyze_integrity
-from app.analysis.retention import analyze_retention, analyze_operations
-from app.report.render import generate_report, compute_headlines
+from app.core.ingest import load_dataset
+from app.agents.integrity.analyzer import analyze_integrity
+from app.agents.retention.analyzer import analyze_retention
+from app.agents.operations.analyzer import analyze_operations
+from app.reporting.render import generate_report, compute_headlines
 
-DATA = Path(__file__).resolve().parent.parent / "data"
-OUT = Path(__file__).resolve().parent.parent / "output"
+DATA = ROOT / "data"
+OUT = ROOT / "output"
 
 
 def main() -> None:

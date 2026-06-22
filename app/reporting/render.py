@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from html import escape
 
-from app.analysis.integrity import IntegrityReport, StaffIntegrity, FlaggedEvent
-from app.analysis.retention import RetentionReport, OperationsReport, CustomerProfile
+from app.agents.integrity.analyzer import IntegrityReport, StaffIntegrity, FlaggedEvent
+from app.agents.retention.analyzer import RetentionReport, CustomerProfile
+from app.agents.operations.analyzer import OperationsReport
 
 FLAGGED_SCORE_THRESHOLD = 99.0
 WINNABLE_GAP_MAX_DAYS = 30

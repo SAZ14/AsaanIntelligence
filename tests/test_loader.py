@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.ingest import load_dataset
+from app.core.ingest import load_dataset
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 

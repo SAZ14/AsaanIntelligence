@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Print the full IntegrityReport for a dataset."""
+"""Print the full IntegrityReport for a dataset.
+
+Run from the repo root:   python -m app.agents.integrity.cli
+"""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 
-from app.ingest import load_dataset
-from app.analysis.integrity import analyze_integrity
+from app.core.ingest import load_dataset
+from app.agents.integrity.analyzer import analyze_integrity
 
 
 def print_report(data_dir: Path, label: str = "") -> None:
@@ -89,10 +93,9 @@ def print_report(data_dir: Path, label: str = "") -> None:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parent.parent
-    print_report(root / "data", label="MAIN DATASET")
+    print_report(ROOT / "data", label="MAIN DATASET")
 
-    holdout = root / "data" / "holdout"
+    holdout = ROOT / "data" / "holdout"
     if holdout.exists():
         print_report(holdout, label="HELD-OUT DATASET")
 
