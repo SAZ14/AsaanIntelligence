@@ -1,0 +1,13 @@
+{
+  "name": "twilio-loyalty",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhatsApp loyalty stamp cards running entirely on Twilio (Functions + Sync) — no server to host",
+  "scripts": {
+    "start": "twilio-run",
+    "deploy": "twilio-run deploy"
+  },
+  "devDependencies": {
+    "twilio-run": "^3.5.4"
+  }
+}

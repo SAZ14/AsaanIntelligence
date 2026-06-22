@@ -21,3 +21,8 @@ qr_posters/
 *.db-wal
 *.db-shm
 *.png
+
+# Twilio Functions runtime
+twilio-loyalty/.env
+twilio-loyalty/node_modules/
+twilio-loyalty/.twiliodeployinfo
