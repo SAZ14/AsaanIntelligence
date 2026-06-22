@@ -289,6 +289,48 @@ def test_event_invite_send_and_format():
     assert "YES" in format_event_invite("Sugar Rush", "x")
 
 
+# ── WhatsApp template channel (same chat as the stamps) ──
+
+def test_reengagement_via_whatsapp_template():
+    prog = _seeded_program(_card("+loyalquiet", scans=6, days_since_scan=9))
+    wa = WhatsAppNotifier(dry_run=True)
+    cands = at_risk_loyal_customers(prog, inactive_days=7, today=TODAY)
+    sent = send_reengagement(prog, wa, cands, today=TODAY,
+                             template_sid="HX123", reward="a free ice cream")
+    assert len(sent) == 1
+    body = sent[0].body
+    # Template send carries the ContentSid and the filled-in variables.
+    assert "HX123" in body
+    assert "{{1}}=Sugar Rush" in body
+    assert "{{2}}=9" in body
+    assert "{{3}}=a free ice cream" in body
+    assert sent[0].to == "whatsapp:+loyalquiet"
+    # Still marked so they aren't re-nudged.
+    assert prog.lookup("+loyalquiet").last_nudged_at == TODAY.isoformat()
+
+
+def test_event_invite_via_whatsapp_template():
+    prog = _seeded_program(_card("+vip", scans=15, days_since_scan=1))
+    wa = WhatsAppNotifier(dry_run=True)
+    sent = send_event_invites(wa, "Sugar Rush", top_loyal_customers(prog, 5),
+                              "Tasting night Friday.", template_sid="HX999")
+    assert "HX999" in sent[0].body
+    assert "{{2}}=Tasting night Friday." in sent[0].body
+
+
+def test_template_sids_loaded_from_config(tmp_path):
+    config = tmp_path / "restaurants.json"
+    config.write_text(
+        '[{"id":"a","name":"A","whatsapp_number":"+111",'
+        ' "winback_template_sid":"HXwin","invite_template_sid":"HXinv"},'
+        ' {"id":"b","name":"B","whatsapp_number":"+222"}]'
+    )
+    reg = load_registry(config, db_path=tmp_path / "l.db")
+    assert reg.by_id("a").winback_template_sid == "HXwin"
+    assert reg.by_id("a").invite_template_sid == "HXinv"
+    assert reg.by_id("b").winback_template_sid is None  # falls back to SMS
+
+
 # ── SMS channel for proactive nudges (the no-Meta path) ──
 
 def test_sms_notifier_dry_run_appends_opt_out_and_strips_whatsapp_prefix():

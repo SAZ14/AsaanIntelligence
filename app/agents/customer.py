@@ -492,6 +492,23 @@ def format_event_invite(venue: str, event_details: str) -> str:
     )
 
 
+# WhatsApp template variable builders. The approved template wording uses
+# numbered placeholders ({{1}}, {{2}}, ...); these map our data onto them.
+#   Win-back template suggestion:
+#     "Hey, we miss you at {{1}}! It's been {{2}} days — come back for {{3}}.
+#      Your loyalty card is waiting \U0001F381"
+#   Invite template suggestion:
+#     "\U0001F389 You're one of {{1}}'s most loyal regulars — you're invited!
+#      {{2}} Reply YES to reserve your spot."
+
+def winback_template_vars(candidate: "EngagementCandidate", venue: str, reward: str) -> dict[str, str]:
+    return {"1": venue, "2": str(candidate.days_inactive), "3": reward}
+
+
+def invite_template_vars(venue: str, event_details: str) -> dict[str, str]:
+    return {"1": venue, "2": event_details}
+
+
 def at_risk_loyal_customers(
     program: LoyaltyProgram,
     *,
@@ -527,12 +544,22 @@ def send_reengagement(
     candidates: list[EngagementCandidate],
     *,
     today: date | None = None,
+    template_sid: str | None = None,
+    reward: str = "",
 ) -> list:
-    """Send each nudge and stamp ``last_nudged_at`` so they aren't re-spammed."""
+    """Send each nudge and stamp ``last_nudged_at`` so they aren't re-spammed.
+
+    If ``template_sid`` is given, send via an approved WhatsApp template (same
+    chat as the stamps); otherwise send the free-form text (used for SMS).
+    """
     today = today or date.today()
     sent = []
     for c in candidates:
-        sent.append(notifier.send(c.card.phone, c.message))
+        if template_sid:
+            vars = winback_template_vars(c, program.venue_name, reward)
+            sent.append(notifier.send_template(c.card.phone, template_sid, vars))
+        else:
+            sent.append(notifier.send(c.card.phone, c.message))
         c.card.last_nudged_at = today.isoformat()
         program.store.put(c.card)
     return sent
@@ -545,7 +572,13 @@ def top_loyal_customers(program: LoyaltyProgram, n: int = 10) -> list[LoyaltyCar
     return cards[:n]
 
 
-def send_event_invites(notifier, venue: str, customers: list[LoyaltyCard], event_details: str) -> list:
+def send_event_invites(
+    notifier, venue: str, customers: list[LoyaltyCard], event_details: str,
+    *, template_sid: str | None = None,
+) -> list:
+    if template_sid:
+        vars = invite_template_vars(venue, event_details)
+        return [notifier.send_template(c.phone, template_sid, vars) for c in customers]
     return [notifier.send(c.phone, format_event_invite(venue, event_details)) for c in customers]
 
 
@@ -571,6 +604,11 @@ class Restaurant:
     inactive_days: int = DEFAULT_INACTIVE_DAYS
     min_scans: int = DEFAULT_LOYAL_MIN_SCANS
     nudge_cooldown_days: int = DEFAULT_NUDGE_COOLDOWN_DAYS
+    # Twilio ContentSids of the Meta-approved WhatsApp templates used for the
+    # proactive messages (so they go in the same chat as the stamps). When set,
+    # the win-back/invite is sent as a template; when None, it falls back to SMS.
+    winback_template_sid: str | None = None
+    invite_template_sid: str | None = None
 
     @property
     def name(self) -> str:
@@ -599,6 +637,8 @@ def build_restaurant(
     inactive_days: int = DEFAULT_INACTIVE_DAYS,
     min_scans: int = DEFAULT_LOYAL_MIN_SCANS,
     nudge_cooldown_days: int = DEFAULT_NUDGE_COOLDOWN_DAYS,
+    winback_template_sid: str | None = None,
+    invite_template_sid: str | None = None,
 ) -> Restaurant:
     """Build one restaurant and pick where its cards persist.
 
@@ -625,6 +665,8 @@ def build_restaurant(
         id=id, whatsapp_number=whatsapp_number, program=program,
         inactive_days=inactive_days, min_scans=min_scans,
         nudge_cooldown_days=nudge_cooldown_days,
+        winback_template_sid=winback_template_sid,
+        invite_template_sid=invite_template_sid,
     )
 
 
@@ -671,6 +713,8 @@ def load_registry(
             inactive_days=e.get("inactive_days", DEFAULT_INACTIVE_DAYS),
             min_scans=e.get("min_scans", DEFAULT_LOYAL_MIN_SCANS),
             nudge_cooldown_days=e.get("nudge_cooldown_days", DEFAULT_NUDGE_COOLDOWN_DAYS),
+            winback_template_sid=e.get("winback_template_sid"),
+            invite_template_sid=e.get("invite_template_sid"),
         )
         for e in data
     ]

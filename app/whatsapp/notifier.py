@@ -15,6 +15,7 @@ Safety model:
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -75,5 +76,33 @@ class WhatsAppNotifier:
             from_=_normalize(self.from_number), to=to, body=body
         )
         msg = SentMessage(to=to, body=body, status=resp.status, sid=resp.sid or "")
+        self.sent.append(msg)
+        return msg
+
+    def send_template(self, to: str, content_sid: str, variables: dict | None = None) -> SentMessage:
+        """Send an approved WhatsApp template (for proactive, out-of-session messages).
+
+        ``content_sid`` is the Twilio ContentSid of a Meta-approved template;
+        ``variables`` fills its {{1}}, {{2}}, ... placeholders (keys are the
+        placeholder numbers as strings). In dry-run we record what would be
+        sent so it can be previewed without credentials.
+        """
+        to = _normalize(to)
+        variables = variables or {}
+        if self.dry_run:
+            shown = ", ".join(f"{{{{{k}}}}}={v}" for k, v in variables.items())
+            body = f"[WhatsApp template {content_sid}] {shown}"
+            msg = SentMessage(to=to, body=body, status="dry_run")
+            self.sent.append(msg)
+            return msg
+
+        from twilio.rest import Client  # type: ignore
+
+        client = Client(self.account_sid, self.auth_token)
+        resp = client.messages.create(
+            from_=_normalize(self.from_number), to=to,
+            content_sid=content_sid, content_variables=json.dumps(variables),
+        )
+        msg = SentMessage(to=to, body=f"[template {content_sid}]", status=resp.status, sid=resp.sid or "")
         self.sent.append(msg)
         return msg

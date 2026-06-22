@@ -35,6 +35,7 @@ from app.agents.customer import (
     top_loyal_customers,
 )
 from app.sms import SmsNotifier
+from app.whatsapp import WhatsAppNotifier
 
 
 def main() -> None:
@@ -54,21 +55,30 @@ def main() -> None:
     if venues == [None]:
         sys.exit(f"No restaurant '{args.restaurant}'. Known: {[r.id for r in registry.all()]}")
 
-    # Proactive nudges go over SMS (no Meta verification/templates needed).
-    notifier = SmsNotifier()  # SMS_DRY_RUN defaults ON
-    mode = "DRY RUN (nothing sent)" if notifier.dry_run else "LIVE (SMS)"
+    # Proactive messages go over WhatsApp templates (same chat as the stamps)
+    # when the venue has an approved template configured, else they fall back to
+    # SMS (no Meta setup). DRY_RUN is on by default for both.
+    wa = WhatsAppNotifier()
+    sms = SmsNotifier()
+    dry = "DRY RUN (nothing sent)" if wa.dry_run else "LIVE"
 
     for r in venues:
         prog = r.program
         print("=" * 72)
-        print(f"{r.name}  (id: {r.id})   — {mode}")
+        print(f"{r.name}  (id: {r.id})   — {dry}")
         print("=" * 72)
 
         # Event invites to the most loyal customers.
         if args.top and args.invite:
             tops = top_loyal_customers(prog, args.top)
-            sent = send_event_invites(notifier, r.name, tops, args.invite)
-            print(f"Invited {len(sent)} loyal customer(s):")
+            if r.invite_template_sid:
+                sent = send_event_invites(wa, r.name, tops, args.invite,
+                                          template_sid=r.invite_template_sid)
+                channel = "WhatsApp template"
+            else:
+                sent = send_event_invites(sms, r.name, tops, args.invite)
+                channel = "SMS (no invite template set)"
+            print(f"Invited {len(sent)} loyal customer(s) via {channel}:")
             for c, m in zip(tops, sent):
                 print(f"  {c.phone:18s} ({c.total_scans} scans)  [{m.status}]")
             continue
@@ -89,10 +99,16 @@ def main() -> None:
             prog, min_scans=min_scans, inactive_days=inactive_days,
             cooldown_days=r.nudge_cooldown_days,
         )
+        use_template = bool(r.winback_template_sid)
+        channel = "WhatsApp template" if use_template else "SMS (no win-back template set)"
         print(f"{len(cands)} loyal customer(s) quiet for ≥{inactive_days} days "
-              f"(venue policy: ≥{r.min_scans} scans = loyal):")
+              f"(venue policy: ≥{r.min_scans} scans = loyal) — via {channel}:")
         if args.send:
-            send_reengagement(prog, notifier, cands)
+            if use_template:
+                send_reengagement(prog, wa, cands, template_sid=r.winback_template_sid,
+                                  reward=prog.tiers[0].reward)
+            else:
+                send_reengagement(prog, sms, cands)
         for c in cands:
             flag = " [sent]" if args.send else ""
             print(f"\n  {c.card.phone} — {c.card.total_scans} scans, "

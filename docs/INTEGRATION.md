@@ -192,16 +192,35 @@ python scripts/customer_engage.py --restaurant sugar_rush --top 10 \
 
 Tune with `--inactive-days` (default 5) and `--min-scans` (default 3 = "loyal").
 
-> ✅ **These go over SMS, so NO Meta verification or templates are needed.**
-> Proactive messages (sent days later) would require Meta business verification
-> + approved templates *on WhatsApp* — so instead the win-back/invite nudges are
-> sent by **SMS** via Twilio, which has no such requirement. You already have the
-> customer's number from the scan. An opt-out line ("Reply STOP to opt out.") is
-> appended automatically.
+### How the proactive messages are sent
+
+Messages sent days later are outside WhatsApp's 24-hour window, so WhatsApp
+requires an **approved template** for them. Each venue picks its channel:
+
+- **WhatsApp template (same chat as the stamps)** — set the venue's
+  `winback_template_sid` / `invite_template_sid` in `restaurants.json`. The
+  message lands in the same WhatsApp thread as the stamp cards.
+- **SMS fallback** — if no template SID is set, the nudge goes by SMS instead
+  (zero setup, separate text thread, auto "Reply STOP to opt out.").
+
+**One-time WhatsApp template setup (per template):**
+1. Twilio Console → **Content Template Builder** → create a template, e.g.:
+   > Win-back: `Hey, we miss you at {{1}}! It's been {{2}} days — come back for {{3}}. Your loyalty card is waiting 🎁`
+   >
+   > Invite: `🎉 You're one of {{1}}'s most loyal regulars — you're invited! {{2}} Reply YES to reserve your spot.`
+2. Submit it for WhatsApp approval (usually minutes–hours).
+3. Copy the **ContentSid** (`HX…`) and paste it into the venue's config
+   (`winback_template_sid` / `invite_template_sid`).
+
+The code fills the `{{1}}`, `{{2}}`, `{{3}}` blanks per customer (venue, days
+inactive, reward / event text), so one approved template serves everyone.
+
+> For a single cafe's volume you typically don't need full Meta *business
+> verification* — a new WhatsApp sender can send ~250 of these proactive
+> conversations a day out of the box. Verification only raises that limit.
 >
-> To send for real: set `SMS_DRY_RUN=0`, `SMS_FROM=<your Twilio SMS number>`,
-> and the Twilio credentials. (The stamp reply stays on WhatsApp and still needs
-> no Meta setup, because the customer messages first.)
+> To send for real: set `WHATSAPP_DRY_RUN=0` + Twilio credentials (WhatsApp
+> templates), or `SMS_DRY_RUN=0` + `SMS_FROM` (SMS fallback).
 
 ---
 

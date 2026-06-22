@@ -7,7 +7,9 @@
     "reward": "a free ice cream",
     "inactive_days": 7,
     "min_scans": 3,
-    "nudge_cooldown_days": 7
+    "nudge_cooldown_days": 7,
+    "winback_template_sid": "HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "invite_template_sid": "HXyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
   },
   {
     "id": "burger_lab",
