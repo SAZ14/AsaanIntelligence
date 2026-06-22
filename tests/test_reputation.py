@@ -10,13 +10,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.agents.reputation import (
+from app.agents.reputation.agent import (
     ReviewAnalysis,
     VisitContext,
     correlate_review,
     detect_patterns,
 )
-from app.models.canonical import MenuItem, Order, Review, Staff, LineItem, Payment
+from app.core.models import MenuItem, Order, Review, Staff, LineItem, Payment
 
 
 # ── Fixtures ──

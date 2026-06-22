@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from app.ingest import load_dataset
-from app.analysis.integrity import analyze_integrity
+from app.core.ingest import load_dataset
+from app.agents.integrity.analyzer import analyze_integrity
 
 HOLDOUT = Path(__file__).resolve().parent.parent / "data" / "holdout"
 

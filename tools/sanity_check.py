@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Sanity check: load the dataset and print summary stats."""
+"""Sanity check: load the dataset and print summary stats.
+
+A quick "is the data loading correctly?" smoke test, independent of any agent.
+Run from the repo root:   python tools/sanity_check.py
+"""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-from app.ingest import load_dataset
+from app.core.ingest import load_dataset
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+DATA = ROOT / "data"
 
 
 def main() -> None:

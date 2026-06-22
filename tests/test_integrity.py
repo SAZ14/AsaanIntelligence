@@ -1,9 +1,9 @@
 from pathlib import Path
 from datetime import datetime
 
-from app.ingest import load_dataset
-from app.analysis.integrity import analyze_integrity, IntegrityReport
-from app.models.canonical import Order, LineItem, Payment, Staff, MenuItem
+from app.core.ingest import load_dataset
+from app.agents.integrity.analyzer import analyze_integrity, IntegrityReport
+from app.core.models import Order, LineItem, Payment, Staff, MenuItem
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 

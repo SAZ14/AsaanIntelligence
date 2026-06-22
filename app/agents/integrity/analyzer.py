@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from app.models.canonical import MenuItem, Order, Staff
+from app.core.models import MenuItem, Order, Staff
 
 
 @dataclass

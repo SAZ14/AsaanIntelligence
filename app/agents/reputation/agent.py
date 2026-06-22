@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import anthropic
 
-from app.models.canonical import MenuItem, Order, Review, Staff
+from app.core.models import MenuItem, Order, Review, Staff
 
 
 # ── Config ──
