@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.27",
     "twilio>=9.0",
     "python-multipart>=0.0.9",
+    "apify-client>=3.0",
 ]
 
 [tool.pytest.ini_options]
