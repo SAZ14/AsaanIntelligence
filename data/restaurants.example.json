@@ -1,0 +1,24 @@
+[
+  {
+    "id": "sugar_rush",
+    "name": "Sugar Rush",
+    "whatsapp_number": "+14155238886",
+    "stamps_required": 5,
+    "reward": "a free ice cream",
+    "inactive_days": 7,
+    "min_scans": 3,
+    "nudge_cooldown_days": 7,
+    "winback_template_sid": "HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "invite_template_sid": "HXyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+    "id": "burger_lab",
+    "name": "Burger Lab",
+    "whatsapp_number": "+14155551234",
+    "stamps_required": 5,
+    "reward": "a free burger",
+    "inactive_days": 5,
+    "min_scans": 4,
+    "nudge_cooldown_days": 5
+  }
+]

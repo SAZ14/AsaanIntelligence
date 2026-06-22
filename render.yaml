@@ -1,0 +1,20 @@
+# One-click deploy to Render (https://render.com).
+# New > Blueprint > point it at this repo. Render builds the Dockerfile, gives
+# you a permanent https URL, and mounts a 1 GB persistent disk at /data so the
+# SQLite loyalty database survives restarts and redeploys.
+services:
+  - type: web
+    name: loyalty-webhook
+    runtime: docker
+    plan: starter            # persistent disks require a paid instance (~$7/mo)
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: loyalty-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: LOYALTY_DB
+        value: /data/loyalty.db          # on the persistent disk
+      - key: RESTAURANTS_CONFIG
+        value: /srv/data/restaurants.example.json   # replace with your real venues file

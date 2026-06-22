@@ -1,0 +1,250 @@
+# Loyalty Agent — Setup Guide (plain English)
+
+This guide takes the loyalty agent from "works on a laptop" to "real customers
+scanning at the counter." No deep tech background needed — just follow the
+steps in order.
+
+## The big picture (3 boxes)
+
+```
+  Customer's WhatsApp  ←→  Twilio  ←→  Your webhook + database
+     (their phone)       (messenger)   (our code, on a server)
+```
+
+- **Twilio** is the middleman that connects WhatsApp to our code. You rent it.
+- **The webhook** is our code, running on an always-on server. It counts stamps.
+- **The database** (`loyalty.db`, a single SQLite file) remembers every
+  customer's stamp count, looked up by their phone number.
+
+**How a customer is recognised:** every WhatsApp message carries the sender's
+phone number automatically. That number *is* their loyalty card — no signup, no
+app, no card to lose.
+
+---
+
+## Part 1 — Test it on your own phone (≈20 min, free)
+
+### 1. Create a Twilio account
+Go to <https://www.twilio.com/try-twilio> and sign up.
+
+### 2. Turn on the WhatsApp sandbox
+In the Twilio Console: **Messaging → Try it out → Send a WhatsApp message.**
+You'll see a sandbox number and a join code like `join purple-tiger`.
+From your own WhatsApp, send that join code to the sandbox number. You're now
+connected.
+
+### 3. Run the webhook and expose it to the internet
+On any computer with Python 3.11+:
+
+```bash
+pip install -e .[qr]
+export RESTAURANTS_CONFIG=data/restaurants.example.json
+export LOYALTY_DB=loyalty.db
+uvicorn app.whatsapp.webhook:app --port 8000
+```
+
+In a second terminal, make it reachable from the internet with ngrok
+(<https://ngrok.com>, free):
+
+```bash
+ngrok http 8000
+```
+
+ngrok prints a public URL like `https://abc123.ngrok.io`.
+
+### 4. Tell Twilio where to send messages
+Back in the Twilio sandbox settings, find **"When a message comes in"** and
+paste your public webhook URL with `/whatsapp/inbound` on the end:
+
+```
+https://abc123.ngrok.io/whatsapp/inbound
+```
+
+Save.
+
+### 5. Try it 🎉
+From your phone, send any message to the sandbox number. You'll get the loyalty
+reply back:
+
+```
+🎉 Welcome to Sugar Rush Rewards!
+You earned your 1st stamp on your Loyalty card.
+[▰▱▱▱▱] 1/5
+```
+
+Send again → `2/5`, and so on. That's the whole loop working.
+
+---
+
+## Part 2 — Generate the QR posters
+
+```bash
+python scripts/generate_qr.py --config data/restaurants.example.json --all
+```
+
+This writes one poster per restaurant into `qr_posters/`. Print them and put
+them on the counter. (Each QR opens WhatsApp to that venue with the message
+pre-filled — sending it is the scan.)
+
+---
+
+## Part 3 — Go live for real (production)
+
+Two things change from the test setup.
+
+### A. A real always-on server (instead of your laptop + ngrok)
+The easiest path is **Render** (<https://render.com>):
+
+1. Push this repo to GitHub (the `customer-agent` branch).
+2. In Render: **New → Blueprint**, point it at the repo. It reads `render.yaml`,
+   builds the `Dockerfile`, and gives you a permanent URL like
+   `https://loyalty-webhook.onrender.com`.
+3. `render.yaml` already mounts a **persistent disk at `/data`** and sets
+   `LOYALTY_DB=/data/loyalty.db`, so your stamp counts survive restarts.
+4. Set `RESTAURANTS_CONFIG` to your real venues file (see Part 4).
+
+Your webhook URL becomes `https://loyalty-webhook.onrender.com/whatsapp/inbound`.
+
+> Railway, Fly.io, or any VPS work too — anything that runs the Dockerfile and
+> gives a public URL with a persistent disk for `loyalty.db`.
+
+### B. A real WhatsApp number per restaurant (instead of the shared sandbox)
+For routing to work, **each restaurant needs its own WhatsApp number.** In
+Twilio: **Messaging → Senders → WhatsApp senders → request a sender.** Each goes
+through Meta's business verification (Twilio guides you; allow a few days).
+
+When approved, put each number into your `restaurants.json` and set every
+number's **"when a message comes in"** webhook to your production
+`/whatsapp/inbound` URL.
+
+---
+
+## Part 4 — Your venues file (`restaurants.json`)
+
+One entry per restaurant. Copy `data/restaurants.example.json` and edit:
+
+```json
+[
+  {
+    "id": "sugar_rush",
+    "name": "Sugar Rush",
+    "whatsapp_number": "+14155238886",
+    "stamps_required": 5,
+    "reward": "a free ice cream"
+  }
+]
+```
+
+- `whatsapp_number` — that venue's WhatsApp number (the one customers message).
+- `stamps_required` / `reward` — tweak freely per venue.
+- `inactive_days` — **owner-set**: quiet for this many days → eligible for a
+  "we miss you" nudge (default 5).
+- `min_scans` — how many visits counts as "loyal" (default 3).
+- `nudge_cooldown_days` — don't nudge the same person again within this many
+  days (default 5).
+
+This file is gitignored (it's per-deployment). Adding a new restaurant = one new
+entry here + its QR poster. No code changes.
+
+---
+
+## Part 5 — Staff: handing over rewards
+
+Loyalty is per restaurant, so tell the tool which venue:
+
+```bash
+# Who has rewards waiting (all venues):
+python scripts/customer_report.py
+
+# Look one customer up by phone at a venue:
+python scripts/customer_report.py --restaurant sugar_rush +923001234567
+
+# Mark their reward as given:
+python scripts/customer_report.py --restaurant sugar_rush +923001234567 --redeem
+```
+
+A customer who completed a card shows their unlocked reward; `--redeem` marks it
+handed over.
+
+---
+
+## Part 6 — Win-back & loyal-customer events (`customer_engage.py`)
+
+Every scan records the customer's number, last-visit date and total visits, so
+you can win back loyal regulars who've gone quiet and find your VIPs for events.
+Run this **when you want** (manually, or on a schedule you choose — it is not
+automatic). DRY_RUN is on by default, so it previews before sending.
+
+```bash
+# Preview who'd get a "we miss you" nudge (loyal + quiet ≥5 days):
+python scripts/customer_engage.py --restaurant sugar_rush
+
+# Actually send them (and mark them so they aren't re-spammed):
+python scripts/customer_engage.py --restaurant sugar_rush --send
+
+# Your most loyal customers (event guest list):
+python scripts/customer_engage.py --restaurant sugar_rush --top 10
+
+# Invite the top 10 loyal customers to an event:
+python scripts/customer_engage.py --restaurant sugar_rush --top 10 \
+    --invite "Tasting night this Friday 7pm, on the house."
+```
+
+Tune with `--inactive-days` (default 5) and `--min-scans` (default 3 = "loyal").
+
+### How the proactive messages are sent
+
+Messages sent days later are outside WhatsApp's 24-hour window, so WhatsApp
+requires an **approved template** for them. Each venue picks its channel:
+
+- **WhatsApp template (same chat as the stamps)** — set the venue's
+  `winback_template_sid` / `invite_template_sid` in `restaurants.json`. The
+  message lands in the same WhatsApp thread as the stamp cards.
+- **SMS fallback** — if no template SID is set, the nudge goes by SMS instead
+  (zero setup, separate text thread, auto "Reply STOP to opt out.").
+
+**One-time WhatsApp template setup (per template):**
+1. Twilio Console → **Content Template Builder** → create a template, e.g.:
+   > Win-back: `Hey, we miss you at {{1}}! It's been {{2}} days — come back for {{3}}. Your loyalty card is waiting 🎁`
+   >
+   > Invite: `🎉 You're one of {{1}}'s most loyal regulars — you're invited! {{2}} Reply YES to reserve your spot.`
+2. Submit it for WhatsApp approval (usually minutes–hours).
+3. Copy the **ContentSid** (`HX…`) and paste it into the venue's config
+   (`winback_template_sid` / `invite_template_sid`).
+
+The code fills the `{{1}}`, `{{2}}`, `{{3}}` blanks per customer (venue, days
+inactive, reward / event text), so one approved template serves everyone.
+
+> For a single cafe's volume you typically don't need full Meta *business
+> verification* — a new WhatsApp sender can send ~250 of these proactive
+> conversations a day out of the box. Verification only raises that limit.
+>
+> To send for real: set `WHATSAPP_DRY_RUN=0` + Twilio credentials (WhatsApp
+> templates), or `SMS_DRY_RUN=0` + `SMS_FROM` (SMS fallback).
+
+---
+
+## What it costs (rough, monthly)
+
+| Thing | Cost |
+|-------|------|
+| SQLite storage | **free** (built into Python) |
+| Server to run the webhook | **~$7/mo** (Render Starter with a persistent disk) |
+| Twilio / WhatsApp messages | a few **fractions of a cent per scan** + small per-conversation fee |
+
+Because the **customer messages first** (the scan), WhatsApp lets the business
+reply for free for 24 hours — so the instant stamp reply needs **no template
+approval.** That's the easy path, and the agent is already on it.
+
+---
+
+## Quick reference — environment variables
+
+| Variable | What it does | Default |
+|----------|--------------|---------|
+| `RESTAURANTS_CONFIG` | path to your venues JSON | `restaurants.json` |
+| `LOYALTY_DB` | path to the SQLite database | `loyalty.db` |
+| `PORT` | port the webhook listens on (set by host) | `8000` |
+
+The webhook needs nothing else — it replies via TwiML and does not call the
+Twilio SDK.

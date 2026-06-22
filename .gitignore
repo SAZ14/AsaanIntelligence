@@ -5,3 +5,24 @@ __pycache__/
 dist/
 .venv/
 output/
+
+# Loyalty runtime/generated artifacts
+loyalty_cards.json
+demo_cards.json
+venue_qr.png
+
+# Loyalty: per-deployment config, runtime stores, generated posters
+restaurants.json
+loyalty_data/
+qr_posters/
+
+# SQLite loyalty database (per-deployment runtime data)
+*.db
+*.db-wal
+*.db-shm
+*.png
+
+# Twilio Functions runtime
+twilio-loyalty/.env
+twilio-loyalty/node_modules/
+twilio-loyalty/.twiliodeployinfo
