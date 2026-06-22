@@ -7,7 +7,8 @@ draft messages in an inbox and approve before anything is sent.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.agents.customer import (
@@ -22,11 +23,17 @@ from app.agents.customer import (
 )
 from app.models.canonical import LoyaltyCustomer, LoyaltyRules, MenuItem, Order, Staff
 from app.services.messaging import (
+    DEFAULT_OUTBOX_BACKUP_COUNT,
+    DEFAULT_OUTBOX_MAX_BYTES,
     FileOutboxDispatcher,
     SentMessage,
     dispatch_incentives,
     get_dispatcher,
 )
+
+# A guest already messaged within this many days is skipped on re-approval, so a
+# repeated approve (or a fresh dashboard run over the same data) can't double-send.
+SEND_COOLDOWN_DAYS = 7
 
 
 @dataclass
@@ -215,12 +222,38 @@ def run_merchant_customer_agent(
     )
 
 
+def _recently_messaged_refs(outbox_path: Path, cooldown_days: float) -> set[str]:
+    """customer_refs with a successful send inside the cooldown window."""
+    if cooldown_days <= 0:
+        return set()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=cooldown_days)
+    recent: set[str] = set()
+    for msg in load_comms_history(outbox_path):
+        if msg.status != "sent" or not msg.sent_at:
+            continue
+        try:
+            sent_at = datetime.fromisoformat(msg.sent_at)
+        except ValueError:
+            continue
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if sent_at >= cutoff:
+            recent.add(msg.customer_ref)
+    return recent
+
+
 def approve_and_send(
     dashboard: MerchantCustomerDashboard,
     customer_refs: list[str],
     outbox_path: Path,
+    *,
+    cooldown_days: float = SEND_COOLDOWN_DAYS,
 ) -> tuple[list[SentMessage], list[PendingComm]]:
-    """Approve selected drafts and dispatch one message per guest (highest priority)."""
+    """Approve selected drafts and dispatch one message per guest (highest priority).
+
+    Guests already messaged within ``cooldown_days`` (per the outbox history) are
+    skipped to avoid double-sends on re-approval; pass ``cooldown_days=0`` to disable.
+    """
     if dashboard.report is None:
         return [], []
 
@@ -228,6 +261,9 @@ def approve_and_send(
     pending_by_ref: dict[str, list[PendingComm]] = {}
     for p in dashboard.pending_comms:
         pending_by_ref.setdefault(p.customer_ref, []).append(p)
+
+    recently_messaged = _recently_messaged_refs(outbox_path, cooldown_days)
+    cooldown_skipped: list[PendingComm] = []
 
     to_send: list[CustomerIncentive] = []
     for cref in customer_refs:
@@ -237,19 +273,28 @@ def approve_and_send(
         sendable = [p for p in pending_for_guest if p.sendable]
         if not sendable:
             continue
-        best_type = min(sendable, key=lambda p: p.priority).incentive_type
+        best = min(sendable, key=lambda p: p.priority)
+        if cref in recently_messaged:
+            cooldown_skipped.append(replace(
+                best, sendable=False, block_reason="recently messaged",
+            ))
+            continue
         for inc in dashboard.report.incentives:
-            if inc.customer_ref == cref and inc.incentive_type == best_type:
+            if inc.customer_ref == cref and inc.incentive_type == best.incentive_type:
                 to_send.append(inc)
                 break
 
-    dispatcher = FileOutboxDispatcher(outbox_path, get_dispatcher())
+    dispatcher = FileOutboxDispatcher(
+        outbox_path, get_dispatcher(),
+        max_bytes=DEFAULT_OUTBOX_MAX_BYTES,
+        backup_count=DEFAULT_OUTBOX_BACKUP_COUNT,
+    )
     result = dispatch_incentives(to_send, dispatcher, require_phone=True)
 
     skipped_pending = [
         p for cref in ref_set for p in pending_by_ref.get(cref, [])
         if not p.sendable
-    ]
+    ] + cooldown_skipped
     return result.sent, skipped_pending
 
 

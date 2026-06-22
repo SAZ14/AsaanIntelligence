@@ -12,6 +12,10 @@ from pathlib import Path
 
 from app.agents.customer import CustomerIncentive
 
+# Default outbox rotation policy, shared by the API dispatcher and approve_and_send.
+DEFAULT_OUTBOX_MAX_BYTES = 5_000_000
+DEFAULT_OUTBOX_BACKUP_COUNT = 3
+
 
 @dataclass
 class SentMessage:
@@ -196,15 +200,49 @@ class TwilioWhatsAppDispatcher(MessageDispatcher):
 
 
 class FileOutboxDispatcher(MessageDispatcher):
-    """Append sent/skipped messages to a JSONL outbox file."""
+    """Append sent/skipped messages to a JSONL outbox file.
 
-    def __init__(self, outbox_path: Path, inner: MessageDispatcher | None = None):
+    When ``max_bytes`` is set, the active file is rotated logrotate-style once it
+    grows past that size (``outbox.jsonl`` → ``outbox.1.jsonl`` → ...), keeping at
+    most ``backup_count`` backups. ``max_bytes=0`` disables rotation. Note that
+    ``load_comms_history`` reads only the active file, so callers that rely on it
+    (history view, send-cooldown dedup) see only post-rotation entries — acceptable
+    at the default multi-MB threshold (tens of thousands of messages).
+    """
+
+    def __init__(
+        self,
+        outbox_path: Path,
+        inner: MessageDispatcher | None = None,
+        *,
+        max_bytes: int = 0,
+        backup_count: int = 3,
+    ):
         self.outbox_path = outbox_path
         self.inner = inner or ConsoleMessageDispatcher()
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
         self.outbox_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _rotate_if_needed(self) -> None:
+        if self.max_bytes <= 0 or not self.outbox_path.exists():
+            return
+        if self.outbox_path.stat().st_size < self.max_bytes:
+            return
+        # Shift backups: .(n-1) → .n, dropping anything beyond backup_count.
+        for i in range(self.backup_count, 0, -1):
+            src = (self.outbox_path.with_suffix(f".{i - 1}.jsonl")
+                   if i > 1 else self.outbox_path)
+            dst = self.outbox_path.with_suffix(f".{i}.jsonl")
+            if not src.exists():
+                continue
+            if i == self.backup_count and dst.exists():
+                dst.unlink()
+            src.rename(dst)
 
     def send(self, incentive: CustomerIncentive) -> SentMessage:
         result = self.inner.send(incentive)
+        self._rotate_if_needed()
         with open(self.outbox_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
         return result
