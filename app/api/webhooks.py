@@ -2,29 +2,49 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.api.deps import (
     VENUE_SLUG,
     load_orders,
     load_registry,
     load_rules,
+    public_base_url,
     registry_path,
     sessions_path,
     venues_path,
+)
+from app.services.twilio_validation import (
+    is_valid_twilio_request,
+    signature_validation_enabled,
 )
 from app.services.whatsapp_agent import process_and_reply
 
 router = APIRouter(prefix="/webhooks/twilio", tags=["webhooks"])
 
 
+def _webhook_url(request: Request) -> str:
+    """URL Twilio signed over — the public base (proxies rewrite the host) when set."""
+    base = public_base_url()
+    if base:
+        return base + request.url.path
+    return str(request.url)
+
+
 @router.post("/whatsapp")
-async def twilio_whatsapp_inbound(
-    From: str = Form(...),
-    Body: str = Form(default=""),
-    To: str = Form(default=""),
-):
+async def twilio_whatsapp_inbound(request: Request):
     """Twilio inbound WhatsApp webhook — phone from `From`, agent asks for name in chat."""
+    # Twilio signs *all* POST params, so validate over the full form, not just From/Body.
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+
+    if signature_validation_enabled():
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not is_valid_twilio_request(_webhook_url(request), params, signature):
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
+    From = params.get("From", "")
+    Body = params.get("Body", "")
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
 
