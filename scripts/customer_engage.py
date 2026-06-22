@@ -34,7 +34,7 @@ from app.agents.customer import (
     send_reengagement,
     top_loyal_customers,
 )
-from app.whatsapp import WhatsAppNotifier
+from app.sms import SmsNotifier
 
 
 def main() -> None:
@@ -54,8 +54,9 @@ def main() -> None:
     if venues == [None]:
         sys.exit(f"No restaurant '{args.restaurant}'. Known: {[r.id for r in registry.all()]}")
 
-    notifier = WhatsAppNotifier()  # DRY_RUN defaults ON
-    mode = "DRY RUN (nothing sent)" if notifier.dry_run else "LIVE"
+    # Proactive nudges go over SMS (no Meta verification/templates needed).
+    notifier = SmsNotifier()  # SMS_DRY_RUN defaults ON
+    mode = "DRY RUN (nothing sent)" if notifier.dry_run else "LIVE (SMS)"
 
     for r in venues:
         prog = r.program

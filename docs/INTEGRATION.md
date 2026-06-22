@@ -192,12 +192,16 @@ python scripts/customer_engage.py --restaurant sugar_rush --top 10 \
 
 Tune with `--inactive-days` (default 5) and `--min-scans` (default 3 = "loyal").
 
-> ⚠️ **WhatsApp templates required.** These are *proactive* messages sent days
-> after the customer last wrote, i.e. outside WhatsApp's 24-hour service window.
-> WhatsApp only allows that via a **Meta-approved message template**. Register
-> the wording as a template in the Twilio/Meta console before sending live; the
-> code is identical. (The instant stamp reply needs no template — the customer
-> messaged first.)
+> ✅ **These go over SMS, so NO Meta verification or templates are needed.**
+> Proactive messages (sent days later) would require Meta business verification
+> + approved templates *on WhatsApp* — so instead the win-back/invite nudges are
+> sent by **SMS** via Twilio, which has no such requirement. You already have the
+> customer's number from the scan. An opt-out line ("Reply STOP to opt out.") is
+> appended automatically.
+>
+> To send for real: set `SMS_DRY_RUN=0`, `SMS_FROM=<your Twilio SMS number>`,
+> and the Twilio credentials. (The stamp reply stays on WhatsApp and still needs
+> no Meta setup, because the customer messages first.)
 
 ---
 

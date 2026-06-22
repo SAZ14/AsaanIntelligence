@@ -34,6 +34,7 @@ from app.agents.customer import (
     top_loyal_customers,
 )
 from app.whatsapp import WhatsAppNotifier
+from app.sms import SmsNotifier
 from app.whatsapp.webhook import process_scan, route, twiml_reply
 
 
@@ -286,6 +287,33 @@ def test_event_invite_send_and_format():
     body = sent[0].body
     assert "invited" in body and "Tasting night Friday 7pm." in body
     assert "YES" in format_event_invite("Sugar Rush", "x")
+
+
+# ── SMS channel for proactive nudges (the no-Meta path) ──
+
+def test_sms_notifier_dry_run_appends_opt_out_and_strips_whatsapp_prefix():
+    n = SmsNotifier(dry_run=True)
+    msg = n.send("whatsapp:+923001234567", "Hey, we miss you!")
+    assert msg.status == "dry_run"
+    assert msg.to == "+923001234567"          # plain SMS number, no whatsapp: prefix
+    assert "Reply STOP to opt out." in msg.body
+
+
+def test_sms_opt_out_not_duplicated_if_present():
+    n = SmsNotifier(dry_run=True)
+    msg = n.send("+923001234567", "Deal! Text STOP to unsubscribe.")
+    assert msg.body.upper().count("STOP") == 1
+
+
+def test_reengagement_over_sms_marks_and_sends():
+    prog = _seeded_program(_card("+loyalquiet", scans=6, days_since_scan=7))
+    sms = SmsNotifier(dry_run=True)
+    cands = at_risk_loyal_customers(prog, today=TODAY)
+    sent = send_reengagement(prog, sms, cands, today=TODAY)
+    assert len(sent) == 1 and sent[0].status == "dry_run"
+    assert "miss you" in sent[0].body.lower()
+    assert "STOP" in sent[0].body.upper()
+    assert prog.lookup("+loyalquiet").last_nudged_at == TODAY.isoformat()
 
 
 def test_engagement_policy_is_per_restaurant_from_config(tmp_path):
