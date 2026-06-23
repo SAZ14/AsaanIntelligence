@@ -14,6 +14,11 @@ from dataclasses import dataclass
 
 from app import venues as venue_registry
 from app.agents.integrity_agent import IntegrityAgentReport, answer_question, run_integrity_agent
+from app.analysis.periodic import (
+    PeriodReport,
+    build_daily_report,
+    build_weekly_report,
+)
 from app.pos import RestaurantConfig, build_connector
 
 CACHE_TTL_SECONDS = 900  # re-pull a venue's POS data at most every 15 min
@@ -27,6 +32,8 @@ HELP_TEXT = (
     "• *findings* – top issues to act on\n"
     "• *staff* – team integrity scores\n"
     "• *staff <name>* – drill into one person\n"
+    "• *daily* – yesterday's report\n"
+    "• *weekly* – the week, summarised\n"
     "• *report* – full PDF audit\n"
     "• *refresh* – re-pull latest POS data\n"
     "Or just ask, e.g. \"who is my worst staff member?\""
@@ -41,6 +48,12 @@ def _money(v: float) -> str:
 class _Cached:
     at: float
     report: IntegrityAgentReport
+
+
+@dataclass
+class _CachedData:
+    at: float
+    data: object  # POSData (orders / menu / staff)
 
 
 class IntegrityWhatsAppService:
@@ -60,6 +73,7 @@ class IntegrityWhatsAppService:
         self.llm_client = llm_client
         self.cache_ttl = cache_ttl
         self._cache: dict[str, _Cached] = {}
+        self._data_cache: dict[str, _CachedData] = {}
 
     # ── Venue resolution ──
 
@@ -74,12 +88,22 @@ class IntegrityWhatsAppService:
 
     # ── Report cache ──
 
+    def get_data(self, venue_key: str, force: bool = False):
+        """Fetch (and cache) a venue's raw POS data — shared by every report."""
+        cached = self._data_cache.get(venue_key)
+        if not force and cached and (time.time() - cached.at) < self.cache_ttl:
+            return cached.data
+        config = self.restaurants[venue_key]
+        data = build_connector(config).fetch()
+        self._data_cache[venue_key] = _CachedData(at=time.time(), data=data)
+        return data
+
     def get_report(self, venue_key: str, force: bool = False) -> IntegrityAgentReport:
         cached = self._cache.get(venue_key)
         if not force and cached and (time.time() - cached.at) < self.cache_ttl:
             return cached.report
         config = self.restaurants[venue_key]
-        data = build_connector(config).fetch()
+        data = self.get_data(venue_key, force=force)
         # Deterministic build: instant, free, exact. The LLM is used only for
         # free-form questions, on demand.
         report = run_integrity_agent(
@@ -88,6 +112,30 @@ class IntegrityWhatsAppService:
         )
         self._cache[venue_key] = _Cached(at=time.time(), report=report)
         return report
+
+    # ── Period digests (daily / weekly) ──
+
+    def daily_report(self, venue_key: str, force: bool = False) -> PeriodReport | None:
+        config = self.restaurants[venue_key]
+        data = self.get_data(venue_key, force=force)
+        return build_daily_report(
+            data.orders, data.menu, data.staff, venue_name=config.venue_name
+        )
+
+    def weekly_report(self, venue_key: str, force: bool = False) -> PeriodReport | None:
+        config = self.restaurants[venue_key]
+        data = self.get_data(venue_key, force=force)
+        return build_weekly_report(
+            data.orders, data.menu, data.staff, venue_name=config.venue_name
+        )
+
+    def daily_digest(self, venue_key: str, force: bool = False) -> str:
+        period = self.daily_report(venue_key, force=force)
+        return self._fmt_daily(period) if period else "No POS data yet for a daily report."
+
+    def weekly_digest(self, venue_key: str, force: bool = False) -> str:
+        period = self.weekly_report(venue_key, force=force)
+        return self._fmt_weekly(period) if period else "No POS data yet for a weekly report."
 
     # ── Command formatters ──
 
@@ -200,6 +248,93 @@ class IntegrityWhatsAppService:
                              f"{e.item_name} · {_money(e.value)}")
         return "\n".join(lines)
 
+    # ── Period digest formatters ──
+
+    @staticmethod
+    def _delta(curr: float, prev: float, good_up: bool = True) -> str:
+        """Human direction tag, e.g. '🟢 ↑ 12%' or '🔴 ↑ 30%' for leakage."""
+        if prev <= 0:
+            return "(new)" if curr > 0 else ""
+        pct = (curr - prev) / prev * 100.0
+        if abs(pct) < 1:
+            return "→ flat"
+        arrow = "↑" if pct > 0 else "↓"
+        favourable = (pct > 0) == good_up
+        dot = "🟢" if favourable else "🔴"
+        return f"{dot} {arrow} {abs(pct):.0f}%"
+
+    def _fmt_daily(self, p: PeriodReport) -> str:
+        rec = p.report.reconciliation
+        integ = p.report.integrity
+        prev = p.previous
+        lines = [
+            f"☀️ *Daily report — {p.venue_name}*",
+            f"{p.label}",
+            "",
+            f"Net sales: {_money(rec.net_sales)}  "
+            f"{self._delta(p.current.net_sales, prev.net_sales) if prev else ''}".rstrip(),
+            f"Orders: {rec.total_orders}"
+            + (f"  {self._delta(p.current.orders, prev.orders)}" if prev else ""),
+            f"Gross profit: {_money(rec.gross_profit)} ({rec.gross_margin:.0%})",
+        ]
+        if integ.estimated_leakage_period > 0:
+            tag = self._delta(p.current.leakage, prev.leakage, good_up=False) if prev else ""
+            lines.append(f"Leakage today: {_money(integ.estimated_leakage_period)}  {tag}".rstrip())
+            if p.report.findings:
+                top = p.report.findings[0]
+                lines.append(
+                    f"⚠️ {top.category.replace('_', ' ')} — {top.subject} "
+                    f"({_money(top.monetary_impact)})"
+                )
+        else:
+            lines.append("✅ No leakage flagged today.")
+        if not rec.books_balanced:
+            lines.append(f"⚠️ {rec.payment_mismatch_count} payment mismatch(es) to review.")
+        return "\n".join(lines)
+
+    def _fmt_weekly(self, p: PeriodReport) -> str:
+        rec = p.report.reconciliation
+        integ = p.report.integrity
+        prev = p.previous
+        days = max((p.end - p.start).days + 1, 1)
+        lines = [
+            f"📅 *Weekly summary — {p.venue_name}*",
+            f"{p.label}",
+            "",
+            f"Net sales: {_money(rec.net_sales)}  "
+            f"{self._delta(p.current.net_sales, prev.net_sales) if prev else ''}".rstrip(),
+            f"Avg/day: {_money(rec.net_sales / days)} · {rec.total_orders} orders",
+            f"Gross profit: {_money(rec.gross_profit)} ({rec.gross_margin:.0%})",
+            "",
+            f"🩸 Leakage this week: {_money(integ.estimated_leakage_period)}  "
+            f"{self._delta(p.current.leakage, prev.leakage, good_up=False) if prev else ''}".rstrip(),
+            f"  • theft voids: {_money(integ.suspected_theft_value)}",
+            f"  • excess comps: {_money(integ.excess_comp_value)}",
+            f"  • excess discounts: {_money(integ.excess_discount_value)}",
+        ]
+        if integ.worst_offender:
+            worst = next((s for s in integ.staff_integrity if s.staff_id == integ.worst_offender), None)
+            if worst and worst.total_leakage > 0:
+                lines.append(
+                    f"Worst offender: {worst.staff_name} ({worst.staff_id}), "
+                    f"{worst.integrity_score:.0f}/100"
+                )
+        if p.days:
+            best = max(p.days, key=lambda d: d.net_sales)
+            worst_day = min((d for d in p.days if d.orders > 0), key=lambda d: d.net_sales, default=None)
+            lines.append("")
+            lines.append(f"Best day: {best.day:%a} {_money(best.net_sales)}")
+            if worst_day and worst_day.day != best.day:
+                lines.append(f"Slowest: {worst_day.day:%a} {_money(worst_day.net_sales)}")
+        if p.report.findings:
+            lines.append("\nTop issues to act on:")
+            for f in p.report.findings[:3]:
+                lines.append(
+                    f"{f.rank}. {f.category.replace('_', ' ')} — {f.subject}: "
+                    f"{_money(f.monetary_impact)}"
+                )
+        return "\n".join(lines)
+
     # ── Main entry point ──
 
     def handle_message(self, from_number: str, body: str) -> str:
@@ -222,6 +357,11 @@ class IntegrityWhatsAppService:
             if cmd in ("report", "pdf", "document"):
                 # The webhook attaches the generated PDF as media.
                 return f"📄 Here's your full PDF audit for {self.restaurants[venue_key].venue_name}."
+
+            if cmd in ("daily", "today", "yesterday", "day"):
+                return self.daily_digest(venue_key)
+            if cmd in ("weekly", "week"):
+                return self.weekly_digest(venue_key)
 
             report = self.get_report(venue_key)
 

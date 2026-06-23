@@ -101,10 +101,20 @@ Point your Twilio WhatsApp number's **"When a message comes in"** webhook at
 
 ### 5. (Optional) Scheduled digests
 
+The owner gets pushed a **daily report** and a **summarised weekly report** — no
+need to ask. Both are deterministic (no LLM cost) and compare against the
+previous period so the owner sees direction, not just a number.
+
 ```bash
-# Cron, daily at 8am:
-0 8 * * *  cd /path/to/repo && python scripts/digest_worker.py --once
+# Daily report — yesterday vs the day before, 8am every day:
+0 8 * * *  cd /path/to/repo && python scripts/digest_worker.py --kind daily
+
+# Weekly summary — last 7 days vs the prior week, 8am every Monday:
+0 8 * * 1  cd /path/to/repo && python scripts/digest_worker.py --kind weekly
 ```
+
+Preview without sending (and without Twilio creds): add `--dry-run`. No cron?
+Use the built-in loop instead, e.g. `--kind daily --every-min 1440`.
 
 ---
 
@@ -119,6 +129,8 @@ Point your Twilio WhatsApp number's **"When a message comes in"** webhook at
 | `findings` | impact-ranked issues to act on |
 | `staff` | whole team ranked by integrity score |
 | `staff Bilal` | one person's full breakdown + flagged events |
+| `daily` | yesterday's report (sales, profit, leakage vs the day before) |
+| `weekly` | the week summarised (totals, trend, top issues vs last week) |
 | `report` | the PDF audit, delivered to their phone |
 | `refresh` | re-pull the latest POS data |
 | *anything else* | grounded answer from the LLM (e.g. "why is profit down?") |
