@@ -81,6 +81,19 @@ def test_daily_and_weekly_commands_route():
     assert "Weekly summary" in svc.handle_message("whatsapp:+100", "weekly")
 
 
+def test_period_pdfs_render_valid_bytes():
+    from app.report.pdf import build_period_pdf
+
+    data = _data()
+    daily = build_daily_report(data.orders, data.menu, data.staff, venue_name="Roastery")
+    weekly = build_weekly_report(data.orders, data.menu, data.staff, venue_name="Roastery")
+    for p in (daily, weekly):
+        pdf = build_period_pdf(p)
+        assert pdf.startswith(b"%PDF-1.4")
+        assert pdf.rstrip().endswith(b"%%EOF")
+        assert len(pdf) > 2000
+
+
 def test_delta_direction_tags():
     # Revenue up is good (green), leakage up is bad (red).
     assert "🟢" in IntegrityWhatsAppService._delta(110, 100, good_up=True)

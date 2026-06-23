@@ -164,6 +164,25 @@ class _PDF:
         self._abs(MARGIN + 14, self.y, text, "F3", size, INK)
         self.y -= size * 1.6
 
+    def vbars(self, points: list[tuple[str, float]], height: float = 64, color=GREEN) -> None:
+        """A small per-period vertical bar chart with labels underneath."""
+        n = len(points)
+        if n == 0:
+            return
+        self._ensure(height + 28)
+        top = self.y
+        bottom = top - height
+        maxv = max((v for _, v in points), default=0.0) or 1.0
+        slot = USABLE_W / n
+        bw = min(slot * 0.62, 40)
+        for i, (lbl, v) in enumerate(points):
+            cx = MARGIN + i * slot + slot / 2
+            bh = height * (v / maxv)
+            self.rect(cx - bw / 2, bottom, bw, max(bh, 1.0), color)
+            self._abs(cx - len(lbl) * 0.5 * 8 / 2, bottom - 12, lbl, "F1", 8, MUTED)
+        self.rect(MARGIN, bottom - 0.5, USABLE_W, 0.6, TRACK)
+        self.y = bottom - 26
+
     # ── output ──
     def output(self) -> bytes:
         self._flush()
@@ -378,4 +397,158 @@ def write_audit_pdf(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(build_audit_pdf(integrity, reconciliation, venue_name, summary))
+    return path
+
+
+# ── Period (daily / weekly) report ──
+
+def _pct_str(curr: float, prev: float) -> str:
+    if prev <= 0:
+        return "new" if curr > 0 else "-"
+    pct = (curr - prev) / prev * 100.0
+    return f"{'+' if pct >= 0 else ''}{pct:.0f}% vs prev"
+
+
+def _period_header(pdf: _PDF, p) -> None:
+    title = "Daily Report" if p.kind == "daily" else "Weekly Summary"
+    pdf.rect(0, PAGE_H - 96, PAGE_W, 96, GREEN_DARK)
+    pdf.rect(0, PAGE_H - 100, PAGE_W, 4, GREEN)
+    pdf._abs(MARGIN, PAGE_H - 44, "ASAAN INTELLIGENCE", "F2", 19, WHITE)
+    pdf._abs(MARGIN, PAGE_H - 62, f"Restaurant Integrity  -  {title}", "F1", 11, GREEN_LT)
+    pdf._abs(MARGIN, PAGE_H - 84, f"{_sanitize(p.venue_name)}  -  {_sanitize(p.label)}", "F2", 11, WHITE)
+    pdf._abs_right(PAGE_W - MARGIN, PAGE_H - 84, f"{date.today():%d %b %Y}", "F1", 10, GREEN_LT)
+    pdf.y = PAGE_H - 96 - 26
+
+
+def _period_cards(pdf: _PDF, p) -> None:
+    rec = p.report.reconciliation
+    integ = p.report.integrity
+    prev = p.previous
+    gap = 12
+    w = (USABLE_W - 2 * gap) / 3
+    h = 66
+    top = pdf.y
+    bottom = top - h
+    leak_sub = "this period"
+    sales_sub = f"{rec.total_orders:,} orders"
+    if prev and prev.has_data:
+        sales_sub = _pct_str(p.current.net_sales, prev.net_sales)
+        leak_sub = _pct_str(p.current.leakage, prev.leakage)
+    cards = [
+        ("NET SALES", _money(rec.net_sales), GREEN_DARK, sales_sub),
+        ("GROSS PROFIT", _money(rec.gross_profit), GREEN, f"{rec.gross_margin:.0%} margin"),
+        ("LEAKAGE", _money(integ.estimated_leakage_period), RED, leak_sub),
+    ]
+    for i, (label, value, accent, sub) in enumerate(cards):
+        x = MARGIN + i * (w + gap)
+        pdf.rect(x, bottom, w, h, GREEN_LT)
+        pdf.rect(x, top - 4, w, 4, accent)
+        pdf._abs(x + 10, top - 20, label, "F2", 8, MUTED)
+        pdf._abs(x + 10, top - 42, value, "F2", 14, accent)
+        pdf._abs(x + 10, top - 56, _sanitize(sub), "F1", 8, MUTED)
+    pdf.y = bottom - 20
+
+
+def _period_insights(p) -> list[str]:
+    rec = p.report.reconciliation
+    integ = p.report.integrity
+    prev = p.previous
+    span = "today" if p.kind == "daily" else "this week"
+    out: list[str] = []
+
+    if prev and prev.has_data and prev.net_sales > 0:
+        d = (p.current.net_sales - prev.net_sales) / prev.net_sales
+        out.append(
+            f"Net sales {span} were {_money(rec.net_sales)}, "
+            f"{'up' if d >= 0 else 'down'} {abs(d):.0%} on the previous "
+            f"{'day' if p.kind == 'daily' else 'week'}."
+        )
+    else:
+        out.append(f"Net sales {span} were {_money(rec.net_sales)} at {rec.gross_margin:.0%} gross margin.")
+
+    if integ.estimated_leakage_period > 0:
+        worst = next((s for s in integ.staff_integrity if s.staff_id == integ.worst_offender), None)
+        tail = f", concentrated on {worst.staff_name} ({worst.staff_id})" if worst else ""
+        line = f"Estimated leakage {span} was {_money(integ.estimated_leakage_period)}{tail}."
+        if prev and prev.has_data and prev.leakage > 0:
+            d = (p.current.leakage - prev.leakage) / prev.leakage
+            line += f" That is {'up' if d >= 0 else 'down'} {abs(d):.0%} on the prior period."
+        out.append(line)
+    else:
+        out.append(f"No behavioural leakage was flagged {span} - clean books.")
+
+    if p.days:
+        best = max(p.days, key=lambda d: d.net_sales)
+        slow = min((d for d in p.days if d.orders > 0), key=lambda d: d.net_sales, default=None)
+        if slow and slow.day != best.day:
+            out.append(
+                f"Best day was {best.day:%A} ({_money(best.net_sales)}); "
+                f"slowest was {slow.day:%A} ({_money(slow.net_sales)})."
+            )
+
+    if rec.books_balanced:
+        out.append(f"Payments reconcile exactly across {rec.total_orders:,} orders - any loss is behavioural.")
+    else:
+        out.append(
+            f"{rec.payment_mismatch_count} payment mismatch(es) and "
+            f"{rec.tax_anomaly_count} tax anomaly(ies) need review."
+        )
+    return out
+
+
+def build_period_pdf(p, summary: str = "") -> bytes:
+    """Render a daily or weekly :class:`PeriodReport` as a branded PDF."""
+    integ = p.report.integrity
+    rec = p.report.reconciliation
+    pdf = _PDF()
+
+    _period_header(pdf, p)
+    _period_cards(pdf, p)
+
+    pdf.heading("The Bottom Line")
+    if summary:
+        pdf.line(summary, size=10, gap=1.45)
+        pdf.space(4)
+    for b in _period_insights(p):
+        pdf.bullet(b)
+
+    if p.days:
+        pdf.heading("Daily Net Sales")
+        pdf.vbars([(d.day.strftime("%a"), d.net_sales) for d in p.days])
+
+    pdf.heading("Profit & Reconciliation")
+    pdf.kv("Net sales (ex-tax)", _money(rec.net_sales))
+    pdf.kv("Cost of goods sold", _money(rec.cogs_sold))
+    pdf.kv("Gross profit", f"{_money(rec.gross_profit)}  ({rec.gross_margin:.0%})", value_color=GREEN)
+    pdf.kv("Wasted COGS (comp / fired-then-voided)", _money(rec.wasted_cogs), value_color=AMBER)
+    pdf.kv("Tax collected", _money(rec.tax_collected))
+    pdf.kv("Books balanced", "YES" if rec.books_balanced else "NO - REVIEW",
+           value_color=GREEN if rec.books_balanced else RED)
+
+    if integ.estimated_leakage_period > 0:
+        pdf.heading("Where The Money Leaks")
+        maxv = max(integ.suspected_theft_value, integ.excess_comp_value,
+                   integ.excess_discount_value, 1.0)
+        pdf.bar("Theft voids (cash, voided after firing)", integ.suspected_theft_value, maxv, RED)
+        pdf.bar("Excess comps (above venue baseline)", integ.excess_comp_value, maxv, AMBER)
+        pdf.bar("Excess discounts (above venue baseline)", integ.excess_discount_value, maxv, GREEN_MID)
+
+    findings = build_findings(integ, rec)
+    if findings:
+        pdf.heading("Priority Actions")
+        sev_color = {"high": RED, "medium": AMBER, "low": GREEN_MID}
+        for f in findings[:6]:
+            issue = f.category.replace("_", " ")
+            row = f"{f.rank}. {f.severity.upper():6} {issue:<15} {f.subject[:20]:<20} {_money(f.monetary_impact):>12}"
+            pdf.status_row(row, sev_color.get(f.severity, GREEN_MID))
+            if f.recommended_action:
+                pdf.line(f.recommended_action, size=9, indent=14, color=MUTED, gap=1.4)
+
+    return pdf.output()
+
+
+def write_period_pdf(path: str | Path, p, summary: str = "") -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(build_period_pdf(p, summary))
     return path
