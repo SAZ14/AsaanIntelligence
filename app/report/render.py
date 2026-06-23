@@ -5,7 +5,6 @@ from html import escape
 
 from app.analysis.integrity import IntegrityReport, StaffIntegrity, FlaggedEvent
 from app.analysis.retention import RetentionReport, OperationsReport, CustomerProfile
-from app.agents.customer import CustomerAgentReport, TAGLINE as CUSTOMER_TAGLINE
 
 FLAGGED_SCORE_THRESHOLD = 99.0
 WINNABLE_GAP_MAX_DAYS = 30
@@ -107,7 +106,6 @@ def generate_report(
     integrity: IntegrityReport,
     retention: RetentionReport,
     operations: OperationsReport,
-    customer: CustomerAgentReport | None = None,
 ) -> str:
     h = compute_headlines(integrity, retention, operations)
     worst = next((s for s in integrity.staff_integrity if s.staff_id == integrity.worst_offender), None)
@@ -261,46 +259,6 @@ Integrity score {worst.integrity_score:.0f}/100.</p>
 """
         html += "</table>\n"
     html += "</section>\n"
-
-    # ── Customer Agent section ──
-    if customer is not None:
-        urg_cls = {"critical": "tag-red", "high": "tag-amber", "medium": "tag-blue"}
-        html += f"""<section>
-<h2>Customer Agent</h2>
-<p class="insight">&ldquo;{_esc(CUSTOMER_TAGLINE)}&rdquo; &mdash; virtual loyalty program powered by visit history and QR identity.</p>
-<div class="kv"><span class="kv-label">Loyalty members</span><span class="kv-value">{customer.loyalty.total_members:,}</span></div>
-<div class="kv"><span class="kv-label">QR-linked guests</span><span class="kv-value">{customer.loyalty.qr_linked_members}</span></div>
-<div class="kv"><span class="kv-label">Active regulars</span><span class="kv-value">{customer.loyalty.active_regulars}</span></div>
-<div class="kv"><span class="kv-label">Lapsed / at-risk</span><span class="kv-value">{customer.loyalty.lapsed_count} lapsed &middot; {customer.loyalty.at_risk_count} lapsing</span></div>
-<div class="kv"><span class="kv-label">Win-back at risk</span><span class="kv-value">{_esc(_pkr(customer.total_winback_at_risk))}</span></div>
-<div class="kv"><span class="kv-label">Tiers</span><span class="kv-value">Bronze {customer.loyalty.tier_bronze} &middot; Silver {customer.loyalty.tier_silver} &middot; Gold {customer.loyalty.tier_gold} &middot; Platinum {customer.loyalty.tier_platinum}</span></div>
-<div class="kv"><span class="kv-label">Incentive messages ready</span><span class="kv-value">{customer.messages_ready} of {len(customer.incentives)}</span></div>
-"""
-        if customer.lapse_alerts:
-            html += """<table style="margin-top:10px">
-<tr><th>Guest</th><th>Segment</th><th>Urgency</th><th class="num">Days Away</th><th class="num">Monthly Value</th></tr>
-"""
-            for a in customer.lapse_alerts[:8]:
-                cls = urg_cls.get(a.urgency, "tag-amber")
-                html += f"""<tr><td>{_esc(a.display_name)}</td><td>{_esc(a.segment)}</td>
-<td><span class="tag {cls}">{_esc(a.urgency.title())}</span></td>
-<td class="num">{a.days_since_last}d</td><td class="num">{_esc(_pkr(a.monthly_value))}</td></tr>
-"""
-            html += "</table>\n"
-
-        sendable = [i for i in customer.incentives if i.phone][:5]
-        if sendable:
-            html += """<p class="insight" style="margin-top:12px">Top incentive messages ready to send:</p>
-<table>
-<tr><th>Guest</th><th>Offer</th><th>Channel</th><th>Message</th></tr>
-"""
-            for inc in sendable:
-                html += f"""<tr><td>{_esc(inc.display_name)}</td>
-<td><span class="tag tag-green">{_esc(inc.reward_text[:40])}</span></td>
-<td>{_esc(inc.channel)}</td><td>{_esc(inc.message[:120])}{"…" if len(inc.message) > 120 else ""}</td></tr>
-"""
-            html += "</table>\n"
-        html += "</section>\n"
 
     # ── Operations section ──
     html += """<section>

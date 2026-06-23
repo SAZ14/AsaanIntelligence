@@ -1,18 +1,12 @@
-"""Shared API dependencies — data paths and loaders."""
+"""Shared API dependencies."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
+from app.community.store import load_venue_config
 from app.ingest import load_dataset
-from app.ingest.loader import load_customers, load_loyalty_rules, save_customers, save_loyalty_rules
-from app.models.canonical import LoyaltyCustomer, LoyaltyRules
-from app.services.messaging import ConsoleMessageDispatcher, FileOutboxDispatcher, get_dispatcher
-
-VENUE_NAME = os.environ.get("ASAAN_VENUE_NAME", "Sugar Rush")
-VENUE_SLUG = os.environ.get("ASAAN_VENUE_SLUG", "sugar-rush")
-JOIN_BASE_URL = os.environ.get("ASAAN_JOIN_BASE_URL", "http://localhost:8000")
 
 
 def data_dir() -> Path:
@@ -29,61 +23,71 @@ def outbox_dir() -> Path:
     ))
 
 
-def registry_path() -> Path:
-    return data_dir() / "customers.csv"
+def members_path() -> Path:
+    return data_dir() / "community_members.csv"
 
 
-def rules_path() -> Path:
-    return data_dir() / "loyalty_rules.json"
+def redeem_codes_path() -> Path:
+    return data_dir() / "redeem_codes.jsonl"
 
 
-def venues_path() -> Path:
-    return data_dir() / "venues.json"
+def stamp_events_path() -> Path:
+    return data_dir() / "stamp_events.jsonl"
 
 
-def outbox_path() -> Path:
-    return outbox_dir() / "messages_outbox.jsonl"
+def venue_config_path() -> Path:
+    return data_dir() / "venue_config.json"
 
 
-def sessions_path() -> Path:
-    return data_dir() / "whatsapp_sessions.json"
+def deals_path() -> Path:
+    return data_dir() / "deals.json"
 
 
-def get_message_dispatcher():
-    """Twilio WhatsApp when credentials set, else console; always logged to outbox."""
-    inner = get_dispatcher()
-    return FileOutboxDispatcher(outbox_path(), inner)
+def onboarding_sessions_path() -> Path:
+    return data_dir() / "onboarding_sessions.json"
 
 
-def load_registry() -> dict[str, LoyaltyCustomer]:
-    return load_customers(registry_path())
+def menu_path() -> Path:
+    return data_dir() / "menu.csv"
 
 
-def load_rules() -> LoyaltyRules:
-    return load_loyalty_rules(rules_path())
+def sales_path() -> Path:
+    return data_dir() / "sales_detail.csv"
 
 
-def save_rules(rules: LoyaltyRules) -> None:
-    save_loyalty_rules(rules_path(), rules)
+def staff_path() -> Path:
+    return data_dir() / "staff.csv"
+
+
+def community_paths() -> dict[str, Path]:
+    return {
+        "members_path": members_path(),
+        "redeem_path": redeem_codes_path(),
+        "events_path": stamp_events_path(),
+        "config_path": venue_config_path(),
+        "deals_path": deals_path(),
+        "menu_path": menu_path(),
+        "sessions_path": onboarding_sessions_path(),
+    }
+
+
+def merchant_paths() -> dict[str, Path]:
+    p = community_paths()
+    return {
+        "config_path": p["config_path"],
+        "members_path": p["members_path"],
+        "events_path": p["events_path"],
+        "menu_path": p["menu_path"],
+        "deals_path": p["deals_path"],
+        "sales_path": sales_path(),
+        "staff_path": staff_path(),
+    }
 
 
 def load_orders():
     d = data_dir()
-    return load_dataset(
-        d / "sales_detail.csv",
-        d / "menu.csv",
-        d / "staff.csv",
-    )
+    return load_dataset(d / "sales_detail.csv", d / "menu.csv", d / "staff.csv")
 
 
-def build_merchant_dashboard():
-    from app.agents.merchant_customer import run_merchant_customer_agent
-
-    orders, menu, staff = load_orders()
-    registry = load_registry()
-    rules = load_rules()
-    return run_merchant_customer_agent(
-        orders, menu, staff, registry, rules,
-        venue_name=VENUE_NAME,
-        outbox_path=outbox_path(),
-    )
+def venue_name() -> str:
+    return load_venue_config(venue_config_path()).venue_name

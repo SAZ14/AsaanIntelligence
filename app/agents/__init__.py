@@ -1,15 +1,4 @@
-from app.agents.customer import TAGLINE, link_qr_scan, run_customer_agent
+from app.agents.community_customer import handle_customer_message
+from app.agents.community_merchant import handle_merchant_message
 
-
-def run_merchant_customer_agent(*args, **kwargs):
-    from app.agents.merchant_customer import run_merchant_customer_agent as _run
-
-    return _run(*args, **kwargs)
-
-
-__all__ = [
-    "run_customer_agent",
-    "run_merchant_customer_agent",
-    "link_qr_scan",
-    "TAGLINE",
-]
+__all__ = ["handle_customer_message", "handle_merchant_message"]

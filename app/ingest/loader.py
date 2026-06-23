@@ -9,8 +9,6 @@ from typing import Any
 
 from app.models.canonical import (
     LineItem,
-    LoyaltyCustomer,
-    LoyaltyRules,
     MenuItem,
     Order,
     Payment,
@@ -18,8 +16,6 @@ from app.models.canonical import (
     Staff,
 )
 from app.ingest.mappings import cafe_generic as default_mapping
-
-CUSTOMER_CSV_FIELDS = ["customer_ref", "qr_token", "display_name", "phone", "channel", "opted_in"]
 
 
 def _get(row: dict[str, str], mapping: dict[str, str], key: str) -> str:
@@ -129,70 +125,6 @@ def load_reviews(
                 text=_get(row, m, "text"),
             ))
     return reviews
-
-
-def load_customers(
-    path: Path,
-    mapping: dict[str, str] | None = None,
-) -> dict[str, LoyaltyCustomer]:
-    """Load QR-linked loyalty profiles. Returns empty dict if file missing."""
-    if not path.exists():
-        return {}
-    m = mapping or default_mapping.CUSTOMERS
-    customers: dict[str, LoyaltyCustomer] = {}
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            cref = _get(row, m, "customer_ref")
-            if not cref:
-                continue
-            customers[cref] = LoyaltyCustomer(
-                customer_ref=cref,
-                qr_token=_get(row, m, "qr_token"),
-                display_name=_get(row, m, "display_name"),
-                phone=_get(row, m, "phone"),
-                channel=_get(row, m, "channel") or "sms",
-                opted_in=_bool(_get(row, m, "opted_in") or "true"),
-            )
-    return customers
-
-
-def save_customers(
-    path: Path,
-    customers: dict[str, LoyaltyCustomer],
-    mapping: dict[str, str] | None = None,
-) -> None:
-    """Persist QR-linked loyalty profiles to CSV."""
-    m = mapping or default_mapping.CUSTOMERS
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CUSTOMER_CSV_FIELDS)
-        writer.writeheader()
-        for cref in sorted(customers.keys()):
-            c = customers[cref]
-            writer.writerow({
-                m["customer_ref"]: c.customer_ref,
-                m["qr_token"]: c.qr_token,
-                m["display_name"]: c.display_name,
-                m["phone"]: c.phone,
-                m["channel"]: c.channel,
-                m["opted_in"]: "true" if c.opted_in else "false",
-            })
-
-
-def load_loyalty_rules(path: Path) -> LoyaltyRules:
-    """Load merchant loyalty rules. Returns defaults if file missing."""
-    if not path.exists():
-        return LoyaltyRules()
-    with open(path, encoding="utf-8") as f:
-        return LoyaltyRules.model_validate(json.load(f))
-
-
-def save_loyalty_rules(path: Path, rules: LoyaltyRules) -> None:
-    """Persist merchant loyalty rules to JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(rules.model_dump(), f, indent=2)
-        f.write("\n")
 
 
 def load_dataset(
