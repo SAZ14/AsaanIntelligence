@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.api.deps import redeem_codes_path
 from app.community.tokens import issue_redeem_code
 
 router = APIRouter(prefix="/staff", tags=["staff"])
@@ -24,7 +23,7 @@ class ReceiptResponse(BaseModel):
 @router.post("/receipt", response_model=ReceiptResponse)
 def issue_receipt_code(req: ReceiptRequest):
     """Issue a single-use redeem code to print on a receipt."""
-    entry = issue_redeem_code(redeem_codes_path(), order_id=req.order_id)
+    entry = issue_redeem_code(order_id=req.order_id)
     return ReceiptResponse(
         code=entry.code,
         order_id=entry.order_id,

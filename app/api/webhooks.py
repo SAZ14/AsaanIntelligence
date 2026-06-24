@@ -6,7 +6,6 @@ from fastapi import APIRouter, Form, HTTPException, Response
 
 from app.agents.community_customer import process_customer_reply
 from app.agents.community_merchant import process_merchant_reply
-from app.api.deps import community_paths, merchant_paths
 
 router = APIRouter(prefix="/webhooks/twilio", tags=["webhooks"])
 
@@ -26,7 +25,7 @@ async def twilio_customer_inbound(
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
-        process_customer_reply(From, Body, community_paths())
+        process_customer_reply(From, Body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
@@ -40,7 +39,7 @@ async def twilio_merchant_inbound(
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
-        process_merchant_reply(From, Body, merchant_paths())
+        process_merchant_reply(From, Body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()

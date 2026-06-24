@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from app.community.store import load_members, load_venue_config, save_members
 from app.services.messaging import send_whatsapp_text
 
 
 def run_winback(
-    members_path: Path,
-    config_path: Path,
     *,
     use_twilio: bool | None = None,
 ) -> int:
-    config = load_venue_config(config_path)
-    members = load_members(members_path)
+    config = load_venue_config()
+    members = load_members()
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.winback_days)
     sent = 0
     for member in members.values():
@@ -36,5 +33,5 @@ def run_winback(
         )
         member.winback_sent_at = datetime.now(timezone.utc).isoformat()
         sent += 1
-    save_members(members_path, members)
+    save_members(members)
     return sent

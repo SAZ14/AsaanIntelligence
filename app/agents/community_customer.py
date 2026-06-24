@@ -90,19 +90,13 @@ def handle_customer_message(
     from_phone: str,
     body: str,
     *,
-    members_path: Path,
-    redeem_path: Path,
-    events_path: Path,
-    config_path: Path,
-    deals_path: Path,
     menu_path: Path,
-    sessions_path: Path,
 ) -> AgentReply:
     phone = parse_twilio_whatsapp_phone(from_phone)
     text = (body or "").strip()
-    config = load_venue_config(config_path)
-    members = load_members(members_path)
-    sessions = load_onboarding_sessions(sessions_path)
+    config = load_venue_config()
+    members = load_members()
+    sessions = load_onboarding_sessions()
     member = members.get(phone)
 
     if member is None and sessions.get(phone) == ONBOARDING:
@@ -113,9 +107,9 @@ def handle_customer_message(
         except ValueError as e:
             return AgentReply(str(e))
         register_member(phone, name, members)
-        save_members(members_path, members)
+        save_members(members)
         sessions.pop(phone, None)
-        save_onboarding_sessions(sessions_path, sessions)
+        save_onboarding_sessions(sessions)
         return AgentReply(welcome_message(name, config))
 
     if is_redeem_code(text):
@@ -123,15 +117,15 @@ def handle_customer_message(
             return AgentReply(
                 "Please scan the counter QR to join the community first, then send your code."
             )
-        entry = find_code(redeem_path, text)
+        entry = find_code(text)
         if entry is None:
             return AgentReply("That code wasn't found. Check the code on your receipt.")
         err = validate_code(entry, config)
         if err:
             return AgentReply(err)
-        mark_redeemed(redeem_path, entry, phone)
-        result = apply_stamp(member, normalize_code(text), events_path, config)
-        save_members(members_path, members)
+        mark_redeemed(entry, phone)
+        result = apply_stamp(member, normalize_code(text), config)
+        save_members(members)
         return AgentReply(result.message)
 
     if member is None:
@@ -140,7 +134,7 @@ def handle_customer_message(
                 f"Welcome to {config.venue_name}! What name should we use for your rewards?"
             )
         sessions[phone] = ONBOARDING
-        save_onboarding_sessions(sessions_path, sessions)
+        save_onboarding_sessions(sessions)
         return AgentReply(
             f"Welcome to {config.venue_name}! You're on WhatsApp — we already have your number.\n"
             "What name should we use for your rewards?"
@@ -154,14 +148,14 @@ def handle_customer_message(
     if STAMPS_RE.search(text):
         return AgentReply(stamp_status_message(member, config))
     if LEADERBOARD_RE.search(text):
-        counts = weekly_stamp_counts(events_path)
+        counts = weekly_stamp_counts()
         return AgentReply(format_leaderboard(counts, members))
     if MENU_RE.search(text):
-        ctx = build_menu_context(menu_path, deals_path)
+        ctx = build_menu_context(menu_path)
         return AgentReply(_chat_reply(text, ctx, member.name))
 
     if len(text) > 20 and os.environ.get("ANTHROPIC_API_KEY"):
-        ctx = build_menu_context(menu_path, deals_path)
+        ctx = build_menu_context(menu_path)
         return AgentReply(_chat_reply(text, ctx, member.name))
 
     return AgentReply(_help_message(member.name, config))
@@ -170,11 +164,14 @@ def handle_customer_message(
 def process_customer_reply(
     from_phone: str,
     body: str,
-    paths: dict[str, Path],
     *,
+    menu_path: Path | None = None,
     use_twilio: bool | None = None,
 ) -> AgentReply:
-    reply = handle_customer_message(from_phone, body, **paths)
+    if menu_path is None:
+        from app.api.deps import menu_path as default_menu_path
+        menu_path = default_menu_path()
+    reply = handle_customer_message(from_phone, body, menu_path=menu_path)
     send_whatsapp_text(
         from_phone, reply.body,
         from_key="TWILIO_WHATSAPP_CUSTOMER_FROM",

@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from app.community.models import RedeemCode, VenueConfig
 from app.community.store import append_redeem_code, load_redeem_codes, update_redeem_code
@@ -19,12 +18,8 @@ def is_redeem_code(text: str) -> bool:
     return bool(CODE_PATTERN.match(normalize_code(text)))
 
 
-def issue_redeem_code(
-    path: Path,
-    *,
-    order_id: str = "",
-) -> RedeemCode:
-    existing = {c.code for c in load_redeem_codes(path)}
+def issue_redeem_code(*, order_id: str = "") -> RedeemCode:
+    existing = {c.code for c in load_redeem_codes()}
     for _ in range(100):
         suffix = secrets.token_hex(2).upper()
         code = f"SR-{suffix}"
@@ -34,14 +29,14 @@ def issue_redeem_code(
                 order_id=order_id,
                 issued_at=datetime.now(timezone.utc).isoformat(),
             )
-            append_redeem_code(path, entry)
+            append_redeem_code(entry)
             return entry
     raise RuntimeError("Could not generate unique redeem code")
 
 
-def find_code(path: Path, code: str) -> RedeemCode | None:
+def find_code(code: str) -> RedeemCode | None:
     normalized = normalize_code(code)
-    for entry in load_redeem_codes(path):
+    for entry in load_redeem_codes():
         if entry.code == normalized:
             return entry
     return None
@@ -58,10 +53,10 @@ def validate_code(entry: RedeemCode, config: VenueConfig) -> str | None:
     return None
 
 
-def mark_redeemed(path: Path, entry: RedeemCode, phone: str) -> RedeemCode:
+def mark_redeemed(entry: RedeemCode, phone: str) -> RedeemCode:
     updated = entry.model_copy(update={
         "redeemed_at": datetime.now(timezone.utc).isoformat(),
         "redeemed_by": phone,
     })
-    update_redeem_code(path, updated)
+    update_redeem_code(updated)
     return updated

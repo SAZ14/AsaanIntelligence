@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.community.leaderboard import format_leaderboard, weekly_stamp_counts
 from app.community.store import load_members
 from app.services.messaging import send_whatsapp_text
 
 
 def run_leaderboard_broadcast(
-    members_path: Path,
-    events_path: Path,
     *,
     use_twilio: bool | None = None,
 ) -> int:
-    members = load_members(members_path)
-    counts = weekly_stamp_counts(events_path)
+    members = load_members()
+    counts = weekly_stamp_counts()
     message = format_leaderboard(counts, members)
     sent = 0
     for member in members.values():

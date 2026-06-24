@@ -25,8 +25,8 @@ class AgentReply:
     body: str
 
 
-def _is_owner(phone: str, config_path: Path) -> bool:
-    config = load_venue_config(config_path)
+def _is_owner(phone: str) -> bool:
+    config = load_venue_config()
     normalized = normalize_phone(phone)
     owners = {normalize_phone(p) for p in config.owner_phones}
     env_owners = {
@@ -37,8 +37,10 @@ def _is_owner(phone: str, config_path: Path) -> bool:
     return normalized in owners or normalized in env_owners
 
 
-def _loyal_community_summary(members_path: Path, sales_path: Path, menu_path: Path, staff_path: Path) -> str:
-    members = load_members(members_path)
+def _loyal_community_summary(
+    members_path: Path, sales_path: Path, menu_path: Path, staff_path: Path
+) -> str:
+    members = load_members()
     if members:
         top = sorted(
             members.values(),
@@ -66,9 +68,9 @@ def _loyal_community_summary(members_path: Path, sales_path: Path, menu_path: Pa
     return "\n".join(lines)
 
 
-def _stats_summary(members_path: Path, events_path: Path) -> str:
-    members = load_members(members_path)
-    counts = weekly_stamp_counts(events_path)
+def _stats_summary(events_path: Path | None = None) -> str:
+    members = load_members()
+    counts = weekly_stamp_counts()
     return (
         f"Community members: {len(members)}\n"
         f"Active this week (earned stamps): {len(counts)}\n"
@@ -82,16 +84,16 @@ def handle_merchant_message(
     from_phone: str,
     body: str,
     *,
-    config_path: Path,
-    members_path: Path,
-    events_path: Path,
+    config_path: Path | None = None,
+    members_path: Path | None = None,
+    events_path: Path | None = None,
     menu_path: Path,
-    deals_path: Path,
+    deals_path: Path | None = None,
     sales_path: Path,
     staff_path: Path,
 ) -> AgentReply:
     phone = parse_twilio_whatsapp_phone(from_phone)
-    if not _is_owner(phone, config_path):
+    if not _is_owner(phone):
         return AgentReply("This line is for Sugar Rush owners only.")
 
     text = (body or "").strip()
@@ -100,18 +102,18 @@ def handle_merchant_message(
             "Ask me about loyal customers, community stats, menu, deals, or leaderboard."
         )
 
-    config = load_venue_config(config_path)
+    config = load_venue_config()
 
     if LOYAL_RE.search(text):
-        return AgentReply(_loyal_community_summary(members_path, sales_path, menu_path, staff_path))
+        return AgentReply(_loyal_community_summary(members_path or Path(), sales_path, menu_path, staff_path))
     if STATS_RE.search(text):
-        return AgentReply(_stats_summary(members_path, events_path))
+        return AgentReply(_stats_summary(events_path))
     if LEADERBOARD_RE.search(text):
-        members = load_members(members_path)
-        counts = weekly_stamp_counts(events_path)
+        members = load_members()
+        counts = weekly_stamp_counts()
         return AgentReply(format_leaderboard(counts, members))
     if MENU_RE.search(text):
-        return AgentReply(build_menu_context(menu_path, deals_path))
+        return AgentReply(build_menu_context(menu_path))
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -119,9 +121,9 @@ def handle_merchant_message(
             "Ask about loyal customers, community stats, menu, deals, or leaderboard."
         )
     context = (
-        f"{_stats_summary(members_path, events_path)}\n\n"
-        f"{_loyal_community_summary(members_path, sales_path, menu_path, staff_path)}\n\n"
-        f"{build_menu_context(menu_path, deals_path)}"
+        f"{_stats_summary(events_path)}\n\n"
+        f"{_loyal_community_summary(members_path or Path(), sales_path, menu_path, staff_path)}\n\n"
+        f"{build_menu_context(menu_path)}"
     )
     client = anthropic.Anthropic()
     resp = client.messages.create(
@@ -141,11 +143,21 @@ def handle_merchant_message(
 def process_merchant_reply(
     from_phone: str,
     body: str,
-    paths: dict[str, Path],
     *,
+    menu_path: Path | None = None,
+    sales_path: Path | None = None,
+    staff_path: Path | None = None,
     use_twilio: bool | None = None,
 ) -> AgentReply:
-    reply = handle_merchant_message(from_phone, body, **paths)
+    from app.api.deps import menu_path as default_menu_path
+    from app.api.deps import sales_path as default_sales_path
+    from app.api.deps import staff_path as default_staff_path
+    reply = handle_merchant_message(
+        from_phone, body,
+        menu_path=menu_path or default_menu_path(),
+        sales_path=sales_path or default_sales_path(),
+        staff_path=staff_path or default_staff_path(),
+    )
     send_whatsapp_text(
         from_phone, reply.body,
         from_key="TWILIO_WHATSAPP_MERCHANT_FROM",

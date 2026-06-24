@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""Run community background jobs (win-back, leaderboard)."""
+"""Run background jobs (winback, leaderboard)."""
 
-import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.api.deps import members_path, stamp_events_path, venue_config_path
 from app.jobs.leaderboard_broadcast import run_leaderboard_broadcast
 from app.jobs.winback import run_winback
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("job", choices=["winback", "leaderboard"])
-    args = parser.parse_args()
-    if args.job == "winback":
-        n = run_winback(members_path(), venue_config_path())
-        print(f"Win-back messages sent: {n}")
+    job = sys.argv[1] if len(sys.argv) > 1 else ""
+    if job == "winback":
+        sent = run_winback()
+        print(f"Winback: sent {sent} messages.")
+    elif job == "leaderboard":
+        sent = run_leaderboard_broadcast()
+        print(f"Leaderboard broadcast: sent to {sent} members.")
     else:
-        n = run_leaderboard_broadcast(members_path(), stamp_events_path())
-        print(f"Leaderboard broadcast sent to: {n} members")
+        print("Usage: python scripts/run_jobs.py [winback|leaderboard]")
 
 
 if __name__ == "__main__":
