@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import qrcode
 
-from app.api.deps import venue_config_path
+
 from app.community.menu_context import build_enroll_qr_url
 from app.community.store import load_venue_config
 from app.services.messaging import twilio_whatsapp_digits
@@ -21,7 +21,7 @@ def main() -> None:
     if not digits:
         print("Set TWILIO_WHATSAPP_CUSTOMER_FROM in .env")
         sys.exit(1)
-    config = load_venue_config(venue_config_path())
+    config = load_venue_config()
     url = build_enroll_qr_url(digits, config.qr_greeting)
     OUT.mkdir(exist_ok=True)
     out_path = OUT / "enroll_qr.png"
