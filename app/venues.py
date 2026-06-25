@@ -1,42 +1,34 @@
-"""Central venue registry.
+"""Venue registry — DB-driven in production, injectable in tests.
 
-One place that knows every restaurant: how to reach its POS
-(:class:`RestaurantConfig`) and which owner WhatsApp number maps to it. Both the
-CLI (``scripts/run_integrity_agent.py``) and the WhatsApp service read from here,
-so onboarding a venue is a single edit.
+Production: call get_restaurant_config(store_id) to build a RestaurantConfig
+from the pos_connections table. No hardcoded venues.
+
+Tests: pass restaurants/owner_map dicts directly to IntegrityWhatsAppService.
 """
-
 from __future__ import annotations
-
-from pathlib import Path
 
 from app.pos import RestaurantConfig
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+# Keep empty dicts so any code that still imports these doesn't crash.
+# Production routing uses get_restaurant_config() instead.
+RESTAURANTS: dict[str, RestaurantConfig] = {}
+OWNER_WHATSAPP: dict[str, str] = {}
+DEFAULT_VENUE: str | None = None
 
-# venue_key -> how to reach that restaurant's POS.
-RESTAURANTS: dict[str, RestaurantConfig] = {
-    "roastery": RestaurantConfig(
-        venue_name="Roastery (Islamabad)",
-        pos_type="csv",
-        connection={"base_dir": str(DATA)},
-        mapping="cafe_generic",
-    ),
-    # Onboard a cloud-POS venue (needs real base_url / api_key):
-    # "downtown": RestaurantConfig(
-    #     venue_name="Downtown Bistro",
-    #     pos_type="rest",
-    #     connection={"base_url": "https://api.examplepos.com/v1", "api_key": "..."},
-    #     mapping="cafe_generic",
-    # ),
-}
 
-# Owner WhatsApp number (E.164, with the "whatsapp:" prefix Twilio uses)
-# -> venue_key. The owner texts the agent; this says which venue they own.
-OWNER_WHATSAPP: dict[str, str] = {
-    # "whatsapp:+923001234567": "roastery",
-}
-
-# Fallback venue when an inbound number is not in OWNER_WHATSAPP (handy for a
-# single-venue deployment / demos). Set to None to reject unknown numbers.
-DEFAULT_VENUE: str | None = "roastery"
+def get_restaurant_config(store_id: int) -> RestaurantConfig | None:
+    """Build a RestaurantConfig from the DB pos_connections row for this store."""
+    from app.db import SessionLocal, POSConnection, Store
+    with SessionLocal() as db:
+        store = db.query(Store).filter(Store.id == store_id).first()
+        pos = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
+        if not store or not pos:
+            return None
+        return RestaurantConfig(
+            venue_name=store.name,
+            pos_type=pos.pos_type,
+            connection=dict(pos.config or {}),
+            mapping=pos.mapping or "cafe_generic",
+            currency=pos.currency or "PKR",
+            timezone=pos.timezone or "Asia/Karachi",
+        )

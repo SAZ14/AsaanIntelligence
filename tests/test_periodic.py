@@ -1,6 +1,7 @@
 """Tests for daily / weekly period reports and their digests."""
 
 from datetime import timedelta
+from pathlib import Path
 
 from app.analysis.periodic import (
     build_daily_report,
@@ -8,13 +9,29 @@ from app.analysis.periodic import (
     latest_date,
     slice_orders,
 )
-from app.pos import build_connector
-from app.venues import RESTAURANTS
+from app.pos import RestaurantConfig, build_connector
 from app.whatsapp.service import IntegrityWhatsAppService
+
+DATA = Path(__file__).resolve().parent.parent / "data"
+
+ROASTERY = RestaurantConfig(
+    venue_name="Roastery",
+    pos_type="csv",
+    connection={"base_dir": str(DATA)},
+    mapping="cafe_generic",
+)
+
+
+def _svc() -> IntegrityWhatsAppService:
+    return IntegrityWhatsAppService(
+        restaurants={"roastery": ROASTERY},
+        owner_map={"whatsapp:+100": "roastery"},
+        default_venue="roastery",
+    )
 
 
 def _data():
-    return build_connector(RESTAURANTS["roastery"]).fetch()
+    return build_connector(ROASTERY).fetch()
 
 
 def test_slice_orders_is_inclusive_and_windowed():
@@ -66,7 +83,7 @@ def test_empty_orders_yield_no_report():
 
 
 def test_service_digests_render_text():
-    svc = IntegrityWhatsAppService()
+    svc = _svc()
     daily = svc.daily_digest("roastery")
     weekly = svc.weekly_digest("roastery")
     assert "Daily report" in daily
@@ -76,7 +93,7 @@ def test_service_digests_render_text():
 
 
 def test_daily_and_weekly_commands_route():
-    svc = IntegrityWhatsAppService()
+    svc = _svc()
     assert "Daily report" in svc.handle_message("whatsapp:+100", "daily")
     assert "Weekly summary" in svc.handle_message("whatsapp:+100", "weekly")
 

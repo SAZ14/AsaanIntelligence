@@ -101,12 +101,17 @@ def _window_report(
     return report, windowed
 
 
+def _fmt_day(d: date) -> str:
+    """Format day number without zero-padding (cross-platform)."""
+    return str(d.day)
+
+
 def _label(start: date, end: date) -> str:
     if start == end:
-        return start.strftime("%a %-d %b %Y")
+        return f"{start.strftime('%a')} {_fmt_day(start)} {start.strftime('%b %Y')}"
     if start.month == end.month and start.year == end.year:
-        return f"{start.day}–{end.strftime('%-d %b %Y')}"
-    return f"{start.strftime('%-d %b')} – {end.strftime('%-d %b %Y')}"
+        return f"{_fmt_day(start)}–{_fmt_day(end)} {end.strftime('%b %Y')}"
+    return f"{_fmt_day(start)} {start.strftime('%b')} – {_fmt_day(end)} {end.strftime('%b %Y')}"
 
 
 # ── Builders ──
