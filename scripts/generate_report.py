@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.ingest import load_dataset
 from app.analysis.integrity import analyze_integrity
+from app.analysis.reconciliation import reconcile_payments
 from app.analysis.retention import analyze_retention, analyze_operations
 from app.report.render import generate_report, compute_headlines
 
@@ -20,6 +21,7 @@ def main() -> None:
         DATA / "sales_detail.csv", DATA / "menu.csv", DATA / "staff.csv",
     )
     integrity = analyze_integrity(orders, menu, staff)
+    reconciliation = reconcile_payments(orders, menu, staff)
     retention = analyze_retention(orders, menu, staff)
     operations = analyze_operations(orders, menu, staff)
 
@@ -33,7 +35,10 @@ def main() -> None:
     if h.winback_sanity_warning:
         print(f"⚠  WARNING: win-back exceeds 10% of monthly revenue — review assumptions")
 
-    html = generate_report(integrity, retention, operations)
+    print(f"Gross profit:                           PKR {reconciliation.gross_profit:,.0f}  ({reconciliation.gross_margin:.0%} margin)")
+    print(f"Books balanced:                         {'yes' if reconciliation.books_balanced else 'NO'}")
+
+    html = generate_report(integrity, retention, operations, reconciliation)
 
     OUT.mkdir(exist_ok=True)
     out_path = OUT / "audit_report.html"
