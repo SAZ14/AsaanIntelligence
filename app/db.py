@@ -31,6 +31,19 @@ class Store(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StoreLocation(Base):
+    """Physical locations/branches for a store."""
+    __tablename__ = "store_locations"
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    address = Column(String, nullable=False)
+    city = Column(String, nullable=True)
+    area = Column(String, nullable=True)      # e.g. "F-6", "DHA Phase 2"
+    is_primary = Column(String, default=True)  # bool stored as string for SQLite compat
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class StoreMember(Base):
     """Maps WhatsApp numbers to stores. One number can belong to many stores."""
     __tablename__ = "store_members"

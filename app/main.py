@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.config import TWILIO_VALIDATE_SIGNATURE, TWILIO_AUTH_TOKEN
 from app.db import (
-    SessionLocal, Store, StoreMember, Report, Run, init_db,
+    SessionLocal, Store, StoreLocation, StoreMember, Report, Run, init_db,
     get_stores_for_number, get_user_session, set_user_session,
 )
 from app import pipeline, send
@@ -134,7 +134,7 @@ async def webhook(
         if selected:
             set_user_session(sender, selected.store_id if hasattr(selected, 'store_id') else selected.id)
             background_tasks.add_task(_run_and_reply, message_text, sender, selected.id)
-            return _twiml(f"Got it! Checking on {selected.name}... report coming in ~30–60s.")
+            return _twiml(f"Got it! Checking on {selected.name}... report coming in ~5–8 mins.")
         else:
             return _twiml(_store_menu(stores))
 
@@ -151,7 +151,7 @@ async def webhook(
 
     # 5. Run pipeline in background
     background_tasks.add_task(_run_and_reply, message_text, sender, store_id)
-    return _twiml("Got it! Analysing competitors... report coming in ~30–60s.")
+    return _twiml("Got it! Analysing competitors... report coming in ~5–8 mins.")
 
 
 def _run_and_reply(message_text: str, sender: str, store_id: int) -> None:
@@ -197,8 +197,10 @@ async def create_store(
         db.add(store)
         db.commit()
         db.refresh(store)
-        _seed_competitors(store.id, db, COMPETITORS)
-    return JSONResponse({"store_id": store.id, "name": store.name})
+        store_id_out = store.id
+        store_name_out = store.name
+        _seed_competitors(store_id_out, db, COMPETITORS)
+    return JSONResponse({"store_id": store_id_out, "name": store_name_out})
 
 
 @app.post("/admin/stores/{store_id}/members")
@@ -223,15 +225,45 @@ async def add_member(
     return JSONResponse({"status": "added", "store_id": store_id, "whatsapp": whatsapp, "role": role})
 
 
+@app.post("/admin/stores/{store_id}/locations")
+async def add_location(
+    store_id: int,
+    address: Annotated[str, Form()],
+    city: Annotated[str, Form()] = "",
+    area: Annotated[str, Form()] = "",
+    is_primary: Annotated[str, Form()] = "false",
+):
+    """Add a physical branch/location for a store."""
+    with SessionLocal() as db:
+        store = db.query(Store).filter(Store.id == store_id).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="Store not found")
+        db.add(StoreLocation(
+            store_id=store_id,
+            address=address,
+            city=city or None,
+            area=area or None,
+            is_primary=is_primary,
+        ))
+        db.commit()
+    return JSONResponse({"status": "added", "store_id": store_id, "address": address})
+
+
 @app.get("/admin/stores")
 async def list_stores():
-    """List all registered stores."""
+    """List all registered stores with their locations."""
     with SessionLocal() as db:
         stores = db.query(Store).all()
-        return JSONResponse([
-            {"id": s.id, "name": s.name, "location": s.location, "category": s.category}
-            for s in stores
-        ])
+        result = []
+        for s in stores:
+            locs = db.query(StoreLocation).filter(StoreLocation.store_id == s.id).all()
+            result.append({
+                "id": s.id,
+                "name": s.name,
+                "category": s.category,
+                "locations": [{"address": l.address, "city": l.city, "area": l.area, "is_primary": l.is_primary} for l in locs],
+            })
+        return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
