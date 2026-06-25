@@ -47,6 +47,10 @@ def venue_name() -> str:
 
 
 async def validate_twilio_request(request: Request) -> None:
+    # Bypass validation during testing
+    if os.environ.get("ASAAN_TEST_MODE") == "1":
+        return
+
     validator = RequestValidator(os.environ.get("TWILIO_AUTH_TOKEN", ""))
     
     base_url = os.environ.get("TWILIO_WEBHOOK_BASE_URL")

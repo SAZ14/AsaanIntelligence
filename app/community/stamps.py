@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.community.models import CommunityMember, StampEvent, VenueConfig
 from app.community.store import append_stamp_event
@@ -44,6 +45,7 @@ def apply_stamp(
     member: CommunityMember,
     code: str,
     config: VenueConfig,
+    events_path: Path | None = None,
 ) -> StampResult:
     now = datetime.now(timezone.utc).isoformat()
     member.stamps_current += 1
@@ -69,7 +71,7 @@ def apply_stamp(
             f"for {config.reward_text}!"
         )
 
-    append_stamp_event(StampEvent(
+    append_stamp_event(events_path, StampEvent(
         phone=member.phone,
         code=code,
         stamp_number=stamp_number,

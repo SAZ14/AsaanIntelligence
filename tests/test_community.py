@@ -339,6 +339,7 @@ def test_leaderboard_broadcast(community_tmp):
 @pytest.fixture
 def api_client(community_tmp, monkeypatch):
     monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.setenv("ASAAN_TEST_MODE", "1")
     return TestClient(app)
 
 

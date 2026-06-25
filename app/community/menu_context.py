@@ -7,9 +7,9 @@ from app.community.store import load_deals
 from app.ingest.loader import load_menu
 
 
-def build_menu_context(menu_path: Path) -> str:
+def build_menu_context(menu_path: Path, deals_path: Path | None = None) -> str:
     menu = load_menu(menu_path)
-    deals = load_deals()
+    deals = load_deals(deals_path)
     lines = ["MENU:"]
     by_cat: dict[str, list[str]] = {}
     for item in menu.values():

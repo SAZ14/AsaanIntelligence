@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from app.community.models import CommunityMember
 from app.community.store import load_stamp_events
 
 
-def weekly_stamp_counts(days: int = 7) -> dict[str, int]:
+def weekly_stamp_counts(path: Path | None = None, days: int = 7) -> dict[str, int]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     counts: dict[str, int] = defaultdict(int)
-    for event in load_stamp_events():
+    for event in load_stamp_events(path):
         at = datetime.fromisoformat(event.at)
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
         if at >= cutoff:
             counts[event.phone] += 1
     return dict(counts)

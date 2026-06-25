@@ -19,14 +19,24 @@ STATS_RE = re.compile(r"\b(how many|members|stats|community)\b", re.I)
 LEADERBOARD_RE = re.compile(r"\bleaderboard\b", re.I)
 MENU_RE = re.compile(r"\b(menu|what.?s new|deal|special)\b", re.I)
 
+# Module-level Anthropic singleton
+_anthropic_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic | None:
+    global _anthropic_client
+    if _anthropic_client is None and os.environ.get("ANTHROPIC_API_KEY"):
+        _anthropic_client = anthropic.Anthropic()
+    return _anthropic_client
+
 
 @dataclass
 class AgentReply:
     body: str
 
 
-def _is_owner(phone: str) -> bool:
-    config = load_venue_config()
+def _is_owner(phone: str, config_path: Path | None = None) -> bool:
+    config = load_venue_config(config_path)
     normalized = normalize_phone(phone)
     owners = {normalize_phone(p) for p in config.owner_phones}
     env_owners = {
@@ -38,9 +48,13 @@ def _is_owner(phone: str) -> bool:
 
 
 def _loyal_community_summary(
-    members_path: Path, sales_path: Path, menu_path: Path, staff_path: Path
+    members_path: Path | None,
+    sales_path: Path,
+    menu_path: Path,
+    staff_path: Path,
+    events_path: Path | None = None,
 ) -> str:
-    members = load_members()
+    members = load_members(members_path)
     if members:
         top = sorted(
             members.values(),
@@ -68,9 +82,12 @@ def _loyal_community_summary(
     return "\n".join(lines)
 
 
-def _stats_summary(events_path: Path | None = None) -> str:
-    members = load_members()
-    counts = weekly_stamp_counts()
+def _stats_summary(
+    members_path: Path | None = None,
+    events_path: Path | None = None,
+) -> str:
+    members = load_members(members_path)
+    counts = weekly_stamp_counts(events_path)
     return (
         f"Community members: {len(members)}\n"
         f"Active this week (earned stamps): {len(counts)}\n"
@@ -93,7 +110,7 @@ def handle_merchant_message(
     staff_path: Path,
 ) -> AgentReply:
     phone = parse_twilio_whatsapp_phone(from_phone)
-    if not _is_owner(phone):
+    if not _is_owner(phone, config_path):
         return AgentReply("This line is for Sugar Rush owners only.")
 
     text = (body or "").strip()
@@ -102,32 +119,31 @@ def handle_merchant_message(
             "Ask me about loyal customers, community stats, menu, deals, or leaderboard."
         )
 
-    config = load_venue_config()
+    config = load_venue_config(config_path)
 
     if LOYAL_RE.search(text):
-        return AgentReply(_loyal_community_summary(members_path or Path(), sales_path, menu_path, staff_path))
+        return AgentReply(_loyal_community_summary(members_path, sales_path, menu_path, staff_path, events_path))
     if STATS_RE.search(text):
-        return AgentReply(_stats_summary(events_path))
+        return AgentReply(_stats_summary(members_path, events_path))
     if LEADERBOARD_RE.search(text):
-        members = load_members()
-        counts = weekly_stamp_counts()
+        members = load_members(members_path)
+        counts = weekly_stamp_counts(events_path)
         return AgentReply(format_leaderboard(counts, members))
     if MENU_RE.search(text):
-        return AgentReply(build_menu_context(menu_path))
+        return AgentReply(build_menu_context(menu_path, deals_path))
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
+    client = _get_client()
+    if not client:
         return AgentReply(
             "Ask about loyal customers, community stats, menu, deals, or leaderboard."
         )
     context = (
-        f"{_stats_summary(events_path)}\n\n"
-        f"{_loyal_community_summary(members_path or Path(), sales_path, menu_path, staff_path)}\n\n"
-        f"{build_menu_context(menu_path)}"
+        f"{_stats_summary(members_path, events_path)}\n\n"
+        f"{_loyal_community_summary(members_path, sales_path, menu_path, staff_path, events_path)}\n\n"
+        f"{build_menu_context(menu_path, deals_path)}"
     )
-    client = anthropic.Anthropic()
     resp = client.messages.create(
-        model="claude-sonnet-4-20250124",
+        model="claude-haiku-4-5-20251001",
         max_tokens=300,
         messages=[{
             "role": "user",
