@@ -104,10 +104,11 @@ def handle_merchant_message(
     config_path: Path | None = None,
     members_path: Path | None = None,
     events_path: Path | None = None,
-    menu_path: Path,
+    menu_path: Path | None = None,
     deals_path: Path | None = None,
     sales_path: Path,
     staff_path: Path,
+    chat_sessions_path: Path | None = None,
 ) -> AgentReply:
     phone = parse_twilio_whatsapp_phone(from_phone)
     if not _is_owner(phone, config_path):
@@ -142,18 +143,91 @@ def handle_merchant_message(
         f"{_loyal_community_summary(members_path, sales_path, menu_path, staff_path, events_path)}\n\n"
         f"{build_menu_context(menu_path, deals_path)}"
     )
+    
+    from app.community.store import load_chat_session, save_chat_session
+    merchant_session_key = phone
+    history = load_chat_session(chat_sessions_path, merchant_session_key)[-6:]
+    messages = history + [{"role": "user", "content": f"Owner: {body}"}]
+
+    tools = [
+        {
+            "name": "upsert_menu_item",
+            "description": "Add or update a menu item. Call this when the owner asks to change a price or add a new item.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "sku": {"type": "string", "description": "Unique 3-letter SKU (e.g. CAP). If adding a new item, invent one."},
+                    "name": {"type": "string", "description": "Name of the item"},
+                    "category": {"type": "string", "description": "Category (e.g. Coffee, Pastry)"},
+                    "price": {"type": "number", "description": "Price in PKR"}
+                },
+                "required": ["sku", "name", "category", "price"]
+            }
+        },
+        {
+            "name": "delete_menu_item",
+            "description": "Remove a menu item. Call this when the owner asks to delete or remove an item.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "sku": {"type": "string", "description": "Unique 3-letter SKU of the item to delete"}
+                },
+                "required": ["sku"]
+            }
+        }
+    ]
+
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=300,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"You are the owner assistant for {config.venue_name}. "
-                f"Answer briefly using only this data:\n{context}\n\nOwner: {body}"
-            ),
-        }],
+        tools=tools,
+        system=(
+            f"You are the owner assistant for {config.venue_name}. "
+            f"Answer briefly using only this data:\n{context}\n\n"
+            f"If the user asks to update a price using pronouns (e.g. 'change it to 700'), check the recent chat history to determine which item they are referring to."
+        ),
+        messages=messages,
     )
-    return AgentReply(resp.content[0].text.strip())
+
+    if resp.stop_reason == "tool_use":
+        from app.community.store import upsert_menu_item, delete_menu_item
+        from app.models.canonical import MenuItem
+        for block in resp.content:
+            if block.type == "tool_use":
+                if block.name == "upsert_menu_item":
+                    args = block.input
+                    item = MenuItem(
+                        sku=args["sku"],
+                        name=args["name"],
+                        category=args["category"],
+                        cost=None,
+                        price=float(args["price"])
+                    )
+                    upsert_menu_item(menu_path, item)
+                    msg = f"Successfully updated menu item: {item.name} for {item.price} PKR."
+                    history.append({"role": "user", "content": f"Owner: {body}"})
+                    history.append({"role": "assistant", "content": msg})
+                    save_chat_session(chat_sessions_path, merchant_session_key, history)
+                    return AgentReply(msg)
+                elif block.name == "delete_menu_item":
+                    args = block.input
+                    delete_menu_item(menu_path, args["sku"])
+                    msg = f"Successfully removed item with SKU: {args['sku']}"
+                    history.append({"role": "user", "content": f"Owner: {body}"})
+                    history.append({"role": "assistant", "content": msg})
+                    save_chat_session(chat_sessions_path, merchant_session_key, history)
+                    return AgentReply(msg)
+
+    # Return standard text reply
+    for block in resp.content:
+        if block.type == "text":
+            msg = block.text.strip()
+            history.append({"role": "user", "content": f"Owner: {body}"})
+            history.append({"role": "assistant", "content": msg})
+            save_chat_session(chat_sessions_path, merchant_session_key, history)
+            return AgentReply(msg)
+            
+    return AgentReply("I couldn't process that command.")
 
 
 def process_merchant_reply(
@@ -184,7 +258,7 @@ def process_merchant_reply(
     else:
         reply = handle_merchant_message(
             from_phone, body,
-            menu_path=menu_path or default_menu_path(),
+            menu_path=None,
             sales_path=sales_path or default_sales_path(),
             staff_path=staff_path or default_staff_path(),
         )

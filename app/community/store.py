@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.community.models import CommunityMember, Deal, RedeemCode, StampEvent, VenueConfig
+from app.models.canonical import MenuItem
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -345,3 +346,85 @@ def save_chat_session(path: Path | None, phone: str, history: list[dict]) -> Non
         "phone": phone,
         "history": history
     }).execute()
+
+# ── Menu Items ────────────────────────────────────────────────────────────────
+
+def load_menu(path: Path | None = None) -> dict[str, MenuItem]:
+    if path is not None:
+        from app.ingest.loader import load_menu as _load_csv_menu
+        if not path.exists():
+            return {}
+        return _load_csv_menu(path)
+        
+    result = _supabase().table("menu_items").select("*").eq("active", True).execute()
+    menu = {}
+    for row in result.data:
+        m = MenuItem(
+            sku=row["sku"],
+            name=row["name"],
+            category=row["category"],
+            cost=float(row["cost"]) if row.get("cost") is not None else None,
+            price=float(row["price"])
+        )
+        menu[m.sku] = m
+    return menu
+
+
+def upsert_menu_item(path: Path | None, item: MenuItem) -> None:
+    if path is not None:
+        from app.ingest.loader import load_menu as _load_csv_menu
+        from app.ingest.mappings import cafe_generic as default_mapping
+        import csv
+        menu = _load_csv_menu(path) if path.exists() else {}
+        menu[item.sku] = item
+        m = default_mapping.MENU
+        fieldnames = list(m.values())
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for i in menu.values():
+                writer.writerow({
+                    m["sku"]: i.sku,
+                    m["name"]: i.name,
+                    m["category"]: i.category,
+                    m["cost"]: str(i.cost) if i.cost is not None else "",
+                    m["price"]: str(i.price),
+                })
+        return
+
+    _supabase().table("menu_items").upsert({
+        "sku": item.sku,
+        "name": item.name,
+        "category": item.category,
+        "cost": float(item.cost) if item.cost is not None else None,
+        "price": float(item.price),
+        "active": True
+    }).execute()
+
+
+def delete_menu_item(path: Path | None, sku: str) -> None:
+    if path is not None:
+        from app.ingest.loader import load_menu as _load_csv_menu
+        from app.ingest.mappings import cafe_generic as default_mapping
+        import csv
+        if not path.exists():
+            return
+        menu = _load_csv_menu(path)
+        if sku in menu:
+            del menu[sku]
+            m = default_mapping.MENU
+            fieldnames = list(m.values())
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for i in menu.values():
+                    writer.writerow({
+                        m["sku"]: i.sku,
+                        m["name"]: i.name,
+                        m["category"]: i.category,
+                        m["cost"]: str(i.cost) if i.cost is not None else "",
+                        m["price"]: str(i.price),
+                    })
+        return
+
+    _supabase().table("menu_items").update({"active": False}).eq("sku", sku).execute()

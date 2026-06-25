@@ -129,12 +129,13 @@ def load_reviews(
 
 def load_dataset(
     sales_path: Path,
-    menu_path: Path,
+    menu_path: Path | None,
     staff_path: Path,
     mapping_module: Any = None,
 ) -> tuple[list[Order], dict[str, MenuItem], dict[str, Staff]]:
+    from app.community.store import load_menu as _store_load_menu
     mod = mapping_module or default_mapping
     orders = load_orders(sales_path, mod.SALES_DETAIL)
-    menu = load_menu(menu_path, mod.MENU)
+    menu = _store_load_menu(menu_path)
     staff = load_staff(staff_path, mod.STAFF)
     return orders, menu, staff

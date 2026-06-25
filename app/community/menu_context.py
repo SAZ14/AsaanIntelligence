@@ -3,11 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import quote
 
-from app.community.store import load_deals
-from app.ingest.loader import load_menu
+from app.community.store import load_deals, load_menu
 
-
-def build_menu_context(menu_path: Path, deals_path: Path | None = None) -> str:
+def build_menu_context(menu_path: Path | None, deals_path: Path | None = None) -> str:
     menu = load_menu(menu_path)
     deals = load_deals(deals_path)
     lines = ["MENU:"]

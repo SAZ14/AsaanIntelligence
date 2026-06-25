@@ -97,6 +97,7 @@ def _chat_reply(user_message: str, context: str, member: CommunityMember, histor
             f"Be conversational and warm. If they chat about general topics, be polite but "
             f"always naturally steer the conversation back to our café, coffee, menu, deals, or their loyalty stamps. "
             f"If they ask for help, suggest they text a receipt code or say 'my stamps'.\n\n"
+            f"IMPORTANT: ALWAYS use the exact prices from the MENU provided below. If your conversational memory contradicts the MENU below, IGNORE your memory. The MENU below is the absolute truth.\n\n"
             f"{context}"
         ),
         messages=messages,
@@ -114,7 +115,7 @@ def handle_customer_message(
     from_phone: str,
     body: str,
     *,
-    menu_path: Path,
+    menu_path: Path | None = None,
     members_path: Path | None = None,
     redeem_path: Path | None = None,
     events_path: Path | None = None,
@@ -230,10 +231,7 @@ def process_customer_reply(
             }
             reply = handle_customer_message(from_phone, body, **paths)
         else:
-            if menu_path is None:
-                from app.api.deps import menu_path as default_menu_path
-                menu_path = default_menu_path()
-            reply = handle_customer_message(from_phone, body, menu_path=menu_path)
+            reply = handle_customer_message(from_phone, body, menu_path=None)
 
     if reply.body:  # Don't send empty replies (opted-out members)
         send_whatsapp_text(
