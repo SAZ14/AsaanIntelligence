@@ -194,7 +194,50 @@ def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
     return results
 
 
-def build_report(command: str, findings: list[FindingSchema], freshness_note: str) -> str:
+_INTENT_SYSTEM = (
+    "You route WhatsApp messages to the right competitive intelligence report for Sugar Rush, "
+    "a dessert & ice cream shop in Islamabad.\n"
+    "Map the user's message to exactly one of these commands:\n"
+    "  scout       - general update, full report, 'what's happening', unclear intent\n"
+    "  alerts      - urgent moves, threats, 'anything important', latest news\n"
+    "  competitors - asking about specific competitors or what they're doing\n"
+    "  campaigns   - promotions, deals, offers, discounts, campaigns\n"
+    "  opportunities - gaps, what should we do, how to compete, strategy\n"
+    "  pricing     - prices, menu costs, discounts, value\n"
+    "  content     - social media, what to post, reels, content ideas\n"
+    "  help        - asking what the bot can do or how to use it\n"
+    "Reply with ONLY the command name. No punctuation, no explanation."
+)
+
+_VALID_INTENTS = {"scout", "alerts", "competitors", "campaigns", "opportunities", "pricing", "content", "help"}
+
+
+def classify_intent(message: str) -> str:
+    """Map a free-form user message to the closest pipeline command using a fast small model."""
+    if not _cfg.GROQ_API_KEY:
+        return "scout"
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=_cfg.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": _INTENT_SYSTEM},
+                {"role": "user", "content": message},
+            ],
+            temperature=0,
+            max_tokens=10,
+        )
+        intent = resp.choices[0].message.content.strip().lower()
+        if intent in _VALID_INTENTS:
+            return intent
+    except Exception as exc:
+        logger.warning("Intent classification failed: %s", exc)
+    return "scout"
+
+
+def build_report(command: str, findings: list[FindingSchema], freshness_note: str,
+                 user_message: Optional[str] = None) -> str:
     cmd = command.lower().strip()
 
     if cmd == "help":
@@ -229,9 +272,11 @@ def build_report(command: str, findings: list[FindingSchema], freshness_note: st
         for f in top
     )
 
+    user_context = f"\nThe user asked: \"{user_message}\"\nTailor your response to directly answer their question.\n" if user_message else ""
+
     prompt = (
-        f"Command: {cmd.upper()}\n\n"
-        f"Instruction: {instruction}\n\n"
+        f"Instruction: {instruction}\n"
+        f"{user_context}\n"
         f"Competitor findings:\n{findings_text}"
     )
 

@@ -1,6 +1,4 @@
 from __future__ import annotations
-import hashlib
-import hmac
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -8,9 +6,10 @@ from typing import Annotated
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from app.config import WA_APP_SECRET, WA_VERIFY_TOKEN
+from app.config import TWILIO_VALIDATE_SIGNATURE, TWILIO_AUTH_TOKEN
 from app.db import SessionLocal, Report, Run, init_db
 from app import pipeline, send
+from app.analysis import classify_intent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,19 +34,18 @@ app = FastAPI(title="Sugar Rush Scout Agent", lifespan=lifespan)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_command(body: str) -> str:
-    word = body.strip().lower().split()[0] if body.strip() else "help"
-    return word if word in VALID_COMMANDS else "help"
-
-
-def _verify_meta_signature(raw_body: bytes, signature_header: str) -> bool:
-    """Validate X-Hub-Signature-256 from Meta using App Secret."""
-    if not WA_APP_SECRET:
-        return True  # skip validation when App Secret not configured
-    if not signature_header.startswith("sha256="):
+def _validate_twilio_signature(request: Request, params: dict) -> bool:
+    if not TWILIO_VALIDATE_SIGNATURE:
+        return True
+    try:
+        from twilio.request_validator import RequestValidator
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        url = str(request.url)
+        signature = request.headers.get("X-Twilio-Signature", "")
+        return validator.validate(url, params, signature)
+    except Exception as exc:
+        logger.warning("Signature validation error: %s", exc)
         return False
-    expected = hmac.new(WA_APP_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature_header[7:])
 
 
 # ---------------------------------------------------------------------------
@@ -59,61 +57,46 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/webhook")
-async def webhook_verify(request: Request):
-    """Meta webhook verification handshake (one-time setup step)."""
-    params = dict(request.query_params)
-    mode = params.get("hub.mode")
-    token = params.get("hub.verify_token")
-    challenge = params.get("hub.challenge")
-
-    if mode == "subscribe" and token == WA_VERIFY_TOKEN:
-        logger.info("Webhook verified by Meta")
-        return PlainTextResponse(challenge)
-
-    logger.warning("Webhook verification failed: mode=%s token=%s", mode, token)
-    raise HTTPException(status_code=403, detail="Verification failed")
-
-
 @app.post("/webhook")
-async def webhook(request: Request, background_tasks: BackgroundTasks):
-    """Meta WhatsApp Cloud API inbound webhook."""
-    raw_body = await request.body()
-    sig = request.headers.get("X-Hub-Signature-256", "")
+async def webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    Body: Annotated[str, Form()] = "",
+    From: Annotated[str, Form()] = "",
+):
+    """Twilio WhatsApp inbound webhook. Acks immediately, processes in background."""
+    if TWILIO_VALIDATE_SIGNATURE and not _validate_twilio_signature(
+        request, {"Body": Body, "From": From}
+    ):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
-    if not _verify_meta_signature(raw_body, sig):
-        raise HTTPException(status_code=403, detail="Invalid signature")
+    message_text = Body.strip()
+    sender = From
+    logger.info("Webhook: message=%r from=%s", message_text[:80], sender)
 
-    data = await request.json()
+    # Immediate TwiML ack
+    twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>Got it! Analysing competitors... reply coming in ~30–60s.</Message>
+</Response>"""
 
-    # Walk the nested Meta payload to extract message + sender
+    background_tasks.add_task(_run_and_reply, message_text, sender)
+    return PlainTextResponse(content=twiml, media_type="text/xml")
+
+
+def _run_and_reply(message_text: str, sender: str) -> None:
     try:
-        entry = data["entry"][0]
-        change = entry["changes"][0]["value"]
-        message = change["messages"][0]
-        body_text = message.get("text", {}).get("body", "")
-        sender = message["from"]  # E.164 number, e.g. "923001234567"
-    except (KeyError, IndexError):
-        # Status updates / delivery receipts — ack with 200, ignore
-        return JSONResponse({"status": "ok"})
-
-    command = _parse_command(body_text)
-    logger.info("Webhook: command=%r from=%s", command, sender)
-
-    background_tasks.add_task(_run_and_reply, command, sender)
-    return JSONResponse({"status": "ok"})
-
-
-def _run_and_reply(command: str, sender: str) -> None:
-    try:
-        report = pipeline.run(command)
+        # Classify natural language → pipeline command
+        command = classify_intent(message_text)
+        logger.info("Classified %r → %s", message_text[:60], command)
+        report = pipeline.run(command, user_message=message_text)
         send.send_whatsapp(sender, report)
     except Exception as exc:
-        logger.error("Background pipeline failed for command %r: %s", command, exc)
+        logger.error("Background pipeline failed: %s", exc)
         try:
             send.send_whatsapp(
                 sender,
-                f"Sorry, the scout agent hit an error: {type(exc).__name__}. Please try again shortly.",
+                f"Sorry, hit an error: {type(exc).__name__}. Please try again shortly.",
             )
         except Exception:
             pass
@@ -131,11 +114,6 @@ async def run_command(command: str):
     Run any command via HTTP — no WhatsApp needed.
     Valid commands: scout, alerts, competitors, campaigns, opportunities, pricing, content, help
     Returns JSON: {report, command, run_id, findings_count}
-
-    Examples:
-      curl -X POST http://localhost:8000/run/scout
-      curl -X POST http://localhost:8000/run/alerts
-      curl -X POST http://localhost:8000/run/opportunities
     """
     command = command.lower().strip()
     if command not in VALID_COMMANDS:

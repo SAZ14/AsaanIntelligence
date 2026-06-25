@@ -165,11 +165,12 @@ def _store_findings(run_id: int, findings: list[FindingSchema]) -> None:
         db.commit()
 
 
-def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES) -> str:
+def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES,
+        user_message: str | None = None) -> str:
     command = command.lower().strip()
 
     if command == "help":
-        return build_report("help", [], "Sugar Rush Scout")
+        return build_report("help", [], "Sugar Rush Scout", user_message=user_message)
 
     # --- Decide: live fetch or reuse latest run? ---
     is_live = command == "scout"
@@ -182,7 +183,7 @@ def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES) -> str:
             findings = _findings_from_db(db_findings)
             freshness_note = _build_freshness_note(latest_run, is_live=False)
             enriched = enrich_findings(findings)
-            return build_report(command, enriched, freshness_note)
+            return build_report(command, enriched, freshness_note, user_message=user_message)
         else:
             logger.info("Latest run too old (%s), fetching fresh data", age)
             is_live = True
@@ -244,7 +245,7 @@ def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES) -> str:
         freshness_note += f" (partial — {', '.join(sources_failed)} failed)"
 
     # Step 8: Build report
-    report_text = build_report(command, enriched, freshness_note)
+    report_text = build_report(command, enriched, freshness_note, user_message=user_message)
 
     # Step 9: Store report
     with SessionLocal() as db:

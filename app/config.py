@@ -4,11 +4,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- API keys ---
-# Meta WhatsApp Cloud API
-WA_TOKEN = os.getenv("WA_TOKEN", "")                          # permanent / temp access token
-WA_PHONE_NUMBER_ID = os.getenv("WA_PHONE_NUMBER_ID", "")      # phone number ID from Meta dashboard
-WA_VERIFY_TOKEN = os.getenv("WA_VERIFY_TOKEN", "sugarrush_verify")  # any secret string for webhook setup
-WA_APP_SECRET = os.getenv("WA_APP_SECRET", "")                # App Secret (used to verify webhook signatures)
+# Twilio WhatsApp
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+TWILIO_VALIDATE_SIGNATURE = os.getenv("TWILIO_VALIDATE_SIGNATURE", "false").lower() == "true"
 
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
@@ -93,5 +93,5 @@ def enabled_sources() -> dict:
         "instagram": bool(APIFY_TOKEN),
         "google_places": bool(GOOGLE_PLACES_API_KEY),
         "groq": bool(GROQ_API_KEY),
-        "whatsapp": bool(WA_TOKEN and WA_PHONE_NUMBER_ID),
+        "twilio": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),
     }
