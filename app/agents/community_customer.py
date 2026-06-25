@@ -194,6 +194,19 @@ def handle_customer_message(
     # Send all other free text to the LLM agent, but only if it's long enough
     if len(text) >= 3 and _get_client():
         ctx = build_menu_context(menu_path, deals_path)
+        
+        # RAG Knowledge Base Search
+        try:
+            from app.community.store import search_knowledge_base
+            docs = search_knowledge_base(text, top_k=2)
+            if docs:
+                ctx += "\n\nSTORE KNOWLEDGE (FAQ/GUIDES):\n"
+                for i, doc in enumerate(docs):
+                    ctx += f"--- Document {i+1} ---\n{doc['content']}\n"
+        except Exception:
+            # If the knowledge base isn't set up yet or errors out, just ignore
+            pass
+            
         history = load_chat_session(chat_sessions_path, phone)
         return AgentReply(_chat_reply(text, ctx, member, history, chat_sessions_path))
 

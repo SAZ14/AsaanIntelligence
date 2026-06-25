@@ -40,10 +40,22 @@ async def twilio_customer_inbound(
 async def twilio_merchant_inbound(
     From: str = Form(...),
     Body: str = Form(default=""),
+    NumMedia: int = Form(default=0),
+    MediaUrl0: str = Form(default=None),
+    MediaContentType0: str = Form(default=None),
 ):
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
+        if NumMedia > 0 and MediaContentType0 == "application/pdf":
+            from app.ingest.pdf_processor import process_and_store_pdf
+            # Synchronously process for simplicity, ideally would be a background task
+            num_chunks = process_and_store_pdf(MediaUrl0, "Uploaded_Document.pdf")
+            reply_text = f"Successfully learned {num_chunks} segments from your PDF!"
+            from app.agents.community_merchant import send_whatsapp_text
+            send_whatsapp_text(From, reply_text, from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return _empty_twiml()
+            
         process_merchant_reply(From, Body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

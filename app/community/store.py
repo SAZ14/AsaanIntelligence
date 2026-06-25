@@ -428,3 +428,45 @@ def delete_menu_item(path: Path | None, sku: str) -> None:
         return
 
     _supabase().table("menu_items").update({"active": False}).eq("sku", sku).execute()
+
+
+# ── Knowledge Base (RAG) ──────────────────────────────────────────────────────
+
+def _get_embedding_model():
+    from sentence_transformers import SentenceTransformer
+    # We load this lazily to avoid heavy import overhead on start
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+def store_knowledge_chunks(chunks: list[dict[str, Any]]) -> None:
+    """Store chunks with vector embeddings in Supabase."""
+    model = _get_embedding_model()
+    
+    # Generate embeddings for each chunk's text
+    texts = [c["content"] for c in chunks]
+    embeddings = model.encode(texts)
+    
+    records = []
+    for chunk, embedding in zip(chunks, embeddings):
+        records.append({
+            "content": chunk["content"],
+            "metadata": chunk["metadata"],
+            "embedding": embedding.tolist()
+        })
+        
+    _supabase().table("knowledge_base").insert(records).execute()
+
+def search_knowledge_base(query: str, top_k: int = 3) -> list[dict[str, Any]]:
+    """Search the knowledge base for chunks similar to the query."""
+    model = _get_embedding_model()
+    query_embedding = model.encode(query).tolist()
+    
+    res = _supabase().rpc(
+        "match_knowledge_chunks",
+        {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.5,
+            "match_count": top_k
+        }
+    ).execute()
+    
+    return res.data
