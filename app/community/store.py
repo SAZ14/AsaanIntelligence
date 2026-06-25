@@ -432,10 +432,18 @@ def delete_menu_item(path: Path | None, sku: str) -> None:
 
 # ── Knowledge Base (RAG) ──────────────────────────────────────────────────────
 
+_embedding_model = None
+
 def _get_embedding_model():
-    from sentence_transformers import SentenceTransformer
-    # We load this lazily to avoid heavy import overhead on start
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    return _embedding_model
+
+def preload_embedding_model():
+    """Load the embedding model into memory during startup."""
+    _get_embedding_model()
 
 def store_knowledge_chunks(chunks: list[dict[str, Any]]) -> None:
     """Store chunks with vector embeddings in Supabase."""

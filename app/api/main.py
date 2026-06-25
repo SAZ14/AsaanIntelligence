@@ -25,6 +25,16 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_leaderboard_broadcast, 'cron', day_of_week='sun', hour=18, minute=0)
     
     scheduler.start()
+    
+    # Pre-load embedding model to prevent RAG cold-start latency
+    import logging
+    try:
+        from app.community.store import preload_embedding_model
+        preload_embedding_model()
+        logging.info("Embedding model pre-loaded successfully.")
+    except Exception as e:
+        logging.error(f"Failed to pre-load embedding model: {e}")
+        
     yield
     scheduler.shutdown()
 
