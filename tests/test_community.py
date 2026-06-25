@@ -291,7 +291,11 @@ def test_winback_sends_to_inactive_members(community_tmp):
     }
     save_members(customer_paths["members_path"], members)
     with patch("app.jobs.winback.send_whatsapp_text") as mock:
-        n = run_winback(customer_paths["members_path"], customer_paths["config_path"])
+        n = run_winback(
+            customer_paths["members_path"],
+            customer_paths["config_path"],
+            customer_paths["chat_sessions_path"]
+        )
     assert n == 1
     assert "miss you" in mock.call_args[0][1].lower()
 
@@ -308,7 +312,11 @@ def test_winback_skips_recent_members(community_tmp):
     }
     save_members(customer_paths["members_path"], members)
     with patch("app.jobs.winback.send_whatsapp_text") as mock:
-        n = run_winback(customer_paths["members_path"], customer_paths["config_path"])
+        n = run_winback(
+            customer_paths["members_path"],
+            customer_paths["config_path"],
+            customer_paths["chat_sessions_path"]
+        )
     assert n == 0
     mock.assert_not_called()
 

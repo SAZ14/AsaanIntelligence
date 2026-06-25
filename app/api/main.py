@@ -8,9 +8,27 @@ from app.api.webhooks import router as webhooks_router
 from app.community.menu_context import build_enroll_qr_url
 from app.community.store import load_venue_config
 from app.services.messaging import twilio_whatsapp_digits
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from apscheduler.schedulers.background import BackgroundScheduler
 
-app = FastAPI(title="Asaan Intelligence API", version="0.2.0")
+from app.jobs.winback import run_winback
+from app.jobs.leaderboard_broadcast import run_leaderboard_broadcast
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize scheduler
+    scheduler = BackgroundScheduler()
+    # Schedule winback daily at 10:00 AM
+    scheduler.add_job(run_winback, 'cron', hour=10, minute=0)
+    # Schedule leaderboard broadcast weekly on Sunday at 18:00
+    scheduler.add_job(run_leaderboard_broadcast, 'cron', day_of_week='sun', hour=18, minute=0)
+    
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(title="Asaan Intelligence API", version="0.2.0", lifespan=lifespan)
 app.include_router(webhooks_router)
 app.include_router(staff_router)
 

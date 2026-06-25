@@ -3,13 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.community.store import load_members, load_venue_config, save_members
+from app.community.store import (
+    load_members, load_venue_config, save_members,
+    load_chat_session, save_chat_session,
+)
 from app.services.messaging import send_whatsapp_text
 
 
 def run_winback(
     members_path: Path | None = None,
     config_path: Path | None = None,
+    chat_sessions_path: Path | None = None,
     *,
     use_twilio: bool | None = None,
 ) -> int:
@@ -55,6 +59,14 @@ def run_winback(
             from_key="TWILIO_WHATSAPP_CUSTOMER_FROM",
             use_twilio=use_twilio,
         )
+        
+        # Append proactive message to memory so the LLM agent has context
+        history = load_chat_session(chat_sessions_path, member.phone)
+        history.append({"role": "assistant", "content": msg})
+        # Keep only the last 6 messages (same as agent)
+        history = history[-6:]
+        save_chat_session(chat_sessions_path, member.phone, history)
+
         member.winback_sent_at = datetime.now(timezone.utc).isoformat()
         sent += 1
 
