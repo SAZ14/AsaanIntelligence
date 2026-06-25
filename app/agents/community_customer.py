@@ -79,7 +79,7 @@ def _chat_reply(user_message: str, context: str, member_name: str) -> str:
         f"{context}\n\nGuest: {user_message}"
     )
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-20250124",
         max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )

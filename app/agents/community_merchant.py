@@ -127,7 +127,7 @@ def handle_merchant_message(
     )
     client = anthropic.Anthropic()
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-20250124",
         max_tokens=300,
         messages=[{
             "role": "user",

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Response
+from app.api.deps import validate_twilio_request
 
 from app.agents.community_customer import process_customer_reply
 from app.agents.community_merchant import process_merchant_reply
 
-router = APIRouter(prefix="/webhooks/twilio", tags=["webhooks"])
+router = APIRouter(
+    prefix="/webhooks/twilio",
+    tags=["webhooks"],
+    dependencies=[Depends(validate_twilio_request)],
+)
 
 
 def _empty_twiml() -> Response:
