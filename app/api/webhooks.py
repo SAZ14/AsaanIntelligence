@@ -48,9 +48,12 @@ async def twilio_customer_inbound(
         raise HTTPException(status_code=400, detail="Missing From")
     try:
         if MessageSid:
+            import asyncio
             from app.services.messaging import send_whatsapp_typing_indicator
-            background_tasks.add_task(send_whatsapp_typing_indicator, MessageSid)
-        process_customer_reply(From, Body)
+            asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
+            
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(process_customer_reply, From, Body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
@@ -70,14 +73,16 @@ async def twilio_merchant_inbound(
         raise HTTPException(status_code=400, detail="Missing From")
     try:
         if MessageSid:
+            import asyncio
             from app.services.messaging import send_whatsapp_typing_indicator
-            background_tasks.add_task(send_whatsapp_typing_indicator, MessageSid)
+            asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
             
         if NumMedia > 0 and MediaContentType0 == "application/pdf":
             background_tasks.add_task(_process_pdf_background, MediaUrl0, From)
             return _empty_twiml()
             
-        process_merchant_reply(From, Body)
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(process_merchant_reply, From, Body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
