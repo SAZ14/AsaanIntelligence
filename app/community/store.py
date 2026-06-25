@@ -455,6 +455,10 @@ def store_knowledge_chunks(chunks: list[dict[str, Any]]) -> None:
         
     _supabase().table("knowledge_base").insert(records).execute()
 
+def clear_knowledge_by_source(source_filename: str) -> None:
+    """Delete all chunks belonging to a specific source document."""
+    _supabase().table("knowledge_base").delete().eq("metadata->>source", source_filename).execute()
+
 def search_knowledge_base(query: str, top_k: int = 3) -> list[dict[str, Any]]:
     """Search the knowledge base for chunks similar to the query."""
     model = _get_embedding_model()

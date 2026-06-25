@@ -79,7 +79,10 @@ def process_and_store_pdf(media_url: str, filename: str) -> int:
         
     chunks = chunk_text(text)
     
-    from app.community.store import store_knowledge_chunks
+    from app.community.store import store_knowledge_chunks, clear_knowledge_by_source
+    
+    # Clear old chunks for this document to prevent zombie knowledge
+    clear_knowledge_by_source(filename)
     
     # Prepare chunk metadata
     documents = []

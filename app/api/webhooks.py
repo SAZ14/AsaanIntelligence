@@ -22,11 +22,11 @@ def _empty_twiml() -> Response:
     )
 
 
-def _process_pdf_background(media_url: str, from_phone: str) -> None:
+def _process_pdf_background(media_url: str, from_phone: str, filename: str) -> None:
     try:
         from app.ingest.pdf_processor import process_and_store_pdf
-        num_chunks = process_and_store_pdf(media_url, "Uploaded_Document.pdf")
-        reply_text = f"Successfully learned {num_chunks} segments from your PDF!"
+        num_chunks = process_and_store_pdf(media_url, filename)
+        reply_text = f"Successfully learned {num_chunks} segments from '{filename}'!"
     except Exception as e:
         reply_text = f"Failed to process PDF: {str(e)}"
         
@@ -78,7 +78,10 @@ async def twilio_merchant_inbound(
             asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
             
         if NumMedia > 0 and MediaContentType0 == "application/pdf":
-            background_tasks.add_task(_process_pdf_background, MediaUrl0, From)
+            import re
+            base_name = Body.strip() if Body.strip() else "Uploaded_Document"
+            filename = re.sub(r'[^a-zA-Z0-9_\-]', '_', base_name) + ".pdf"
+            background_tasks.add_task(_process_pdf_background, MediaUrl0, From, filename)
             return _empty_twiml()
             
         from fastapi.concurrency import run_in_threadpool
