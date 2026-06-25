@@ -26,16 +26,19 @@ def _dump_raw(run_id: int, source: str, data: object) -> None:
         logger.warning("Failed to dump raw data to %s: %s", path, exc)
 
 
-def _get_latest_run() -> tuple[Run | None, list[DBFinding]]:
+def _get_latest_run(store_id: int) -> tuple[Run | None, list[DBFinding]]:
     with SessionLocal() as db:
-        run = db.query(Run).filter(Run.status.in_(["ok", "partial"])).order_by(Run.finished_at.desc()).first()
+        run = (
+            db.query(Run)
+            .filter(Run.store_id == store_id, Run.status.in_(["ok", "partial"]))
+            .order_by(Run.finished_at.desc())
+            .first()
+        )
         if run is None:
             return None, []
         findings = db.query(DBFinding).filter(DBFinding.run_id == run.id).all()
-        # Detach from session by converting to dicts
-        run_data = run
         db.expunge_all()
-        return run_data, findings
+        return run, findings
 
 
 def _findings_from_db(db_findings: list[DBFinding]) -> list[FindingSchema]:
@@ -68,7 +71,6 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     ok: list[str] = []
     failed: list[str] = []
 
-    # --- Firecrawl (websites + web search) ---
     if sources["firecrawl"]:
         try:
             from app.scrapers.firecrawl_scraper import find_menu_and_offers
@@ -84,22 +86,15 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     else:
         logger.info("Firecrawl skipped — no API key")
 
-    # --- Instagram (Apify) ---
     if sources["instagram"]:
         try:
             from app.scrapers.instagram_scraper import fetch_recent_posts
-            handles = [
-                c["instagram_handle"]
-                for c in competitors
-                if c.get("instagram_handle")
-            ]
+            handles = [c["instagram_handle"] for c in competitors if c.get("instagram_handle")]
             if handles:
                 ig_findings = fetch_recent_posts(handles, limit=IG_POSTS_PER_PROFILE)
-                # Remap handle → display competitor name
                 handle_to_name = {
                     c["instagram_handle"]: c["name"]
-                    for c in competitors
-                    if c.get("instagram_handle")
+                    for c in competitors if c.get("instagram_handle")
                 }
                 for f in ig_findings:
                     f.competitor_name = handle_to_name.get(f.competitor_name, f.competitor_name)
@@ -114,7 +109,6 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     else:
         logger.info("Instagram skipped — no APIFY_TOKEN")
 
-    # --- Google Places ---
     if sources["google_places"]:
         try:
             from app.scrapers.places_scraper import fetch_reviews_and_rating
@@ -144,10 +138,11 @@ def _build_freshness_note(run: Run | None, is_live: bool) -> str:
     return f"Data: last run, {hours} hour{'s' if hours != 1 else ''} ago"
 
 
-def _store_findings(run_id: int, findings: list[FindingSchema]) -> None:
+def _store_findings(run_id: int, store_id: int, findings: list[FindingSchema]) -> None:
     with SessionLocal() as db:
         for f in findings:
             db.add(DBFinding(
+                store_id=store_id,
                 run_id=run_id,
                 competitor_name=f.competitor_name,
                 source_platform=f.source_platform,
@@ -165,16 +160,15 @@ def _store_findings(run_id: int, findings: list[FindingSchema]) -> None:
         db.commit()
 
 
-def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES,
+def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINUTES,
         user_message: str | None = None) -> str:
     command = command.lower().strip()
 
     if command == "help":
         return build_report("help", [], "Sugar Rush Scout", user_message=user_message)
 
-    # --- Decide: live fetch or reuse latest run? ---
     is_live = command == "scout"
-    latest_run, db_findings = _get_latest_run()
+    latest_run, db_findings = _get_latest_run(store_id)
 
     if not is_live and latest_run is not None:
         age = datetime.utcnow() - latest_run.finished_at
@@ -189,31 +183,25 @@ def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES,
             is_live = True
 
     # --- Live fetch ---
-    # Step 1: Confirm/discover competitors
     try:
-        confirm_seed_competitors()
-        discover_new_competitors()
+        confirm_seed_competitors(store_id)
+        discover_new_competitors(store_id)
     except Exception as exc:
         logger.error("Discovery step failed: %s", exc)
 
-    competitors = get_all_competitors()
-    logger.info("Running pipeline for %d competitors", len(competitors))
+    competitors = get_all_competitors(store_id)
+    logger.info("Running pipeline for %d competitors (store_id=%d)", len(competitors), store_id)
 
-    # Step 2: Create run record
     with SessionLocal() as db:
-        db_run = Run(command=command, status="running")
+        db_run = Run(store_id=store_id, command=command, status="running")
         db.add(db_run)
         db.commit()
         db.refresh(db_run)
         run_id = db_run.id
 
-    # Step 3: Scrape
     raw_findings, sources_ok, sources_failed = _fetch_all_sources(competitors)
-
-    # Dump raw data
     _dump_raw(run_id, "all_raw", [f.model_dump() for f in raw_findings])
 
-    # Step 4: Clean
     seen_hashes: set[str] = set()
     if latest_run:
         for dbf in db_findings:
@@ -222,13 +210,9 @@ def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES,
     cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
     logger.info("Clean: %d → %d findings after dedup/noise", len(raw_findings), len(cleaned))
 
-    # Step 5: Enrich with AI
     enriched = enrich_findings(cleaned)
+    _store_findings(run_id, store_id, enriched)
 
-    # Step 6: Store findings
-    _store_findings(run_id, enriched)
-
-    # Step 7: Finalize run record
     status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
     with SessionLocal() as db:
         db_run = db.query(Run).filter(Run.id == run_id).first()
@@ -244,12 +228,15 @@ def run(command: str, freshness_minutes: int = FRESHNESS_MINUTES,
     if sources_failed:
         freshness_note += f" (partial — {', '.join(sources_failed)} failed)"
 
-    # Step 8: Build report
     report_text = build_report(command, enriched, freshness_note, user_message=user_message)
 
-    # Step 9: Store report
     with SessionLocal() as db:
-        db.add(Report(run_id=run_id, command=command, report_text=report_text))
+        db.add(Report(
+            store_id=store_id,
+            run_id=run_id,
+            command=command,
+            report_text=report_text,
+        ))
         db.commit()
 
     return report_text

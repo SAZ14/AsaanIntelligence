@@ -3,8 +3,6 @@ import logging
 import re
 from typing import Optional
 
-from sqlalchemy.orm import Session
-
 from app.config import COMPETITORS, MAX_NEW_COMPETITORS, FIRECRAWL_API_KEY, GOOGLE_PLACES_API_KEY
 from app.db import Competitor, SessionLocal
 
@@ -50,10 +48,13 @@ def _resolve_place_id(name: str) -> Optional[str]:
     return None
 
 
-def confirm_seed_competitors() -> None:
-    """Resolve missing handles/place_ids for seed competitors in DB."""
+def confirm_seed_competitors(store_id: int) -> None:
+    """Resolve missing handles/place_ids for seed competitors of a store."""
     with SessionLocal() as db:
-        rows = db.query(Competitor).filter(Competitor.source == "seed").all()
+        rows = db.query(Competitor).filter(
+            Competitor.store_id == store_id,
+            Competitor.source == "seed",
+        ).all()
         for row in rows:
             updated = False
             if row.instagram_handle is None:
@@ -72,8 +73,8 @@ def confirm_seed_competitors() -> None:
                 db.commit()
 
 
-def discover_new_competitors() -> None:
-    """Search for new competitors not already in the DB. Add top results."""
+def discover_new_competitors(store_id: int) -> None:
+    """Search for new competitors not already in the store's DB. Add top results."""
     if not FIRECRAWL_API_KEY:
         logger.info("Competitor discovery skipped — Firecrawl not configured")
         return
@@ -93,7 +94,6 @@ def discover_new_competitors() -> None:
         for r in results:
             title = r.get("title", "")
             desc = r.get("description", "")
-            # Extract candidate business names from titles like "Foo Bar Islamabad | ..."
             name = _extract_business_name(title or desc)
             if name and len(name) > 3:
                 candidates.append(name)
@@ -102,7 +102,10 @@ def discover_new_competitors() -> None:
         return
 
     with SessionLocal() as db:
-        existing_names = {c.name.lower() for c in db.query(Competitor).all()}
+        existing_names = {
+            c.name.lower()
+            for c in db.query(Competitor).filter(Competitor.store_id == store_id).all()
+        }
         added = 0
         for name in candidates:
             if added >= MAX_NEW_COMPETITORS:
@@ -111,7 +114,7 @@ def discover_new_competitors() -> None:
                 continue
             if _is_sugar_rush(name):
                 continue
-            db.add(Competitor(name=name, source="discovered"))
+            db.add(Competitor(store_id=store_id, name=name, source="discovered"))
             existing_names.add(name.lower())
             added += 1
             logger.info("Discovered new competitor: %r", name)
@@ -129,28 +132,22 @@ _ENDS_PREPOSITION = re.compile(r"\b(in|at|of|the|a|an|and|or|for|to|from|with)$"
 
 
 def _extract_business_name(text: str) -> Optional[str]:
-    # Take first segment before |, –, -, :, or @
     m = re.split(r"[|\-–—:@]", text)
     if not m:
         return None
     candidate = m[0].strip()
-    # Remove trailing location noise
     candidate = re.sub(r"\s*(islamabad|pakistan|lahore|karachi)\s*$", "", candidate, flags=re.I).strip()
-    # Basic length gate
     if not (3 < len(candidate) < 50):
         return None
-    # Reject if it looks like a sentence/question rather than a business name
     if "?" in candidate:
         return None
     if _NOISE_STARTS.match(candidate):
         return None
     if _ENDS_PREPOSITION.search(candidate):
         return None
-    # Must have at least one properly-capitalised word (Title Case or ALL CAPS)
     words = candidate.split()
     if not any(w[0].isupper() for w in words if len(w) > 2):
         return None
-    # Reject if more than 5 words (likely a sentence fragment)
     if len(words) > 5:
         return None
     return candidate
@@ -160,10 +157,10 @@ def _is_sugar_rush(name: str) -> bool:
     return "sugar rush" in name.lower()
 
 
-def get_all_competitors() -> list[dict]:
-    """Return all competitors from DB as dicts."""
+def get_all_competitors(store_id: int) -> list[dict]:
+    """Return all competitors for a store as dicts."""
     with SessionLocal() as db:
-        rows = db.query(Competitor).all()
+        rows = db.query(Competitor).filter(Competitor.store_id == store_id).all()
         return [
             {
                 "name": r.name,

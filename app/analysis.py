@@ -206,10 +206,11 @@ _INTENT_SYSTEM = (
     "  pricing     - prices, menu costs, discounts, value\n"
     "  content     - social media, what to post, reels, content ideas\n"
     "  help        - asking what the bot can do or how to use it\n"
+    "  switch      - user wants to change restaurant / switch store / talk about a different business\n"
     "Reply with ONLY the command name. No punctuation, no explanation."
 )
 
-_VALID_INTENTS = {"scout", "alerts", "competitors", "campaigns", "opportunities", "pricing", "content", "help"}
+_VALID_INTENTS = {"scout", "alerts", "competitors", "campaigns", "opportunities", "pricing", "content", "help", "switch"}
 
 
 def classify_intent(message: str) -> str:

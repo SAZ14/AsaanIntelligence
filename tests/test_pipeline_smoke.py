@@ -44,18 +44,30 @@ def isolated_db(tmp_path):
     import app.db as db_mod
     import app.pipeline as pipeline_mod
     import app.discovery as discovery_mod
+    from app.config import COMPETITORS
 
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db_mod.Base.metadata.create_all(bind=engine)
 
-    # Patch all copies of SessionLocal (each module imported it directly)
     db_mod.engine = engine
     db_mod.SessionLocal = session_factory
     pipeline_mod.SessionLocal = session_factory
     discovery_mod.SessionLocal = session_factory
 
-    db_mod._seed_competitors()
+    # Create the default store and seed its competitors
+    with session_factory() as db:
+        store = db_mod.Store(
+            name="Sugar Rush",
+            location="Kohsar Market, F-6, Islamabad",
+            category="dessert / ice cream",
+            instagram_handle="sugarrushisb",
+        )
+        db.add(store)
+        db.commit()
+        db.refresh(store)
+        db_mod._seed_competitors(store.id, db, COMPETITORS)
+
     yield session_factory
 
 
@@ -72,7 +84,7 @@ def test_pipeline_run_scout_stores_report():
         patch.object(pm, "build_report",
                      return_value="Data: live this run\n\nTest report: Baskin Robbins launched new flavor."),
     ):
-        report = pm.run("scout")
+        report = pm.run("scout", store_id=1)
 
     assert "Test report" in report or "Baskin Robbins" in report
     assert len(report) > 20
@@ -90,7 +102,7 @@ def test_pipeline_stores_run_in_db():
         patch.object(pm, "enrich_findings", side_effect=lambda f: f),
         patch.object(pm, "build_report", return_value="Data: live this run\n\nCompetitors are active."),
     ):
-        pm.run("scout")
+        pm.run("scout", store_id=1)
 
     with db_mod.SessionLocal() as db:
         run = db.query(db_mod.Run).order_by(db_mod.Run.id.desc()).first()
@@ -116,7 +128,7 @@ def test_pipeline_partial_failure_does_not_crash():
         patch.object(pm, "build_report",
                      return_value="Data: live this run (partial — instagram failed)\n\nReport here."),
     ):
-        report = pm.run("scout")
+        report = pm.run("scout", store_id=1)
 
     assert isinstance(report, str)
     assert len(report) > 0
@@ -137,7 +149,7 @@ def test_pipeline_zero_findings_returns_honest_message():
             patch.object(pm, "_fetch_all_sources", return_value=([], [], ["instagram", "firecrawl"])),
             patch.object(pm, "enrich_findings", side_effect=lambda f: f),
         ):
-            report = pm.run("scout")
+            report = pm.run("scout", store_id=1)
     finally:
         cfg.GROQ_API_KEY = original_key
 
