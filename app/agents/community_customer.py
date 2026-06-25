@@ -23,6 +23,8 @@ from app.community.store import (
     load_venue_config,
     save_members,
     save_onboarding_sessions,
+    load_chat_session,
+    save_chat_session,
 )
 from app.community.tokens import find_code, is_redeem_code, mark_redeemed, normalize_code, validate_code
 from app.services.messaging import parse_twilio_whatsapp_phone, send_whatsapp_text
@@ -74,26 +76,37 @@ def _help_message(name: str, config) -> str:
     )
 
 
-def _chat_reply(user_message: str, context: str, member_name: str) -> str:
+def _chat_reply(user_message: str, context: str, member: CommunityMember, history: list[dict], chat_sessions_path: Path | None) -> str:
     client = _get_client()
     if not client:
         return (
-            f"Hi {member_name}! Ask me about the menu or deals, "
+            f"Hi {member.name}! Ask me about the menu or deals, "
             "say 'my stamps', or text a receipt code like SR-AB12."
         )
+
+    # Keep only the last 6 messages (3 turns) to manage context window
+    messages = history[-6:]
+    messages.append({"role": "user", "content": user_message})
+
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=300,
         system=(
             f"You are the friendly WhatsApp community agent for a café. "
-            f"Guest name: {member_name or 'friend'}. Keep replies under 3 short sentences. "
+            f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
             f"Only answer about the café menu, deals, stamps, and community. "
             f"If unsure, suggest they text a receipt code or say 'my stamps'.\n\n"
             f"{context}"
         ),
-        messages=[{"role": "user", "content": user_message}],
+        messages=messages,
     )
-    return resp.content[0].text.strip()
+    
+    reply = resp.content[0].text.strip()
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": reply})
+    save_chat_session(chat_sessions_path, member.phone, history)
+    
+    return reply
 
 
 def handle_customer_message(
@@ -107,6 +120,7 @@ def handle_customer_message(
     config_path: Path | None = None,
     deals_path: Path | None = None,
     sessions_path: Path | None = None,
+    chat_sessions_path: Path | None = None,
 ) -> AgentReply:
     phone = parse_twilio_whatsapp_phone(from_phone)
     text = (body or "").strip()
@@ -174,13 +188,12 @@ def handle_customer_message(
     if LEADERBOARD_RE.search(text):
         counts = weekly_stamp_counts(events_path)
         return AgentReply(format_leaderboard(counts, members))
-    if MENU_RE.search(text):
-        ctx = build_menu_context(menu_path, deals_path)
-        return AgentReply(_chat_reply(text, ctx, member.name))
-
+    
+    # Send all other free text to the LLM agent, but only if it's long enough
     if len(text) > 20 and _get_client():
         ctx = build_menu_context(menu_path, deals_path)
-        return AgentReply(_chat_reply(text, ctx, member.name))
+        history = load_chat_session(chat_sessions_path, phone)
+        return AgentReply(_chat_reply(text, ctx, member, history, chat_sessions_path))
 
     return AgentReply(_help_message(member.name, config))
 
@@ -202,10 +215,24 @@ def process_customer_reply(
         # Test mode: paths dict contains all path overrides
         reply = handle_customer_message(from_phone, body, **paths)
     else:
-        if menu_path is None:
-            from app.api.deps import menu_path as default_menu_path
-            menu_path = default_menu_path()
-        reply = handle_customer_message(from_phone, body, menu_path=menu_path)
+        if os.environ.get("ASAAN_TEST_MODE") == "1":
+            d = Path(os.environ.get("ASAAN_DATA_DIR", ""))
+            paths = {
+                "members_path": d / "community_members.csv",
+                "redeem_path": d / "redeem_codes.jsonl",
+                "events_path": d / "stamp_events.jsonl",
+                "config_path": d / "venue_config.json",
+                "deals_path": d / "deals.json",
+                "menu_path": d / "menu.csv",
+                "sessions_path": d / "onboarding_sessions.json",
+                "chat_sessions_path": d / "chat_sessions.json",
+            }
+            reply = handle_customer_message(from_phone, body, **paths)
+        else:
+            if menu_path is None:
+                from app.api.deps import menu_path as default_menu_path
+                menu_path = default_menu_path()
+            reply = handle_customer_message(from_phone, body, menu_path=menu_path)
 
     if reply.body:  # Don't send empty replies (opted-out members)
         send_whatsapp_text(

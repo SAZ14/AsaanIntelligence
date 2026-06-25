@@ -168,12 +168,26 @@ def process_merchant_reply(
     from app.api.deps import menu_path as default_menu_path
     from app.api.deps import sales_path as default_sales_path
     from app.api.deps import staff_path as default_staff_path
-    reply = handle_merchant_message(
-        from_phone, body,
-        menu_path=menu_path or default_menu_path(),
-        sales_path=sales_path or default_sales_path(),
-        staff_path=staff_path or default_staff_path(),
-    )
+
+    if os.environ.get("ASAAN_TEST_MODE") == "1":
+        d = Path(os.environ.get("ASAAN_DATA_DIR", ""))
+        paths = {
+            "config_path": d / "venue_config.json",
+            "members_path": d / "community_members.csv",
+            "events_path": d / "stamp_events.jsonl",
+            "menu_path": d / "menu.csv",
+            "deals_path": d / "deals.json",
+            "sales_path": d / "sales_detail.csv",
+            "staff_path": d / "staff.csv",
+        }
+        reply = handle_merchant_message(from_phone, body, **paths)
+    else:
+        reply = handle_merchant_message(
+            from_phone, body,
+            menu_path=menu_path or default_menu_path(),
+            sales_path=sales_path or default_sales_path(),
+            staff_path=staff_path or default_staff_path(),
+        )
     send_whatsapp_text(
         from_phone, reply.body,
         from_key="TWILIO_WHATSAPP_MERCHANT_FROM",

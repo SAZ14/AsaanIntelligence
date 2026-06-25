@@ -314,3 +314,34 @@ def clear_onboarding_session(path: Path | None, phone: str) -> None:
         return
 
     _supabase().table("onboarding_sessions").delete().eq("phone", phone).execute()
+
+
+# ── Chat Sessions ─────────────────────────────────────────────────────────────
+
+def load_chat_session(path: Path | None, phone: str) -> list[dict]:
+    if path is not None:
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get(phone, [])
+
+    result = _supabase().table("chat_sessions").select("history").eq("phone", phone).maybe_single().execute()
+    if not result.data:
+        return []
+    return result.data.get("history", [])
+
+
+def save_chat_session(path: Path | None, phone: str, history: list[dict]) -> None:
+    if path is not None:
+        if not path.exists():
+            data = {}
+        else:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        data[phone] = history
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return
+
+    _supabase().table("chat_sessions").upsert({
+        "phone": phone,
+        "history": history
+    }).execute()

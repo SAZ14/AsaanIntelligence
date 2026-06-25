@@ -42,6 +42,7 @@ def community_tmp(tmp_path, monkeypatch):
     (tmp_path / "redeem_codes.jsonl").write_text("", encoding="utf-8")
     (tmp_path / "stamp_events.jsonl").write_text("", encoding="utf-8")
     (tmp_path / "onboarding_sessions.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "chat_sessions.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("ASAAN_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     paths = {
@@ -52,12 +53,13 @@ def community_tmp(tmp_path, monkeypatch):
         "deals_path": tmp_path / "deals.json",
         "menu_path": tmp_path / "menu.csv",
         "sessions_path": tmp_path / "onboarding_sessions.json",
+        "chat_sessions_path": tmp_path / "chat_sessions.json",
         "sales_path": tmp_path / "sales_detail.csv",
         "staff_path": tmp_path / "staff.csv",
     }
     customer_paths = {k: paths[k] for k in (
         "members_path", "redeem_path", "events_path", "config_path",
-        "deals_path", "menu_path", "sessions_path",
+        "deals_path", "menu_path", "sessions_path", "chat_sessions_path",
     )}
     merchant_paths = {k: paths[k] for k in (
         "config_path", "members_path", "events_path", "menu_path",
@@ -361,7 +363,7 @@ def test_customer_webhook_e2e(api_client):
     with patch("app.agents.community_customer.send_whatsapp_text") as mock:
         r = api_client.post(
             "/webhooks/twilio/customer",
-            data={"From": "whatsapp:+923001111111", "Body": "Hi"},
+            data={"From": "whatsapp:+923005555555", "Body": "Hi"},
         )
         assert r.status_code == 200
         mock.assert_called_once()
