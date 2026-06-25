@@ -55,15 +55,51 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
             text += extracted + "\n\n"
     return text
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
-    """Split text into overlapping chunks of approximate word counts."""
-    words = text.split()
+def chunk_text(text: str, max_words: int = 400, overlap_words: int = 40) -> List[str]:
+    """Split text into semantic chunks, preserving paragraph boundaries where possible."""
+    import re
+    # Split by double newlines to get paragraphs
+    paragraphs = re.split(r'\n\s*\n', text)
+    
     chunks = []
-    i = 0
-    while i < len(words):
-        chunk = " ".join(words[i:i + chunk_size])
-        chunks.append(chunk)
-        i += chunk_size - overlap
+    current_chunk = []
+    current_word_count = 0
+    
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+            
+        para_word_count = len(para.split())
+        
+        # If the new paragraph pushes us over the limit, yield the current chunk
+        if current_word_count + para_word_count > max_words and current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+            # Try to keep the last paragraph as overlap if it isn't the entire chunk
+            if len(current_chunk) > 1 and len(current_chunk[-1].split()) <= overlap_words * 2:
+                current_chunk = [current_chunk[-1]]
+                current_word_count = len(current_chunk[0].split())
+            else:
+                current_chunk = []
+                current_word_count = 0
+        
+        # Now handle the incoming paragraph
+        if para_word_count > max_words:
+            # If the paragraph itself is massive, fall back to naive word splitting
+            words = para.split()
+            i = 0
+            while i < len(words):
+                chunks.append(" ".join(words[i:i + max_words]))
+                i += max_words - overlap_words
+            current_chunk = []
+            current_word_count = 0
+        else:
+            current_chunk.append(para)
+            current_word_count += para_word_count
+            
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+        
     return chunks
 
 def process_and_store_pdf(media_url: str, filename: str) -> int:
