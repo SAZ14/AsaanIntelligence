@@ -39,12 +39,17 @@ def _process_pdf_background(media_url: str, from_phone: str) -> None:
 
 @router.post("/customer")
 async def twilio_customer_inbound(
+    background_tasks: BackgroundTasks,
     From: str = Form(...),
     Body: str = Form(default=""),
+    MessageSid: str = Form(default=None),
 ):
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
+        if MessageSid:
+            from app.services.messaging import send_whatsapp_typing_indicator
+            background_tasks.add_task(send_whatsapp_typing_indicator, MessageSid)
         process_customer_reply(From, Body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -59,10 +64,15 @@ async def twilio_merchant_inbound(
     NumMedia: int = Form(default=0),
     MediaUrl0: str = Form(default=None),
     MediaContentType0: str = Form(default=None),
+    MessageSid: str = Form(default=None),
 ):
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
+        if MessageSid:
+            from app.services.messaging import send_whatsapp_typing_indicator
+            background_tasks.add_task(send_whatsapp_typing_indicator, MessageSid)
+            
         if NumMedia > 0 and MediaContentType0 == "application/pdf":
             background_tasks.add_task(_process_pdf_background, MediaUrl0, From)
             return _empty_twiml()

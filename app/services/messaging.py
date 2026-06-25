@@ -65,3 +65,25 @@ def send_whatsapp_text(
     client = Client(account_sid, auth_token)
     msg = client.messages.create(body=body, from_=from_number, to=to_addr)
     return msg.sid
+
+
+def send_whatsapp_typing_indicator(message_sid: str) -> None:
+    """Send a typing indicator for an incoming WhatsApp message."""
+    if not message_sid:
+        return
+    import os
+    import requests
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    if not account_sid or not auth_token:
+        return
+    try:
+        requests.post(
+            'https://messaging.twilio.com/v3/Indicators/Typing.json',
+            auth=(account_sid, auth_token),
+            json={'channel': 'WHATSAPP', 'messageId': message_sid},
+            timeout=3
+        )
+    except Exception:
+        pass
+
