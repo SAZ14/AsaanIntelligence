@@ -144,6 +144,19 @@ def handle_merchant_message(
         f"{build_menu_context(menu_path, deals_path)}"
     )
     
+    # RAG Knowledge Base Search
+    try:
+        from app.community.store import search_knowledge_base
+        docs = search_knowledge_base(text, top_k=2)
+        if docs:
+            context += "\n\nSTORE KNOWLEDGE (FAQ/GUIDES):\n"
+            for i, doc in enumerate(docs):
+                context += f"--- Document {i+1} ---\n{doc['content']}\n"
+    except Exception:
+        # If the knowledge base isn't set up yet or errors out, just ignore
+        pass
+
+    
     from app.community.store import load_chat_session, save_chat_session
     merchant_session_key = phone
     history = load_chat_session(chat_sessions_path, merchant_session_key)[-6:]
