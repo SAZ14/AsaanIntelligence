@@ -464,7 +464,7 @@ def search_knowledge_base(query: str, top_k: int = 3) -> list[dict[str, Any]]:
         "match_knowledge_chunks",
         {
             "query_embedding": query_embedding,
-            "match_threshold": 0.5,
+            "match_threshold": 0.25,
             "match_count": top_k
         }
     ).execute()
