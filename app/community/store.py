@@ -326,7 +326,7 @@ def load_chat_session(path: Path | None, phone: str) -> list[dict]:
         return data.get(phone, [])
 
     result = _supabase().table("chat_sessions").select("history").eq("phone", phone).maybe_single().execute()
-    if not result.data:
+    if not result or not result.data:
         return []
     return result.data.get("history", [])
 

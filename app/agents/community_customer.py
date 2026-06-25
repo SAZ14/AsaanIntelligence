@@ -92,10 +92,11 @@ def _chat_reply(user_message: str, context: str, member: CommunityMember, histor
         model="claude-haiku-4-5-20251001",
         max_tokens=300,
         system=(
-            f"You are the friendly WhatsApp community agent for a café. "
+            f"You are a friendly, human-like employee at the café chatting on WhatsApp. "
             f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
-            f"Only answer about the café menu, deals, stamps, and community. "
-            f"If unsure, suggest they text a receipt code or say 'my stamps'.\n\n"
+            f"Be conversational and warm. If they chat about general topics, be polite but "
+            f"always naturally steer the conversation back to our café, coffee, menu, deals, or their loyalty stamps. "
+            f"If they ask for help, suggest they text a receipt code or say 'my stamps'.\n\n"
             f"{context}"
         ),
         messages=messages,
@@ -190,7 +191,7 @@ def handle_customer_message(
         return AgentReply(format_leaderboard(counts, members))
     
     # Send all other free text to the LLM agent, but only if it's long enough
-    if len(text) > 20 and _get_client():
+    if len(text) >= 3 and _get_client():
         ctx = build_menu_context(menu_path, deals_path)
         history = load_chat_session(chat_sessions_path, phone)
         return AgentReply(_chat_reply(text, ctx, member, history, chat_sessions_path))
