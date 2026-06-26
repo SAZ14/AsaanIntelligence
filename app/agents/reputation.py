@@ -446,9 +446,27 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
 
 
     res = supabase.table("store_members").select("store_id").eq("whatsapp", phone).execute()
-    if not res.data:
-        send_whatsapp_text(phone, "You are not registered as an owner for any store.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
-        return
+    if not res or not res.data:
+        import os
+        from app.services.messaging import normalize_phone
+        env_owners = {
+            normalize_phone(p.strip())
+            for p in os.environ.get("ASAAN_OWNER_PHONES", "").split(",")
+            if p.strip()
+        }
+        if phone in env_owners:
+            # Auto-register in store_members table for the primary store (ID 1)
+            supabase.table("store_members").insert({
+                "store_id": 1,
+                "whatsapp": phone,
+                "role": "owner"
+            }).execute()
+            res = supabase.table("store_members").select("store_id").eq("whatsapp", phone).execute()
+        
+        if not res or not res.data:
+            send_whatsapp_text(phone, "You are not registered as an owner for any store.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+
 
     store_ids = [row["store_id"] for row in res.data]
     active_store_id = store_ids[0]
