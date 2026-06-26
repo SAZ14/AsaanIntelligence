@@ -14,6 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.jobs.winback import run_winback
 from app.jobs.leaderboard_broadcast import run_leaderboard_broadcast
+from scripts.reputation_live import run as run_reputation
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,8 +24,15 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_winback, 'cron', hour=10, minute=0)
     # Schedule leaderboard broadcast weekly on Sunday at 18:00
     scheduler.add_job(run_leaderboard_broadcast, 'cron', day_of_week='sun', hour=18, minute=0)
+    # Schedule reputation check every 12 hours
+    scheduler.add_job(run_reputation, 'interval', hours=12)
     
     scheduler.start()
+    
+    # Run an initial reputation check in the background on startup
+    import threading
+    threading.Thread(target=run_reputation, daemon=True).start()
+
     
     # Pre-load embedding model to prevent RAG cold-start latency
     import logging
