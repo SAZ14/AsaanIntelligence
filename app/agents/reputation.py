@@ -609,6 +609,25 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
             
             # Fetch recent reviews from the database
             recent_reviews = review_db.get_recent_reviews(active_store_id, limit=10)
+            
+            # If the user asks about reviews/complaints/feedback/history and we have fewer than 10 reviews in db,
+            # trigger an on-demand scraping run to pull fresh reviews automatically first!
+            is_asking_for_reviews = any(w in text.lower() for w in ["review", "feedback", "rating", "complaint", "comment", "complain", "history"])
+            if is_asking_for_reviews and len(recent_reviews) < 10:
+                send_whatsapp_text(phone, f"[{store_name}] Just a second, let me run a quick scan across Google, Foodpanda, and Instagram to sync your latest reviews...", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+                
+                store_res = supabase.table("stores").select("*").eq("id", active_store_id).maybe_single().execute()
+                if store_res and store_res.data:
+                    from scripts.reputation_live import process_store_reviews
+                    from app.whatsapp.config import WhatsAppConfig
+                    try:
+                        wa = WhatsAppConfig.from_env()
+                        process_store_reviews(store_res.data, wa)
+                        # Re-fetch recent reviews after scraping
+                        recent_reviews = review_db.get_recent_reviews(active_store_id, limit=10)
+                    except Exception:
+                        pass
+
             recent_str = "RECENT REVIEWS (LAST 10):\n"
             if recent_reviews:
                 for idx, r in enumerate(recent_reviews, 1):
