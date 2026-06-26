@@ -555,38 +555,78 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
             send_whatsapp_text(phone, f"[{store_name}] Check failed: {e}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
 
     else:
-        finding = review_db.get_pending_finding(active_store_id)
-        context_str = ""
-        if finding:
-            sum_data = finding.get("ai_summary") or {}
-            corr = sum_data.get("correlation") or {}
-            context_str = (
-                f"LATEST PENDING REVIEW:\n"
-                f"- Rating: {finding.get('rating')}/5\n"
-                f"- Review Text: \"{finding.get('content_text')}\"\n"
-                f"- Current Draft Reply: \"{sum_data.get('draft_reply')}\"\n"
-                f"- Correlation: Serviced by {corr.get('matched_staff_name') or 'unknown'} on date {corr.get('estimated_date') or 'unknown'}.\n"
-            )
-            
-        system_prompt = (
-            f"You are a helpful, concise AI assistant for the owner of the store '{store_name}'. "
-            f"Reply to the owner in a helpful, warm, and professional tone. Keep your response under 3 short sentences. "
-            f"If they want you to rewrite the draft, provide a revised draft that they can use (remind them they can apply it using 'EDIT <message>'). "
-            f"If they ask general questions, answer them politely.\n\n"
-            f"{context_str}"
-        )
-        
+        # Determine intent using Claude
         try:
             client = anthropic.Anthropic()
-            resp = client.messages.create(
+            intent_resp = client.messages.create(
                 model=CLASSIFIER_MODEL,
-                max_tokens=300,
-                system=system_prompt,
+                max_tokens=10,
+                system=(
+                    "You are an intent classifier for a restaurant's reputation management WhatsApp bot.\n"
+                    "Categorize the user's message into one of these intents:\n"
+                    "- 'scrape': if the user wants to check, scrape, run, or search for new reviews/updates on Google, Foodpanda, Instagram, or generally.\n"
+                    "- 'chat': for any other conversational questions, editing suggestions, general talk, or command queries.\n\n"
+                    "Respond with exactly one word: 'scrape' or 'chat'."
+                ),
                 messages=[{"role": "user", "content": text}],
             )
-            reply_text = resp.content[0].text.strip()
-            send_whatsapp_text(phone, reply_text, from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            intent = intent_resp.content[0].text.strip().lower()
         except Exception:
-            send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip\n*CHECK* to scrape new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            intent = "chat"
+
+        if "scrape" in intent:
+            from app.whatsapp.config import WhatsAppConfig
+            send_whatsapp_text(phone, f"[{store_name}] Checking for new reviews across platforms...", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            
+            store_res = supabase.table("stores").select("*").eq("id", active_store_id).maybe_single().execute()
+            if not store_res or not store_res.data:
+                send_whatsapp_text(phone, f"[{store_name}] Error: Store config not found in database.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+                return
+                
+            from scripts.reputation_live import process_store_reviews
+            try:
+                wa = WhatsAppConfig.from_env()
+                added_count = process_store_reviews(store_res.data, wa)
+                if added_count == 0:
+                    send_whatsapp_text(phone, f"[{store_name}] Check completed. No new reviews found.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+                else:
+                    send_whatsapp_text(phone, f"[{store_name}] Check completed. Processed {added_count} new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            except Exception as e:
+                send_whatsapp_text(phone, f"[{store_name}] Check failed: {e}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        else:
+            finding = review_db.get_pending_finding(active_store_id)
+            context_str = ""
+            if finding:
+                sum_data = finding.get("ai_summary") or {}
+                corr = sum_data.get("correlation") or {}
+                context_str = (
+                    f"LATEST PENDING REVIEW:\n"
+                    f"- Rating: {finding.get('rating')}/5\n"
+                    f"- Review Text: \"{finding.get('content_text')}\"\n"
+                    f"- Current Draft Reply: \"{sum_data.get('draft_reply')}\"\n"
+                    f"- Correlation: Serviced by {corr.get('matched_staff_name') or 'unknown'} on date {corr.get('estimated_date') or 'unknown'}.\n"
+                )
+                
+            system_prompt = (
+                f"You are a helpful, concise AI assistant for the owner of the store '{store_name}'. "
+                f"Reply to the owner in a helpful, warm, and professional tone. Keep your response under 3 short sentences. "
+                f"If they want you to rewrite the draft, provide a revised draft that they can use (remind them they can apply it using 'EDIT <message>'). "
+                f"If they ask general questions, answer them politely.\n\n"
+                f"{context_str}"
+            )
+            
+            try:
+                client = anthropic.Anthropic()
+                resp = client.messages.create(
+                    model=CLASSIFIER_MODEL,
+                    max_tokens=300,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": text}],
+                )
+                reply_text = resp.content[0].text.strip()
+                send_whatsapp_text(phone, reply_text, from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            except Exception:
+                send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip\n*CHECK* to scrape new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
 
 
