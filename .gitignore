@@ -3,5 +3,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 dist/
-.venv/
+venv/
 output/
+.env*
+data/raw
