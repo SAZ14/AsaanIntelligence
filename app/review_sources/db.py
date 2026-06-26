@@ -207,10 +207,10 @@ def save_reviews(reviews: list[dict]) -> int:
     return added
 
 
-def get_recent_reviews(limit: int = 50) -> list[dict]:
+def get_recent_reviews(store_id: int, limit: int = 50) -> list[dict]:
     client = _supabase()
     if client is not None and os.environ.get("ASAAN_TEST_MODE") != "1":
-        res = client.table("findings").select("*").eq("update_type", "review").order("collected_at", desc=True).limit(limit).execute()
+        res = client.table("findings").select("*").eq("store_id", store_id).eq("update_type", "review").order("collected_at", desc=True).limit(limit).execute()
         reviews = []
         for row in res.data:
             reviews.append({

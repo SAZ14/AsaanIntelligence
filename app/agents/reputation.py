@@ -608,7 +608,7 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
                 )
             
             # Fetch recent reviews from the database
-            recent_reviews = review_db.get_recent_reviews(limit=10)
+            recent_reviews = review_db.get_recent_reviews(active_store_id, limit=10)
             recent_str = "RECENT REVIEWS (LAST 10):\n"
             if recent_reviews:
                 for idx, r in enumerate(recent_reviews, 1):
@@ -621,11 +621,13 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
                 
             system_prompt = (
                 f"You are a helpful, concise AI assistant for the owner of the store '{store_name}'. "
-                f"Reply to the owner in a helpful, warm, and professional tone. Keep your response short (under 4 sentences).\n\n"
+                f"Reply to the owner in a helpful, warm, and professional tone. Keep your response short and to the point.\n\n"
                 f"Use the following context to answer their questions about reviews, performance, or history:\n"
                 f"{context_str}\n"
                 f"{recent_str}\n\n"
-                f"If they want you to rewrite the draft for the latest pending review, provide a revised draft (remind them they can apply it using 'EDIT <message>')."
+                f"Guidelines:\n"
+                f"- If the owner asks for a specific count of reviews (e.g., 'last 10 reviews') but the database context lists fewer, state how many reviews are actually available in the context, list them, and offer to run a scan to fetch more.\n"
+                f"- If the owner wants you to rewrite the draft for the latest pending review, provide a revised draft (remind them they can apply it using 'EDIT <message>')."
             )
             
             try:
