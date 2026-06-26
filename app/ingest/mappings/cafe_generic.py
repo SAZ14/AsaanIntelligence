@@ -1,4 +1,4 @@
-"""Column mapping for the generic café POS export format.
+﻿"""Column mapping for the generic café POS export format.
 
 To support a new POS format, duplicate this file, change the column names
 in the dicts below, and pass the new mapping module to the loader.
