@@ -337,6 +337,15 @@ Run = ScoutRun
 Report = ScoutReport
 
 
+def is_store_member(whatsapp: str, store_id: int) -> bool:
+    """Return True if this WhatsApp number is a whitelisted member of the store."""
+    with SessionLocal() as db:
+        return db.query(StoreMember).filter(
+            StoreMember.store_id == store_id,
+            StoreMember.whatsapp == whatsapp,
+        ).first() is not None
+
+
 def get_stores_for_number(whatsapp: str) -> list[Store]:
     with SessionLocal() as db:
         from sqlalchemy import select

@@ -1,21 +1,32 @@
-"""Central server — single FastAPI app routing all four agents.
+"""Central server — single FastAPI app, single WhatsApp webhook.
 
-Webhooks:
-  POST /internal/whatsapp   — internal staff (scout, integrity, revenue)
-  POST /customer/whatsapp   — customer-facing (loyalty, stamps, menu Q&A)
+One Twilio number per restaurant branch. The server checks whether the
+sender is a whitelisted staff member of that branch:
 
-Admin (no auth — add a gateway/API key middleware before production):
+  • Staff   → mode-selection screen (1 = internal tools, 2 = customer app)
+             — or whichever mode they're already in.
+  • Customer → straight to the loyalty / community agent.
+
+Staff can type "menu" at any time to return to the mode-selection screen.
+Within internal mode, messages are routed transparently to scout, integrity,
+or revenue based on keyword — no agent-selection needed from the user.
+
+Webhook:
+  POST /whatsapp
+
+Admin endpoints (no auth — add middleware before production):
   POST /admin/chains
   POST /admin/stores
   POST /admin/stores/{id}/members
   POST /admin/stores/{id}/locations
-  POST /admin/stores/{id}/pos          — integrity agent POS config
-  POST /admin/stores/{id}/revenue      — revenue agent data-source config
-  POST /admin/stores/{id}/customer     — venue_config for customer agent
-  POST /admin/stores/{id}/twilio       — customer-facing Twilio number
+  POST /admin/stores/{id}/pos
+  POST /admin/stores/{id}/revenue
+  POST /admin/stores/{id}/customer
+  POST /admin/stores/{id}/twilio
   GET  /admin/stores
   GET  /admin/stores/{id}
   GET  /health
+  GET  /report/{store_id}.pdf
 """
 from __future__ import annotations
 
@@ -29,6 +40,13 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
+
+# Values stored in user_sessions.active_agent to track mode
+MODE_INTERNAL = "internal"
+MODE_CUSTOMER = "customer"
+# None / null  → show mode-selection screen
+
+_MODE_TRIGGERS = {"menu", "back", "home", "switch", "mode"}
 
 
 def _twiml(body: str) -> Response:
@@ -60,6 +78,30 @@ def _verify(request: Request, params: dict) -> bool:
         return True
 
 
+def _mode_menu(store_name: str) -> str:
+    return (
+        f"Welcome to {store_name}!\n\n"
+        "Reply with:\n"
+        "  1 — Staff tools (audit, revenue, scout)\n"
+        "  2 — Customer app (stamps, deals, loyalty)\n\n"
+        "Type *menu* anytime to return here."
+    )
+
+
+def _internal_welcome(store_name: str) -> str:
+    return (
+        f"Staff tools — {store_name}\n\n"
+        "Integrity: summary · audit · leakage · profit · staff · daily · weekly\n"
+        "Revenue:   revenue · sales · pricing · strategy\n"
+        "Scout:     scout\n\n"
+        "Type *menu* to switch modes."
+    )
+
+
+def _customer_welcome() -> str:
+    return "Switched to customer mode. Send a receipt code or say hi!"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.db import init_db
@@ -82,47 +124,72 @@ def health():
     return {"status": "ok", "agents": ["scout", "integrity", "revenue", "customer"]}
 
 
-# ── Internal WhatsApp webhook ──────────────────────────────────────────────────
+# ── Unified WhatsApp webhook ───────────────────────────────────────────────────
 
-@app.post("/internal/whatsapp")
-async def internal_whatsapp(request: Request) -> Response:
+@app.post("/whatsapp")
+async def unified_whatsapp(request: Request) -> Response:
     raw = (await request.body()).decode("utf-8")
     params = {k: v[0] for k, v in parse_qs(raw).items()}
     if not _verify(request, params):
         return Response(status_code=403, content="invalid signature")
 
     from_number = params.get("From", "")
-    body = params.get("Body", "")
-    logger.info("Internal: from=%s body=%r", from_number, (body or "")[:80])
+    to_number   = params.get("To", "")
+    body        = params.get("Body", "").strip()
 
-    from app.gateway.internal import handle_internal_message
-    reply = handle_internal_message(from_number, body)
+    logger.info("Webhook: to=%s from=%s body=%r", to_number, from_number, body[:80])
 
-    if not reply:
+    # ── Resolve store from the number they texted ──────────────────────────────
+    from app.core.db import get_store_by_twilio_number, is_store_member, get_user_session, set_user_session
+
+    store = get_store_by_twilio_number(to_number)
+    if store is None:
+        logger.warning("No store mapped to number %s", to_number)
         return _twiml_empty()
-    return _twiml(reply)
 
+    store_id   = store.id
+    store_name = store.name
 
-# ── Customer WhatsApp webhook ──────────────────────────────────────────────────
+    # ── Check if sender is a whitelisted staff member ──────────────────────────
+    if not is_store_member(from_number, store_id):
+        # Pure customer — no mode selection, go straight to community agent
+        from app.gateway.customer import handle_customer_for_store
+        reply = handle_customer_for_store(from_number, body, store_id)
+        return _twiml(reply) if reply else _twiml_empty()
 
-@app.post("/customer/whatsapp")
-async def customer_whatsapp(request: Request) -> Response:
-    raw = (await request.body()).decode("utf-8")
-    params = {k: v[0] for k, v in parse_qs(raw).items()}
-    if not _verify(request, params):
-        return Response(status_code=403, content="invalid signature")
+    # ── Staff flow ─────────────────────────────────────────────────────────────
+    session = get_user_session(from_number)
+    current_mode = session.active_agent if session else None
 
-    from_phone = params.get("From", "")
-    to_number = params.get("To", "")
-    body = params.get("Body", "")
-    logger.info("Customer: to=%s from=%s body=%r", to_number, from_phone, (body or "")[:80])
+    cmd = body.lower().strip()
 
-    from app.gateway.customer import handle_customer_message
-    reply = handle_customer_message(to_number, from_phone, body)
+    # "menu" / "back" always returns to mode-selection screen
+    if cmd in _MODE_TRIGGERS:
+        set_user_session(from_number, store_id, active_agent=None)
+        return _twiml(_mode_menu(store_name))
 
-    if not reply:
-        return _twiml_empty()
-    return _twiml(reply)
+    # No mode set — show selection or parse "1"/"2"
+    if current_mode is None:
+        if cmd == "1":
+            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
+            return _twiml(_internal_welcome(store_name))
+        if cmd == "2":
+            set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
+            return _twiml(_customer_welcome())
+        # Any other message (including first contact) → show menu
+        set_user_session(from_number, store_id, active_agent=None)
+        return _twiml(_mode_menu(store_name))
+
+    # ── Internal tools mode ────────────────────────────────────────────────────
+    if current_mode == MODE_INTERNAL:
+        from app.gateway.internal import handle_internal_for_store
+        reply = handle_internal_for_store(from_number, body, store_id)
+        return _twiml(reply) if reply else _twiml_empty()
+
+    # ── Customer app mode (staff using loyalty features) ───────────────────────
+    from app.gateway.customer import handle_customer_for_store
+    reply = handle_customer_for_store(from_number, body, store_id)
+    return _twiml(reply) if reply else _twiml_empty()
 
 
 # ── Integrity PDF report ───────────────────────────────────────────────────────
@@ -353,7 +420,7 @@ async def list_stores() -> JSONResponse:
             result.append({
                 "id": s.id, "name": s.name, "chain_id": s.chain_id,
                 "category": s.category, "location": s.location,
-                "customer_number": twilio.whatsapp_number if twilio else None,
+                "whatsapp_number": twilio.whatsapp_number if twilio else None,
             })
     return JSONResponse(result)
 
@@ -366,13 +433,13 @@ async def get_store(store_id: int) -> JSONResponse:
         if not store:
             return JSONResponse({"error": "not found"}, status_code=404)
         members = db.query(StoreMember).filter(StoreMember.store_id == store_id).all()
-        twilio = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
-        pos = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
-        rev = db.query(RevenueConnection).filter(RevenueConnection.store_id == store_id).first()
+        twilio  = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
+        pos     = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
+        rev     = db.query(RevenueConnection).filter(RevenueConnection.store_id == store_id).first()
     return JSONResponse({
         "id": store.id, "name": store.name, "chain_id": store.chain_id,
+        "whatsapp_number": twilio.whatsapp_number if twilio else None,
         "members": [{"whatsapp": m.whatsapp, "role": m.role} for m in members],
-        "customer_number": twilio.whatsapp_number if twilio else None,
         "pos_configured": pos is not None,
         "revenue_configured": rev is not None,
     })
