@@ -438,11 +438,12 @@ def run_reputation_agent(
 
 
 def process_reputation_owner_reply(from_phone: str, body: str) -> None:
-    from app.services.messaging import normalize_phone, send_whatsapp_text
+    from app.services.messaging import parse_twilio_whatsapp_phone, send_whatsapp_text
     from app.database import supabase
     from app.review_sources import db as review_db
 
-    phone = normalize_phone(from_phone)
+    phone = parse_twilio_whatsapp_phone(from_phone)
+
 
     res = supabase.table("store_members").select("store_id").eq("whatsapp", phone).execute()
     if not res.data:
