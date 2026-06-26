@@ -89,3 +89,26 @@ async def twilio_merchant_inbound(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
+
+
+@router.post("/reputation")
+async def twilio_reputation_inbound(
+    From: str = Form(...),
+    Body: str = Form(default=""),
+    MessageSid: str = Form(default=None),
+):
+    if not From:
+        raise HTTPException(status_code=400, detail="Missing From")
+    try:
+        if MessageSid:
+            import asyncio
+            from app.services.messaging import send_whatsapp_typing_indicator
+            asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
+            
+        from app.agents.reputation import process_reputation_owner_reply
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(process_reputation_owner_reply, From, Body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return _empty_twiml()
+

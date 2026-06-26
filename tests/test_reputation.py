@@ -246,3 +246,37 @@ class TestCorrelationOnDataShape:
         assert ctx.confidence == "high"
         assert ctx.matched_staff_name == "Bilal"
         assert ctx.order_count_in_window >= 1
+
+
+def test_process_reputation_owner_reply_no_store(monkeypatch):
+    sent_messages = []
+    
+    def mock_send(to, text, from_key=None):
+        sent_messages.append((to, text))
+        return "mock-sid"
+        
+    class MockTable:
+        def select(self, *args, **kwargs):
+            return self
+        def eq(self, *args, **kwargs):
+            return self
+        def execute(self):
+            class MockData:
+                data = []
+            return MockData()
+            
+    class MockSupabase:
+        def table(self, table_name):
+            return MockTable()
+            
+    monkeypatch.setattr("app.services.messaging.send_whatsapp_text", mock_send)
+    
+    import app.database
+    monkeypatch.setattr(app.database, "supabase", MockSupabase())
+    
+    from app.agents.reputation import process_reputation_owner_reply
+    process_reputation_owner_reply("+923001234567", "POST")
+    
+    assert len(sent_messages) == 1
+    assert "not registered as an owner" in sent_messages[0][1]
+

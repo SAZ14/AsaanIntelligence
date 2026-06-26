@@ -435,3 +435,80 @@ def run_reputation_agent(
         patterns=patterns,
         happy_reviewers=happy,
     )
+
+
+def process_reputation_owner_reply(from_phone: str, body: str) -> None:
+    from app.services.messaging import normalize_phone, send_whatsapp_text
+    from app.database import supabase
+    from app.review_sources import db as review_db
+
+    phone = normalize_phone(from_phone)
+
+    res = supabase.table("store_members").select("store_id").eq("whatsapp", phone).execute()
+    if not res.data:
+        send_whatsapp_text(phone, "You are not registered as an owner for any store.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        return
+
+    store_ids = [row["store_id"] for row in res.data]
+    active_store_id = store_ids[0]
+    if len(store_ids) > 1:
+        session_res = supabase.table("user_sessions").select("store_id").eq("whatsapp", phone).execute()
+        if session_res.data and session_res.data[0]["store_id"] in store_ids:
+            active_store_id = session_res.data[0]["store_id"]
+        else:
+            supabase.table("user_sessions").upsert({
+                "whatsapp": phone,
+                "store_id": active_store_id
+            }).execute()
+
+    store_res = supabase.table("stores").select("name").eq("id", active_store_id).maybe_single().execute()
+    store_name = store_res.data.get("name") if store_res and store_res.data else "Store"
+
+    text = body.strip()
+    text_lower = text.lower()
+
+    if text_lower.startswith("post"):
+        finding = review_db.get_pending_finding(active_store_id)
+        if not finding:
+            send_whatsapp_text(phone, f"[{store_name}] There are no pending review drafts awaiting confirmation.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+        
+        summary = finding["ai_summary"]
+        summary["status"] = "posted"
+        review_db.update_finding_summary(finding["id"], summary)
+        
+        draft = summary.get("draft_reply", "")
+        send_whatsapp_text(phone, f"[{store_name}] Published draft response to Google Maps:\n\n{draft}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    elif text_lower.startswith("edit"):
+        edit_content = text[4:].strip()
+        if not edit_content:
+            send_whatsapp_text(phone, f"[{store_name}] To edit, please reply with *EDIT* followed by your new message (e.g. *EDIT Thanks for the review!*).", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        finding = review_db.get_pending_finding(active_store_id)
+        if not finding:
+            send_whatsapp_text(phone, f"[{store_name}] No pending review draft found to edit.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        summary = finding["ai_summary"]
+        summary["draft_reply"] = edit_content
+        review_db.update_finding_summary(finding["id"], summary)
+        
+        send_whatsapp_text(phone, f"[{store_name}] Draft updated. Reply *POST* to publish or *IGNORE* to skip.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    elif text_lower.startswith("ignore"):
+        finding = review_db.get_pending_finding(active_store_id)
+        if not finding:
+            send_whatsapp_text(phone, f"[{store_name}] No pending review draft found to ignore.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        summary = finding["ai_summary"]
+        summary["status"] = "ignored"
+        review_db.update_finding_summary(finding["id"], summary)
+        
+        send_whatsapp_text(phone, f"[{store_name}] Skipped review. No reply will be posted.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    else:
+        send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+

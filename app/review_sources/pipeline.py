@@ -4,7 +4,7 @@ import logging
 import os
 
 from app.config import load_dotenv
-from app.review_sources import db, normalizer
+from app.review_sources import normalizer
 from app.review_sources.foodpanda import fetch_reviews as fetch_foodpanda
 from app.review_sources.google_maps import fetch_reviews as fetch_maps
 from app.review_sources.instagram import fetch_reviews as fetch_instagram
@@ -12,29 +12,43 @@ from app.review_sources.instagram import fetch_reviews as fetch_instagram
 log = logging.getLogger("review_sources.pipeline")
 
 
-def _load_config() -> dict:
+def _load_config(store_config: dict | None = None) -> dict:
+    sc = store_config or {}
+    apify_key = sc.get("apify_api_key") or os.environ.get("APIFY_API_KEY", "")
+    
+    maps_terms = sc.get("google_maps_terms")
+    if not maps_terms:
+        env_val = os.environ.get("GOOGLE_MAPS_TERMS", "")
+        if env_val:
+            maps_terms = [q.strip() for q in env_val.replace("'", "").replace('"', '').strip("[]").split(",") if q.strip()]
+        else:
+            maps_terms = []
+            
+    maps_location = sc.get("google_maps_location") or os.environ.get("GOOGLE_MAPS_LOCATION", "")
+    foodpanda_url = sc.get("foodpanda_url") or os.environ.get("FOODPANDA_URL", "")
+    foodpanda_keyword = sc.get("foodpanda_keyword") or os.environ.get("FOODPANDA_KEYWORD", "")
+    
+    instagram_usernames = sc.get("instagram_usernames")
+    if not instagram_usernames:
+        env_val = os.environ.get("INSTAGRAM_USERNAMES", "")
+        if env_val:
+            instagram_usernames = [u.strip() for u in env_val.replace("'", "").replace('"', '').strip("[]").split(",") if u.strip()]
+        else:
+            instagram_usernames = []
+            
     return {
-        "apify_api_key": os.environ.get("APIFY_API_KEY", ""),
-        "google_maps_terms": [
-            q.strip() for q in
-            os.environ.get("GOOGLE_MAPS_TERMS", "[]").strip("[]").split(",")
-            if q.strip()
-        ],
-        "google_maps_location": os.environ.get("GOOGLE_MAPS_LOCATION", ""),
-        "foodpanda_url": os.environ.get("FOODPANDA_URL", ""),
-        "foodpanda_keyword": os.environ.get("FOODPANDA_KEYWORD", ""),
-        "instagram_usernames": [
-            u.strip() for u in
-            os.environ.get("INSTAGRAM_USERNAMES", "[]").strip("[]").split(",")
-            if u.strip()
-        ],
+        "apify_api_key": apify_key,
+        "google_maps_terms": maps_terms,
+        "google_maps_location": maps_location,
+        "foodpanda_url": foodpanda_url,
+        "foodpanda_keyword": foodpanda_keyword,
+        "instagram_usernames": instagram_usernames,
     }
 
 
-def run_pipeline() -> int:
+def run_pipeline(store_config: dict | None = None) -> list[dict]:
     load_dotenv()
-    cfg = _load_config()
-    db.init_db()
+    cfg = _load_config(store_config)
 
     all_raw: list[dict] = []
 
@@ -72,9 +86,6 @@ def run_pipeline() -> int:
 
     if not all_raw:
         log.info("No reviews found from any source.")
-        return 0
+        return []
 
-    normalized = normalizer.normalize(all_raw)
-    added = db.save_reviews(normalized)
-    log.info("DB: %d new reviews (out of %d scraped)", added, len(normalized))
-    return added
+    return normalizer.normalize(all_raw)

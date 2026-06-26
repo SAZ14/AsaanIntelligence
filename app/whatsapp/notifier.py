@@ -1,19 +1,3 @@
-"""Send review alerts to the venue owner over WhatsApp.
-
-Live delivery goes through the **Twilio** WhatsApp API (sandbox or full sender).
-`send_review_alert` formats the alert (rating+source line, reconstructed "true
-story", drafted reply, and a POST/EDIT/IGNORE reply prompt) and sends it via
-Twilio. `send_text` sends a plain text message.
-
-Twilio's WhatsApp sandbox can't render tappable quick-reply buttons (those need
-approved Content templates on a full sender), so the owner replies with the
-keywords POST / EDIT / IGNORE — parsed by webhook.py. The Meta Cloud API
-interactive-button payload builders are kept below as the alternative backend.
-
-DRY_RUN (env flag, default on) prints the exact request params instead of
-calling Twilio, so formatting can be verified offline and CI never sends.
-"""
-
 from __future__ import annotations
 
 import json
@@ -22,21 +6,17 @@ from typing import Any
 
 from .config import WhatsAppConfig
 
-# Button reply IDs (Meta Cloud API) — webhook routes on these. Keep in sync.
 BTN_POST_REPLY = "reputation:post_reply"
 BTN_EDIT = "reputation:edit"
 BTN_IGNORE = "reputation:ignore"
 
-# Prompt the owner texts back over Twilio; mapped to the same actions.
 ACTION_PROMPT = "Reply *POST* to publish · *EDIT* to revise · *IGNORE* to skip."
 
-# WhatsApp interactive-message limits.
 _BODY_MAX = 1024
 _BUTTON_TITLE_MAX = 20
 
 
 def _rating_marker(rating: int) -> str:
-    """A glanceable severity marker for the alert line."""
     if rating <= 2:
         return "🔴"
     if rating == 3:
@@ -45,11 +25,6 @@ def _rating_marker(rating: int) -> str:
 
 
 def _true_story(correlation: Any) -> str:
-    """Reconstruct the visit ("true story") from the correlation context.
-
-    `correlation` is duck-typed (VisitContext from the agent), so the notifier
-    stays decoupled from the agent's models.
-    """
     confidence = getattr(correlation, "confidence", "none")
     if confidence == "none":
         return "Couldn't tie this to a specific visit — no time/staff/item clues in the text."
@@ -74,7 +49,6 @@ def _true_story(correlation: Any) -> str:
 
 
 def format_alert_text(review: Any, correlation: Any, issue: str, draft: str) -> str:
-    """Build the message body: alert line, true story, and drafted reply."""
     rating = getattr(review, "rating", 0)
     source = getattr(review, "source", "unknown")
     reviewer = getattr(review, "reviewer_name", "") or "Anonymous"
@@ -103,10 +77,6 @@ def build_review_alert_payload(
     issue: str,
     draft: str,
 ) -> dict[str, Any]:
-    """Build the exact Cloud API request body for an interactive review alert.
-
-    Pure (no I/O) so it's trivially unit-testable.
-    """
     return {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -136,13 +106,7 @@ def build_text_payload(to: str, text: str) -> dict[str, Any]:
     }
 
 
-# ── Twilio delivery (active live backend) ──
-
 def wa_address(number: str) -> str:
-    """Normalise a number to Twilio's WhatsApp address form: 'whatsapp:+<E164>'.
-
-    Strips spaces, dashes, and parens so inputs like '+1 415-523-8886' work.
-    """
     n = (number or "").strip()
     if n.startswith("whatsapp:"):
         return n
@@ -153,7 +117,6 @@ def wa_address(number: str) -> str:
 
 
 def twilio_alert_body(review: Any, correlation: Any, issue: str, draft: str) -> str:
-    """Full Twilio message body: the alert + the reply-keyword prompt."""
     body = f"{format_alert_text(review, correlation, issue, draft)}\n\n{ACTION_PROMPT}"
     if len(body) > _BODY_MAX:
         body = body[: _BODY_MAX - 1].rstrip() + "…"
@@ -161,7 +124,6 @@ def twilio_alert_body(review: Any, correlation: Any, issue: str, draft: str) -> 
 
 
 def build_twilio_params(to: str, body: str, config: WhatsAppConfig) -> dict[str, Any]:
-    """Build the kwargs passed to Twilio's messages.create (from_, to, body)."""
     return {
         "from_": wa_address(config.twilio_whatsapp_number),
         "to": wa_address(to),
@@ -170,14 +132,13 @@ def build_twilio_params(to: str, body: str, config: WhatsAppConfig) -> dict[str,
 
 
 def _send_via_twilio(params: dict[str, Any], config: WhatsAppConfig) -> dict[str, Any]:
-    """Send through Twilio, or print the params under DRY_RUN."""
     if config.dry_run:
         print("── WhatsApp DRY_RUN — would send via Twilio:")
         print(json.dumps(params, indent=2, ensure_ascii=False))
         return {"dry_run": True, "provider": "twilio", "params": params}
 
     config.require_twilio_credentials()
-    from twilio.rest import Client  # lazy import so DRY_RUN/tests don't need it
+    from twilio.rest import Client
 
     client = Client(config.twilio_account_sid, config.twilio_auth_token)
     msg = client.messages.create(**params)
@@ -192,7 +153,6 @@ def send_review_alert(
     draft: str,
     config: WhatsAppConfig | None = None,
 ) -> dict[str, Any]:
-    """Format and send the review alert to the owner via Twilio."""
     config = config or WhatsAppConfig.from_env()
     body = twilio_alert_body(review, correlation, issue, draft)
     params = build_twilio_params(owner_number, body, config)
@@ -204,6 +164,5 @@ def send_text(
     text: str,
     config: WhatsAppConfig | None = None,
 ) -> dict[str, Any]:
-    """Send a plain text WhatsApp message via Twilio."""
     config = config or WhatsAppConfig.from_env()
     return _send_via_twilio(build_twilio_params(to, text, config), config)
