@@ -509,6 +509,26 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
         
         send_whatsapp_text(phone, f"[{store_name}] Skipped review. No reply will be posted.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
 
+    elif text_lower.startswith("check") or text_lower.startswith("scrape") or text_lower.startswith("run"):
+        from app.whatsapp.config import WhatsAppConfig
+        send_whatsapp_text(phone, f"[{store_name}] Checking for new reviews...", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        
+        store_res = supabase.table("stores").select("*").eq("id", active_store_id).maybe_single().execute()
+        if not store_res or not store_res.data:
+            send_whatsapp_text(phone, f"[{store_name}] Error: Store config not found in database.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        from scripts.reputation_live import process_store_reviews
+        try:
+            wa = WhatsAppConfig.from_env()
+            added_count = process_store_reviews(store_res.data, wa)
+            if added_count == 0:
+                send_whatsapp_text(phone, f"[{store_name}] Check completed. No new reviews found.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            else:
+                send_whatsapp_text(phone, f"[{store_name}] Check completed. Processed {added_count} new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        except Exception as e:
+            send_whatsapp_text(phone, f"[{store_name}] Check failed: {e}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
     else:
-        send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip\n*CHECK* to scrape new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
 
