@@ -1,0 +1,12 @@
+[
+  {
+    "title": "New Matcha Latte",
+    "description": "Ceremonial grade matcha now on the menu — 720 PKR",
+    "active": true
+  },
+  {
+    "title": "Weekend Brunch",
+    "description": "Saturday & Sunday 10am–2pm — avocado toast + coffee combo 1,200 PKR",
+    "active": true
+  }
+]

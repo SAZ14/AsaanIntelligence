@@ -1,0 +1,9 @@
+{
+  "venue_name": "Sugar Rush",
+  "stamp_goal": 5,
+  "reward_text": "a free drink or dessert",
+  "winback_days": 5,
+  "code_expiry_days": 30,
+  "owner_phones": ["+923001234567"],
+  "qr_greeting": "Hi Sugar Rush! I'd like to join the community."
+}

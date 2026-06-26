@@ -42,6 +42,15 @@ STAFF = {
     "role": "role",
 }
 
+CUSTOMERS = {
+    "customer_ref": "customer_ref",
+    "qr_token": "qr_token",
+    "display_name": "display_name",
+    "phone": "phone",
+    "channel": "channel",
+    "opted_in": "opted_in",
+}
+
 REVIEWS = {
     "review_id": "review_id",
     "source": "source",
