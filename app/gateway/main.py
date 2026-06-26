@@ -159,7 +159,12 @@ async def unified_whatsapp(request: Request) -> Response:
 
     # ── Staff flow ─────────────────────────────────────────────────────────────
     session = get_user_session(from_number)
-    current_mode = session.active_agent if session else None
+    # If the session was set for a different store, treat as first contact here
+    current_mode = (
+        session.active_agent
+        if session and session.store_id == store_id
+        else None
+    )
 
     cmd = body.lower().strip()
 
@@ -407,6 +412,18 @@ async def configure_venue(store_id: int, request: Request) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return JSONResponse({"status": "configured", "store_id": store_id})
+
+
+@app.post("/admin/stores/{store_id}/seed-competitors")
+async def seed_competitors(store_id: int) -> JSONResponse:
+    """Seed the default competitor list from config into the DB for this store."""
+    from app.core.db import SessionLocal, Store
+    with SessionLocal() as db:
+        if not db.query(Store).filter(Store.id == store_id).first():
+            return JSONResponse({"error": "store not found"}, status_code=404)
+    from app.agents.scout.discovery import seed_competitors_for_store
+    added = seed_competitors_for_store(store_id)
+    return JSONResponse({"status": "seeded", "store_id": store_id, "added": added})
 
 
 @app.get("/admin/stores")

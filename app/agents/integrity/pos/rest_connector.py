@@ -32,7 +32,7 @@ from urllib import request as urlrequest
 
 from app.ingest import loader
 from app.models.canonical import MenuItem, Order, Staff
-from app.pos.base import POSConnector, POSData, RestaurantConfig, _load_mapping, register_connector
+from app.agents.integrity.pos.base import POSConnector, POSData, RestaurantConfig, _load_mapping, register_connector
 
 DEFAULT_ENDPOINTS = {"orders": "orders", "menu": "menu", "staff": "staff"}
 

@@ -17,9 +17,6 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-# --- DB ---
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./scout.db")
-
 # --- Pipeline tuning ---
 FRESHNESS_MINUTES = int(os.getenv("FRESHNESS_MINUTES", "90"))
 IG_POSTS_PER_PROFILE = int(os.getenv("IG_POSTS_PER_PROFILE", "8"))

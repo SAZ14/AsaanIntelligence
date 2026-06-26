@@ -11,8 +11,7 @@ the previous window so the owner sees direction, not only a number.
     previous 7 days, with a per-day sales/leakage breakdown for the trend.
 
 Everything here is deterministic; the LLM narrative is off by default so digests
-are instant and free. Formatting for WhatsApp lives in
-``app/whatsapp/service.py``.
+are instant and free. WhatsApp formatting lives in app/agents/integrity/service.py.
 """
 
 from __future__ import annotations

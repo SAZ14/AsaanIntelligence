@@ -371,8 +371,7 @@ def set_user_session(whatsapp: str, store_id: int | None, active_agent: str | No
         s = db.query(UserSession).filter(UserSession.whatsapp == whatsapp).first()
         if s:
             s.store_id = store_id
-            if active_agent is not None:
-                s.active_agent = active_agent
+            s.active_agent = active_agent  # always write — None clears the mode
             s.updated_at = datetime.utcnow()
         else:
             db.add(UserSession(whatsapp=whatsapp, store_id=store_id, active_agent=active_agent))

@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.ingest import loader
-from app.pos.base import POSConnector, POSData, RestaurantConfig, _load_mapping, register_connector
+from app.agents.integrity.pos.base import POSConnector, POSData, RestaurantConfig, _load_mapping, register_connector
 
 
 class CSVPOSConnector(POSConnector):

@@ -5,7 +5,6 @@ import logging
 
 from app.agents.customer.community.leaderboard import format_leaderboard, weekly_stamp_counts
 from app.agents.customer.community.store import load_members, load_venue_config
-from app.agents.customer.services.messaging import send_whatsapp_text
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +22,14 @@ def _get_store_twilio_number(store_id: int) -> str | None:
         return row.whatsapp_number if row else None
 
 
+def _send(to_phone: str, body: str, from_number: str) -> None:
+    from twilio.rest import Client
+    from app.core.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    to_addr = to_phone if to_phone.startswith("whatsapp:") else f"whatsapp:{to_phone}"
+    client.messages.create(to=to_addr, from_=from_number, body=body)
+
+
 def broadcast_for_store(store_id: int) -> int:
     from_number = _get_store_twilio_number(store_id)
     if not from_number:
@@ -31,16 +38,19 @@ def broadcast_for_store(store_id: int) -> int:
     members = load_members(store_id)
     counts = weekly_stamp_counts(store_id)
     config = load_venue_config(store_id)
-    message = format_leaderboard(counts, members, title=f"{config.venue_name} — This week's top collectors")
+    message = format_leaderboard(
+        counts, members,
+        title=f"{config.venue_name} — This week's top collectors",
+    )
     sent = 0
     for member in members.values():
         if not member.opted_in:
             continue
         try:
-            send_whatsapp_text(member.phone, message, from_key="_OVERRIDE_")
+            _send(member.phone, message, from_number)
             sent += 1
         except Exception as e:
-            logger.warning("Broadcast failed store=%d phone=%s: %s", store_id, member.phone[-4:], e)
+            logger.warning("Broadcast failed store=%d phone=...%s: %s", store_id, member.phone[-4:], e)
     return sent
 
 

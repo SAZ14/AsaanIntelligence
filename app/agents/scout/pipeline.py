@@ -160,12 +160,19 @@ def _store_findings(run_id: int, store_id: int, findings: list[FindingSchema]) -
         db.commit()
 
 
+def _store_name(store_id: int) -> str:
+    with SessionLocal() as db:
+        from app.core.db import Store
+        s = db.query(Store).filter(Store.id == store_id).first()
+        return s.name if s else "Restaurant"
+
+
 def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINUTES,
         user_message: str | None = None) -> str:
     command = command.lower().strip()
 
     if command == "help":
-        return build_report("help", [], "Sugar Rush Scout", user_message=user_message)
+        return build_report("help", [], _store_name(store_id), user_message=user_message)
 
     is_live = command == "scout"
     latest_run, db_findings = _get_latest_run(store_id)

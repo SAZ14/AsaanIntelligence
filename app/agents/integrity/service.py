@@ -177,12 +177,37 @@ def _staff_text(r: IntegrityAgentReport) -> str:
     return "\n".join(lines)
 
 
+def _fmt_period(rpt) -> str:
+    """Format a PeriodReport into a WhatsApp-friendly string."""
+    if rpt is None:
+        return "No data available for the requested period."
+    cur = rpt.current
+    prev = rpt.previous
+    lines = [f"{rpt.label} — {rpt.venue_name}"]
+    lines.append(f"Orders: {cur.orders}  |  Sales: PKR {cur.net_sales:,.0f}")
+    lines.append(f"Profit: PKR {cur.gross_profit:,.0f} ({cur.gross_margin:.0%})")
+    lines.append(f"Leakage: PKR {cur.leakage:,.0f}")
+    if prev and prev.has_data and prev.net_sales > 0:
+        delta = (cur.net_sales - prev.net_sales) / prev.net_sales
+        arrow = "▲" if delta >= 0 else "▼"
+        lines.append(f"vs prev: {arrow} {abs(delta):.0%} sales")
+    if rpt.kind == "weekly" and rpt.days:
+        lines.append("")
+        lines.append("Daily breakdown:")
+        for pt in rpt.days:
+            lines.append(
+                f"  {pt.day.strftime('%a %d')}: PKR {pt.net_sales:,.0f} "
+                f"({pt.orders} orders, leak PKR {pt.leakage:,.0f})"
+            )
+    return "\n".join(lines)
+
+
 def _daily_report(store_id: int, base: IntegrityAgentReport) -> str:
     try:
         from app.agents.integrity.analysis.periodic import build_daily_report
         data = get_service().get_data(store_id)
         rpt = build_daily_report(data.orders, data.menu, data.staff, venue_name=base.venue_name)
-        return rpt.whatsapp_text if hasattr(rpt, "whatsapp_text") else str(rpt)
+        return _fmt_period(rpt)
     except Exception:
         return _fallback_summary(base) + "\n(Full daily data unavailable)"
 
@@ -192,7 +217,7 @@ def _weekly_report(store_id: int, base: IntegrityAgentReport) -> str:
         from app.agents.integrity.analysis.periodic import build_weekly_report
         data = get_service().get_data(store_id)
         rpt = build_weekly_report(data.orders, data.menu, data.staff, venue_name=base.venue_name)
-        return rpt.whatsapp_text if hasattr(rpt, "whatsapp_text") else str(rpt)
+        return _fmt_period(rpt)
     except Exception:
         return _fallback_summary(base) + "\n(Full weekly data unavailable)"
 
