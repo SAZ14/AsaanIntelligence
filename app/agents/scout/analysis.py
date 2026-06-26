@@ -6,7 +6,7 @@ from typing import Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-import app.config as _cfg
+import app.agents.scout.config as _cfg
 from app.agents.scout.schemas import FindingSchema
 
 logger = logging.getLogger(__name__)

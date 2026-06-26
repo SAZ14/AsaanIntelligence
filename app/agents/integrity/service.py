@@ -5,6 +5,9 @@ import time
 from dataclasses import dataclass
 
 from app.agents.integrity.pos.base import RestaurantConfig, build_connector
+# Import connectors so they self-register via register_connector()
+import app.agents.integrity.pos.csv_connector  # noqa: F401
+import app.agents.integrity.pos.rest_connector  # noqa: F401
 from app.agents.integrity.agents.integrity_agent import (
     IntegrityAgentReport, run_integrity_agent, answer_question,
 )
