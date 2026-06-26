@@ -280,3 +280,58 @@ def test_process_reputation_owner_reply_no_store(monkeypatch):
     assert len(sent_messages) == 1
     assert "not registered as an owner" in sent_messages[0][1]
 
+
+def test_process_reputation_owner_reply_chat_fallback(monkeypatch):
+    from types import SimpleNamespace
+    sent_messages = []
+    
+    def mock_send(to, text, from_key=None):
+        sent_messages.append((to, text))
+        return "mock-sid"
+        
+    class MockTable:
+        def select(self, *args, **kwargs):
+            return self
+        def eq(self, *args, **kwargs):
+            return self
+        def maybe_single(self, *args, **kwargs):
+            return self
+        def execute(self):
+            class MockData:
+                # Mock response for store_members and stores
+                data = [{"store_id": 999, "name": "Sugar Rush", "id": 999}]
+            return MockData()
+            
+    class MockSupabase:
+        def table(self, table_name):
+            return MockTable()
+            
+    class MockMessage:
+        content = [SimpleNamespace(text="Mocked AI response to owner")]
+        
+    class MockMessages:
+        def create(self, *args, **kwargs):
+            return MockMessage()
+            
+    class MockAnthropic:
+        def __init__(self, *args, **kwargs):
+            self.messages = MockMessages()
+            
+    monkeypatch.setattr("app.services.messaging.send_whatsapp_text", mock_send)
+    import app.database
+    monkeypatch.setattr(app.database, "supabase", MockSupabase())
+    
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", MockAnthropic)
+    
+    # Mock review_db.get_pending_finding
+    from app.review_sources import db as review_db
+    monkeypatch.setattr(review_db, "get_pending_finding", lambda active_store_id: None)
+    
+    from app.agents.reputation import process_reputation_owner_reply
+    process_reputation_owner_reply("+923001234567", "Who served this customer?")
+    
+    assert len(sent_messages) == 1
+    assert "Mocked AI response to owner" in sent_messages[0][1]
+
+

@@ -462,7 +462,13 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
             }).execute()
 
     store_res = supabase.table("stores").select("name").eq("id", active_store_id).maybe_single().execute()
-    store_name = store_res.data.get("name") if store_res and store_res.data else "Store"
+    store_name = "Store"
+    if store_res and store_res.data:
+        if isinstance(store_res.data, dict):
+            store_name = store_res.data.get("name", "Store")
+        elif isinstance(store_res.data, list) and store_res.data:
+            store_name = store_res.data[0].get("name", "Store")
+
 
     text = body.strip()
     text_lower = text.lower()
@@ -530,5 +536,38 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
             send_whatsapp_text(phone, f"[{store_name}] Check failed: {e}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
 
     else:
-        send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip\n*CHECK* to scrape new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        finding = review_db.get_pending_finding(active_store_id)
+        context_str = ""
+        if finding:
+            sum_data = finding.get("ai_summary") or {}
+            corr = sum_data.get("correlation") or {}
+            context_str = (
+                f"LATEST PENDING REVIEW:\n"
+                f"- Rating: {finding.get('rating')}/5\n"
+                f"- Review Text: \"{finding.get('content_text')}\"\n"
+                f"- Current Draft Reply: \"{sum_data.get('draft_reply')}\"\n"
+                f"- Correlation: Serviced by {corr.get('matched_staff_name') or 'unknown'} on date {corr.get('estimated_date') or 'unknown'}.\n"
+            )
+            
+        system_prompt = (
+            f"You are a helpful, concise AI assistant for the owner of the store '{store_name}'. "
+            f"Reply to the owner in a helpful, warm, and professional tone. Keep your response under 3 short sentences. "
+            f"If they want you to rewrite the draft, provide a revised draft that they can use (remind them they can apply it using 'EDIT <message>'). "
+            f"If they ask general questions, answer them politely.\n\n"
+            f"{context_str}"
+        )
+        
+        try:
+            client = anthropic.Anthropic()
+            resp = client.messages.create(
+                model=CLASSIFIER_MODEL,
+                max_tokens=300,
+                system=system_prompt,
+                messages=[{"role": "user", "content": text}],
+            )
+            reply_text = resp.content[0].text.strip()
+            send_whatsapp_text(phone, reply_text, from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        except Exception:
+            send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip\n*CHECK* to scrape new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
 
