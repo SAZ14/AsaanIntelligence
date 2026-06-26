@@ -564,8 +564,8 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
                 system=(
                     "You are an intent classifier for a restaurant's reputation management WhatsApp bot.\n"
                     "Categorize the user's message into one of these intents:\n"
-                    "- 'scrape': if the user wants to check, scrape, run, or search for new reviews/updates on Google, Foodpanda, Instagram, or generally.\n"
-                    "- 'chat': for any other conversational questions, editing suggestions, general talk, or command queries.\n\n"
+                    "- 'scrape': only if the user explicitly wants to trigger a fresh, slow live crawler check/scrape/sync run for new updates on platforms.\n"
+                    "- 'chat': if they want to view, list, query, or analyze reviews already in the database (e.g., 'give me the last 10 reviews', 'what is the latest feedback'), ask conversational questions, edit drafts, or get recommendations.\n\n"
                     "Respond with exactly one word: 'scrape' or 'chat'."
                 ),
                 messages=[{"role": "user", "content": text}],
@@ -606,13 +606,26 @@ def process_reputation_owner_reply(from_phone: str, body: str) -> None:
                     f"- Current Draft Reply: \"{sum_data.get('draft_reply')}\"\n"
                     f"- Correlation: Serviced by {corr.get('matched_staff_name') or 'unknown'} on date {corr.get('estimated_date') or 'unknown'}.\n"
                 )
+            
+            # Fetch recent reviews from the database
+            recent_reviews = review_db.get_recent_reviews(limit=10)
+            recent_str = "RECENT REVIEWS (LAST 10):\n"
+            if recent_reviews:
+                for idx, r in enumerate(recent_reviews, 1):
+                    recent_str += (
+                        f"{idx}. [{r.get('source', 'Unknown')}] Rating: {r.get('rating') or 'N/A'}/5 - \"{r.get('text')}\" "
+                        f"(Posted: {r.get('review_date') or 'unknown'})\n"
+                    )
+            else:
+                recent_str += "(No recent reviews found in database)\n"
                 
             system_prompt = (
                 f"You are a helpful, concise AI assistant for the owner of the store '{store_name}'. "
-                f"Reply to the owner in a helpful, warm, and professional tone. Keep your response under 3 short sentences. "
-                f"If they want you to rewrite the draft, provide a revised draft that they can use (remind them they can apply it using 'EDIT <message>'). "
-                f"If they ask general questions, answer them politely.\n\n"
-                f"{context_str}"
+                f"Reply to the owner in a helpful, warm, and professional tone. Keep your response short (under 4 sentences).\n\n"
+                f"Use the following context to answer their questions about reviews, performance, or history:\n"
+                f"{context_str}\n"
+                f"{recent_str}\n\n"
+                f"If they want you to rewrite the draft for the latest pending review, provide a revised draft (remind them they can apply it using 'EDIT <message>')."
             )
             
             try:

@@ -294,6 +294,10 @@ def test_process_reputation_owner_reply_chat_fallback(monkeypatch):
             return self
         def eq(self, *args, **kwargs):
             return self
+        def order(self, *args, **kwargs):
+            return self
+        def limit(self, *args, **kwargs):
+            return self
         def maybe_single(self, *args, **kwargs):
             return self
         def execute(self):

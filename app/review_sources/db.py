@@ -111,6 +111,16 @@ def save_review_finding(
     client = _supabase()
     if client is not None and os.environ.get("ASAAN_TEST_MODE") != "1":
         import json
+        import re
+        
+        post_date = review.get("review_date")
+        if post_date:
+            post_date = str(post_date).strip()
+            if not re.match(r"^\d{4}-\d{2}-\d{2}", post_date):
+                post_date = None
+        else:
+            post_date = None
+
         try:
             client.table("findings").upsert({
                 "store_id": store_id,
@@ -120,7 +130,7 @@ def save_review_finding(
                 "update_type": "review",
                 "content_text": review["text"],
                 "rating": review.get("rating"),
-                "post_date": review.get("review_date"),
+                "post_date": post_date,
                 "source_url": review.get("url"),
                 "collected_at": review["collected_at"],
                 "ai_summary": json.dumps(ai_summary),
@@ -204,15 +214,15 @@ def get_recent_reviews(limit: int = 50) -> list[dict]:
         reviews = []
         for row in res.data:
             reviews.append({
-                "id": row["id"],
-                "source": row["source_platform"],
-                "text": row["content_text"],
-                "rating": row["rating"],
-                "review_date": row["post_date"],
-                "url": row["source_url"],
-                "author": row["competitor_name"],
-                "collected_at": row["collected_at"],
-                "hash": row["content_hash"]
+                "id": row.get("id"),
+                "source": row.get("source_platform", "Unknown"),
+                "text": row.get("content_text", ""),
+                "rating": row.get("rating"),
+                "review_date": row.get("post_date"),
+                "url": row.get("source_url"),
+                "author": row.get("competitor_name", "Anonymous"),
+                "collected_at": row.get("collected_at"),
+                "hash": row.get("content_hash", "")
             })
         return reviews
     else:

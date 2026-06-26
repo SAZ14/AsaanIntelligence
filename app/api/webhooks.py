@@ -47,13 +47,28 @@ async def twilio_customer_inbound(
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
+        typing_task = None
         if MessageSid:
             import asyncio
             from app.services.messaging import send_whatsapp_typing_indicator
-            asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
             
-        from fastapi.concurrency import run_in_threadpool
-        await run_in_threadpool(process_customer_reply, From, Body)
+            async def typing_loop():
+                while True:
+                    await send_whatsapp_typing_indicator(MessageSid)
+                    await asyncio.sleep(4.0)
+                    
+            typing_task = asyncio.create_task(typing_loop())
+            
+        try:
+            from fastapi.concurrency import run_in_threadpool
+            await run_in_threadpool(process_customer_reply, From, Body)
+        finally:
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
@@ -72,20 +87,37 @@ async def twilio_merchant_inbound(
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
+        typing_task = None
         if MessageSid:
             import asyncio
             from app.services.messaging import send_whatsapp_typing_indicator
-            asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
+            
+            async def typing_loop():
+                while True:
+                    await send_whatsapp_typing_indicator(MessageSid)
+                    await asyncio.sleep(4.0)
+                    
+            typing_task = asyncio.create_task(typing_loop())
             
         if NumMedia > 0 and MediaContentType0 == "application/pdf":
             import re
             base_name = Body.strip() if Body.strip() else "Uploaded_Document"
             filename = re.sub(r'[^a-zA-Z0-9_\-]', '_', base_name) + ".pdf"
             background_tasks.add_task(_process_pdf_background, MediaUrl0, From, filename)
+            if typing_task:
+                typing_task.cancel()
             return _empty_twiml()
             
-        from fastapi.concurrency import run_in_threadpool
-        await run_in_threadpool(process_merchant_reply, From, Body)
+        try:
+            from fastapi.concurrency import run_in_threadpool
+            await run_in_threadpool(process_merchant_reply, From, Body)
+        finally:
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
@@ -100,14 +132,29 @@ async def twilio_reputation_inbound(
     if not From:
         raise HTTPException(status_code=400, detail="Missing From")
     try:
+        typing_task = None
         if MessageSid:
             import asyncio
             from app.services.messaging import send_whatsapp_typing_indicator
-            asyncio.create_task(send_whatsapp_typing_indicator(MessageSid))
             
-        from app.agents.reputation import process_reputation_owner_reply
-        from fastapi.concurrency import run_in_threadpool
-        await run_in_threadpool(process_reputation_owner_reply, From, Body)
+            async def typing_loop():
+                while True:
+                    await send_whatsapp_typing_indicator(MessageSid)
+                    await asyncio.sleep(4.0)
+                    
+            typing_task = asyncio.create_task(typing_loop())
+            
+        try:
+            from app.agents.reputation import process_reputation_owner_reply
+            from fastapi.concurrency import run_in_threadpool
+            await run_in_threadpool(process_reputation_owner_reply, From, Body)
+        finally:
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _empty_twiml()
