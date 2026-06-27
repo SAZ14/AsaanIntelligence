@@ -237,6 +237,26 @@ class RevenueConnection(Base):
 
 
 # ---------------------------------------------------------------------------
+# Reputation agent tables
+# ---------------------------------------------------------------------------
+
+class ReputationConfig(Base):
+    """Per-store reputation agent configuration — scrape targets + brand voice."""
+    __tablename__ = "reputation_configs"
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, unique=True)
+    google_maps_terms = Column(JSON, default=list)       # ["Venue Name", "Venue Name City"]
+    google_maps_location = Column(String, nullable=True) # "City, Country"
+    foodpanda_url = Column(String, nullable=True)
+    foodpanda_keyword = Column(String, nullable=True)
+    instagram_usernames = Column(JSON, default=list)     # ["handle1", "handle2"]
+    brand_voice_tone = Column(String, nullable=True)     # "Warm, genuine, professional"
+    brand_voice_never_say = Column(JSON, default=list)   # ["unfortunately", "sorry for"]
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
 # Customer agent tables (store-scoped versions of community tables)
 # ---------------------------------------------------------------------------
 

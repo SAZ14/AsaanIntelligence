@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──
 
-DEFAULT_VENUE_NAME = "Sugar Rush"
+DEFAULT_VENUE_NAME = "the venue"
 DEFAULT_BRAND_VOICE = (
     "Warm, appreciative, specific. Thank by name, reference their order "
     "when possible, acknowledge issues honestly, invite them back."
@@ -479,6 +479,25 @@ def run_reputation_agent(
     )
 
 
+# ── Per-store config helpers ──
+
+def _load_brand_voice(store_id: int, store_name: str) -> BrandVoice:
+    """Load brand voice from ReputationConfig for this store."""
+    try:
+        from app.core.db import SessionLocal, ReputationConfig
+        with SessionLocal() as db:
+            rc = db.query(ReputationConfig).filter(ReputationConfig.store_id == store_id).first()
+        if rc:
+            return BrandVoice(
+                name=store_name,
+                tone=rc.brand_voice_tone or DEFAULT_BRAND_VOICE,
+                never_say=rc.brand_voice_never_say or [],
+            )
+    except Exception as exc:
+        logger.warning("Could not load brand voice for store %d: %s", store_id, exc)
+    return BrandVoice(name=store_name, tone=DEFAULT_BRAND_VOICE)
+
+
 # ── WhatsApp owner reply handler ──
 
 def process_reputation_owner_reply(from_phone: str, body: str) -> str:
@@ -563,7 +582,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     from app.core.llm import get_client
 
     try:
-        raw_reviews = run_pipeline()
+        raw_reviews = run_pipeline(store_id)
     except Exception as exc:
         logger.error("review pipeline error: %s", exc)
         return f"[{store_name}] Review check failed: {exc}"
@@ -573,6 +592,9 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
     run_id = review_db.save_run(store_id, "whatsapp_check")
     client = get_client()
+
+    # Load brand voice from per-store config
+    brand = _load_brand_voice(store_id, store_name)
 
     analyses: list[tuple[dict, ReviewAnalysis]] = []
     for r in raw_reviews:
@@ -593,7 +615,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             logger.warning("Skipping review: %s", exc)
 
     classify_reviews_batch([ra for _, ra in analyses], client)
-    draft_replies([ra for _, ra in analyses], client, venue_name=store_name)
+    draft_replies([ra for _, ra in analyses], client, venue_name=store_name, brand_voice=brand)
 
     new_count = 0
     for raw, ra in analyses:

@@ -167,7 +167,7 @@ def save_reviews(
     reviews: list[dict],
     store_id: int = 1,
     run_id: int = 1,
-    store_name: str = "Sugar Rush",
+    store_name: str = "",
 ) -> int:
     if not reviews:
         return 0

@@ -96,7 +96,7 @@ def process_store_reviews(store: dict, wa_config=None) -> int:
     if wa_config is None:
         wa_config = WhatsAppConfig.from_env()
 
-    raw_reviews = run_pipeline()
+    raw_reviews = run_pipeline(store_id)
     if not raw_reviews:
         logger.info("No reviews found for store %s", store_name)
         return 0
@@ -104,15 +104,9 @@ def process_store_reviews(store: dict, wa_config=None) -> int:
     run_id = review_db.save_run(store_id, "reputation_live")
     client = get_client()
 
-    brand = BrandVoice(
-        name=store_name,
-        tone=os.environ.get("BRAND_VOICE_TONE", "Warm, genuine, professional"),
-        never_say=[
-            w.strip()
-            for w in os.environ.get("BRAND_VOICE_NEVER_SAY", "").split(",")
-            if w.strip()
-        ],
-    )
+    # Brand voice from per-store ReputationConfig (no env-var hardcoding)
+    from app.agents.reputation import _load_brand_voice
+    brand = _load_brand_voice(store_id, store_name)
 
     analyses: list[tuple[dict, ReviewAnalysis]] = []
     for r in raw_reviews:

@@ -430,6 +430,64 @@ async def configure_venue(store_id: int, request: Request) -> JSONResponse:
     return JSONResponse({"status": "configured", "store_id": store_id})
 
 
+@app.post("/admin/stores/{store_id}/reputation", status_code=201)
+async def configure_reputation(store_id: int, request: Request) -> JSONResponse:
+    """Set per-store reputation scraping targets and brand voice.
+
+    Body (all optional — send only what you want to update):
+      google_maps_terms    JSON array  ["Venue Name", "Venue Name City"]
+      google_maps_location string      "City, Country"
+      foodpanda_url        string
+      foodpanda_keyword    string
+      instagram_usernames  JSON array  ["handle1"]
+      brand_voice_tone     string      "Warm, genuine, professional"
+      brand_voice_never_say JSON array ["unfortunately"]
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from app.core.db import SessionLocal, Store, ReputationConfig
+
+    params = await _parse_body(request)
+
+    def _parse_list(key: str) -> list:
+        val = params.get(key, [])
+        if isinstance(val, str):
+            try:
+                return _json.loads(val)
+            except Exception:
+                return [v.strip() for v in val.split(",") if v.strip()]
+        return val or []
+
+    with SessionLocal() as db:
+        if not db.query(Store).filter(Store.id == store_id).first():
+            return JSONResponse({"error": "store not found"}, status_code=404)
+
+        rc = db.query(ReputationConfig).filter(ReputationConfig.store_id == store_id).first()
+        if rc is None:
+            rc = ReputationConfig(store_id=store_id)
+            db.add(rc)
+
+        if "google_maps_terms" in params:
+            rc.google_maps_terms = _parse_list("google_maps_terms")
+        if "google_maps_location" in params:
+            rc.google_maps_location = str(params["google_maps_location"]).strip() or None
+        if "foodpanda_url" in params:
+            rc.foodpanda_url = str(params["foodpanda_url"]).strip() or None
+        if "foodpanda_keyword" in params:
+            rc.foodpanda_keyword = str(params["foodpanda_keyword"]).strip() or None
+        if "instagram_usernames" in params:
+            rc.instagram_usernames = _parse_list("instagram_usernames")
+        if "brand_voice_tone" in params:
+            rc.brand_voice_tone = str(params["brand_voice_tone"]).strip() or None
+        if "brand_voice_never_say" in params:
+            rc.brand_voice_never_say = _parse_list("brand_voice_never_say")
+
+        rc.updated_at = _dt.utcnow()
+        db.commit()
+
+    return JSONResponse({"status": "configured", "store_id": store_id}, status_code=201)
+
+
 @app.post("/admin/stores/{store_id}/seed-competitors")
 async def seed_competitors(store_id: int) -> JSONResponse:
     """Seed the default competitor list from config into the DB for this store."""

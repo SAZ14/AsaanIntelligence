@@ -11,51 +11,45 @@ from app.review_sources.instagram import fetch_reviews as fetch_instagram
 log = logging.getLogger("review_sources.pipeline")
 
 
-def _load_config(store_config: dict | None = None) -> dict:
-    sc = store_config or {}
-    # Unified token — same APIFY_TOKEN used across all Apify calls in this project
-    apify_key = sc.get("apify_api_key") or os.environ.get("APIFY_TOKEN", "")
+def _load_config_from_db(store_id: int) -> dict:
+    """Fetch per-store scraping config from ReputationConfig table."""
+    from app.core.db import SessionLocal, ReputationConfig
 
-    maps_terms = sc.get("google_maps_terms")
-    if not maps_terms:
-        env_val = os.environ.get("GOOGLE_MAPS_TERMS", "")
-        if env_val:
-            maps_terms = [
-                q.strip()
-                for q in env_val.replace("'", "").replace('"', "").strip("[]").split(",")
-                if q.strip()
-            ]
-        else:
-            maps_terms = []
+    with SessionLocal() as db:
+        rc = db.query(ReputationConfig).filter(ReputationConfig.store_id == store_id).first()
 
-    maps_location = sc.get("google_maps_location") or os.environ.get("GOOGLE_MAPS_LOCATION", "")
-    foodpanda_url = sc.get("foodpanda_url") or os.environ.get("FOODPANDA_URL", "")
-    foodpanda_keyword = sc.get("foodpanda_keyword") or os.environ.get("FOODPANDA_KEYWORD", "")
-
-    instagram_usernames = sc.get("instagram_usernames")
-    if not instagram_usernames:
-        env_val = os.environ.get("INSTAGRAM_USERNAMES", "")
-        if env_val:
-            instagram_usernames = [
-                u.strip()
-                for u in env_val.replace("'", "").replace('"', "").strip("[]").split(",")
-                if u.strip()
-            ]
-        else:
-            instagram_usernames = []
+    if rc is None:
+        log.warning("No ReputationConfig for store %d — reviews cannot be scraped", store_id)
+        return {
+            "apify_api_key": os.environ.get("APIFY_TOKEN", ""),
+            "google_maps_terms": [],
+            "google_maps_location": "",
+            "foodpanda_url": "",
+            "foodpanda_keyword": "",
+            "instagram_usernames": [],
+        }
 
     return {
-        "apify_api_key": apify_key,
-        "google_maps_terms": maps_terms,
-        "google_maps_location": maps_location,
-        "foodpanda_url": foodpanda_url,
-        "foodpanda_keyword": foodpanda_keyword,
-        "instagram_usernames": instagram_usernames,
+        "apify_api_key": os.environ.get("APIFY_TOKEN", ""),  # global credential, not per-store
+        "google_maps_terms": rc.google_maps_terms or [],
+        "google_maps_location": rc.google_maps_location or "",
+        "foodpanda_url": rc.foodpanda_url or "",
+        "foodpanda_keyword": rc.foodpanda_keyword or "",
+        "instagram_usernames": rc.instagram_usernames or [],
     }
 
 
-def run_pipeline(store_config: dict | None = None) -> list[dict]:
-    cfg = _load_config(store_config)
+def run_pipeline(store_id: int | None = None) -> list[dict]:
+    """Run all review scrapers for one store.
+
+    If store_id is provided, config is loaded from the ReputationConfig DB table.
+    If omitted, returns an empty list (all per-store config must live in the DB).
+    """
+    if store_id is None:
+        log.warning("run_pipeline called without store_id — no reviews scraped")
+        return []
+
+    cfg = _load_config_from_db(store_id)
     all_raw: list[dict] = []
 
     if cfg["apify_api_key"] and cfg["google_maps_terms"]:
@@ -91,7 +85,7 @@ def run_pipeline(store_config: dict | None = None) -> list[dict]:
             log.error("Instagram scrape failed: %s", e)
 
     if not all_raw:
-        log.info("No reviews found from any source.")
+        log.info("No reviews found for store %d.", store_id)
         return []
 
     return normalizer.normalize(all_raw)
