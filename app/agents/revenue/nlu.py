@@ -1,8 +1,8 @@
-﻿"""Understand the owner's free-text questions.
+"""Understand the owner's free-text questions.
 
-Claude maps a message to an intent + reporting period; a deterministic keyword
+The LLM maps a message to an intent + reporting period; a deterministic keyword
 parser is the fallback so the agent (and tests) never hard-depend on the network.
-Claude only parses — all numbers and advice are computed in code.
+The LLM only parses — all numbers and advice are computed in code.
 """
 
 from __future__ import annotations
@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-
-import anthropic
 
 INTENTS = (
     "summary",        # overall revenue/how-did-we-do
@@ -32,22 +30,23 @@ INTENTS = (
 @dataclass
 class ParsedQuery:
     intent: str = "unknown"
-    period: str = "week"          # day | week | month
-    cadence: str = ""             # for subscribe: daily | weekly | monthly
+    period: str = "week"
+    cadence: str = ""
     confidence: str = "low"
     raw: str = ""
 
 
-def parse_query(text: str, client: anthropic.Anthropic | None = None) -> ParsedQuery:
+def parse_query(text: str, client=None) -> ParsedQuery:
     if client is not None:
-        parsed = _parse_with_claude(text, client)
+        parsed = _parse_with_llm(text, client)
         if parsed is not None:
             return parsed
     return _parse_fallback(text)
 
 
-def _parse_with_claude(text: str, client: anthropic.Anthropic) -> ParsedQuery | None:
-    prompt = f"""You are the NLU for a café owner's revenue-advisor WhatsApp line.
+def _parse_with_llm(text: str, client) -> ParsedQuery | None:
+    from app.core.llm import get_model
+    prompt = f"""You are the NLU for a cafe owner's revenue-advisor WhatsApp line.
 Map the message to JSON only (no prose).
 
 Fields:
@@ -66,12 +65,12 @@ Fields:
 Message: "{text}"
 JSON:"""
     try:
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+        resp = client.chat.completions.create(
+            model=get_model(),
             max_tokens=120,
             messages=[{"role": "user", "content": prompt}],
         )
-        body = resp.content[0].text.strip()
+        body = resp.choices[0].message.content.strip()
         if body.startswith("```"):
             body = re.sub(r"^```[a-zA-Z]*\n?", "", body)
             body = re.sub(r"\n?```$", "", body).strip()
@@ -137,4 +136,3 @@ def _norm_period(text: str) -> str:
     if re.search(r"\b(month|monthly|30 ?d)\b", t):
         return "month"
     return "week"
-

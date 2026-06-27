@@ -5,11 +5,8 @@ This agent answers community-focused questions: member stats, leaderboard, deals
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
-
-import anthropic
 
 from app.agents.customer.community.leaderboard import format_leaderboard, weekly_stamp_counts
 from app.agents.customer.community.menu_context import build_menu_context
@@ -21,14 +18,18 @@ STATS_RE = re.compile(r"\b(how many|members|stats|community)\b", re.I)
 LEADERBOARD_RE = re.compile(r"\bleaderboard\b", re.I)
 MENU_RE = re.compile(r"\b(menu|what.?s new|deal|special)\b", re.I)
 
-_anthropic_client: anthropic.Anthropic | None = None
+_zai_client = None
 
 
-def _get_client() -> anthropic.Anthropic | None:
-    global _anthropic_client
-    if _anthropic_client is None and os.environ.get("ANTHROPIC_API_KEY"):
-        _anthropic_client = anthropic.Anthropic()
-    return _anthropic_client
+def _get_client():
+    global _zai_client
+    if _zai_client is None:
+        try:
+            from app.core.llm import get_client
+            _zai_client = get_client()
+        except Exception:
+            pass
+    return _zai_client
 
 
 @dataclass
@@ -79,6 +80,7 @@ def handle_merchant_message(
     body: str,
     store_id: int,
 ) -> AgentReply:
+    from app.core.llm import get_model
     phone = parse_twilio_whatsapp_phone(from_phone)
     if not _is_owner(phone, store_id):
         return AgentReply("This line is for restaurant owners only.")
@@ -119,16 +121,16 @@ def handle_merchant_message(
         for i, doc in enumerate(docs, 1):
             context += f"--- {i} ---\n{doc['content']}\n"
 
-    resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+    resp = client.chat.completions.create(
+        model=get_model(),
         max_tokens=300,
-        system=(
-            f"You are the owner assistant for {config.venue_name}. "
-            f"Answer briefly using only this data:\n{context}"
-        ),
-        messages=[{"role": "user", "content": text}],
+        messages=[
+            {"role": "system", "content": (
+                f"You are the owner assistant for {config.venue_name}. "
+                f"Answer briefly using only this data:\n{context}"
+            )},
+            {"role": "user", "content": text},
+        ],
     )
-    for block in resp.content:
-        if block.type == "text":
-            return AgentReply(block.text.strip())
-    return AgentReply("I couldn't process that command.")
+    reply = resp.choices[0].message.content.strip()
+    return AgentReply(reply if reply else "I couldn't process that command.")

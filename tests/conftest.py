@@ -8,9 +8,8 @@ import os
 # Must happen before ANY app import
 os.environ["DATABASE_URL"] = "sqlite:///./test_central.db"
 os.environ["TWILIO_VALIDATE_SIGNATURE"] = "false"
-os.environ.setdefault("ANTHROPIC_API_KEY", "")
-os.environ.setdefault("SUPABASE_URL", "http://test.supabase.local")
-os.environ.setdefault("SUPABASE_KEY", "test-supabase-key")
+os.environ.setdefault("ZAI_API_KEY", "")          # LLM disabled in tests
+os.environ.setdefault("ZAI_MODEL", "glm-4.7")
 os.environ.setdefault("TWILIO_ACCOUNT_SID", "ACtest1234567890")
 os.environ.setdefault("TWILIO_AUTH_TOKEN", "test-auth-token-xxxx")
 os.environ.setdefault("FIRECRAWL_API_KEY", "")   # disabled in tests

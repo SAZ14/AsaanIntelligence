@@ -398,30 +398,33 @@ async def set_twilio_number(store_id: int, request: Request) -> JSONResponse:
 @app.post("/admin/stores/{store_id}/customer")
 async def configure_venue(store_id: int, request: Request) -> JSONResponse:
     import json as _json
-    from app.core.db import SessionLocal, Store
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
+    from datetime import datetime as _dt
+    from app.core.db import SessionLocal, Store, VenueConfig as OrmVenueConfig
+    params = await _parse_body(request)
     try:
-        owner_phones = _json.loads(params.get("owner_phones", "[]"))
+        owner_phones = params.get("owner_phones", [])
+        if isinstance(owner_phones, str):
+            owner_phones = _json.loads(owner_phones)
     except Exception:
         owner_phones = []
     try:
-        from supabase import create_client
-        sb = create_client(os.environ["SUPABASE_URL"],
-                           os.environ.get("SUPABASE_SERVICE_KEY", os.environ.get("SUPABASE_KEY", "")))
         with SessionLocal() as db:
             store = db.query(Store).filter(Store.id == store_id).first()
             if not store:
                 return JSONResponse({"error": "store not found"}, status_code=404)
-        sb.table("venue_config").upsert({
-            "store_id": store_id,
-            "venue_name": params.get("venue_name", store.name),
-            "stamp_goal": int(params.get("stamp_goal", 5)),
-            "reward_text": params.get("reward_text", "a free drink or dessert"),
-            "winback_days": int(params.get("winback_days", 5)),
-            "code_expiry_days": int(params.get("code_expiry_days", 30)),
-            "owner_phones": owner_phones,
-            "qr_greeting": params.get("qr_greeting") or "",
-        }).execute()
+            row = db.query(OrmVenueConfig).filter(OrmVenueConfig.store_id == store_id).first()
+            if row is None:
+                row = OrmVenueConfig(store_id=store_id, venue_name=params.get("venue_name", store.name))
+                db.add(row)
+            row.venue_name = params.get("venue_name", store.name)
+            row.stamp_goal = int(params.get("stamp_goal", 5))
+            row.reward_text = params.get("reward_text", "a free drink or dessert")
+            row.winback_days = int(params.get("winback_days", 5))
+            row.code_expiry_days = int(params.get("code_expiry_days", 30))
+            row.owner_phones = owner_phones
+            row.qr_greeting = params.get("qr_greeting") or ""
+            row.updated_at = _dt.utcnow()
+            db.commit()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return JSONResponse({"status": "configured", "store_id": store_id})

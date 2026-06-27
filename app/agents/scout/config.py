@@ -1,10 +1,9 @@
-﻿import os
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # --- API keys ---
-# Twilio WhatsApp
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
@@ -14,8 +13,8 @@ FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 APIFY_IG_ACTOR = os.getenv("APIFY_IG_ACTOR", "apify/instagram-post-scraper")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+ZAI_API_KEY = os.getenv("ZAI_API_KEY", "")
+ZAI_MODEL = os.getenv("ZAI_MODEL", "glm-4.7")
 
 # --- Pipeline tuning ---
 FRESHNESS_MINUTES = int(os.getenv("FRESHNESS_MINUTES", "90"))
@@ -23,7 +22,6 @@ IG_POSTS_PER_PROFILE = int(os.getenv("IG_POSTS_PER_PROFILE", "8"))
 MAX_NEW_COMPETITORS = int(os.getenv("MAX_NEW_COMPETITORS", "3"))
 
 # --- Competitor seed list ---
-# Content is always fetched live. These are name/handle/URL pointers only.
 COMPETITORS = [
     {
         "name": "Baskin Robbins Pakistan",
@@ -84,13 +82,11 @@ SUGAR_RUSH = {
 }
 
 
-
 def enabled_sources() -> dict:
     return {
         "firecrawl": bool(FIRECRAWL_API_KEY),
         "instagram": bool(APIFY_TOKEN),
         "google_places": bool(GOOGLE_PLACES_API_KEY),
-        "groq": bool(GROQ_API_KEY),
+        "zai": bool(ZAI_API_KEY),
         "twilio": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),
     }
-

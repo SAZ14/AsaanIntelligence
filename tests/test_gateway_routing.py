@@ -218,10 +218,10 @@ def test_admin_create_chain(client):
     r = client.post("/admin/chains",
                     data="name=Test+Chain",
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data["name"] == "Test Chain"
-    assert "chain_id" in data
+    assert "id" in data
 
 
 def test_admin_create_chain_requires_name(client):
@@ -234,15 +234,15 @@ def test_admin_create_store(client):
     r_chain = client.post("/admin/chains",
                           data="name=Chai+House",
                           headers={"Content-Type": "application/x-www-form-urlencoded"})
-    chain_id = r_chain.json()["chain_id"]
+    chain_id = r_chain.json()["id"]
 
     r = client.post("/admin/stores",
                     data=f"name=F-7+Branch&chain_id={chain_id}&category=cafe&location=F-7%2C+Islamabad",
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data["name"] == "F-7 Branch"
-    assert "store_id" in data
+    assert "id" in data
 
 
 def test_admin_create_store_requires_name(client):
@@ -257,7 +257,7 @@ def test_admin_add_member(client, db_state):
     r = client.post(f"/admin/stores/{db_state['store_a']}/members",
                     content=urlencode({"whatsapp": "whatsapp:+923110001111", "role": "manager"}),
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data["status"] == "added"
 
@@ -279,7 +279,7 @@ def test_admin_set_twilio_number(client, db_state):
     r = client.post(f"/admin/stores/{db_state['store_a']}/twilio",
                     content=urlencode({"whatsapp_number": "whatsapp:+13001234567"}),
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data["whatsapp_number"] == "whatsapp:+13001234567"
 
@@ -312,7 +312,7 @@ def test_admin_configure_pos(client, db_state):
     r = client.post(f"/admin/stores/{db_state['store_a']}/pos",
                     data=f"pos_type=csv&config={config}&mapping=cafe_generic",
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     assert r.json()["status"] == "configured"
 
 
@@ -354,7 +354,7 @@ def test_admin_add_location(client, db_state):
     r = client.post(f"/admin/stores/{db_state['store_a']}/locations",
                     data="address=Shop+3%2C+Main+Blvd&city=Lahore&area=DHA+Phase+5&is_primary=true",
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     assert r.json()["status"] == "added"
 
 
@@ -390,7 +390,7 @@ def test_admin_configure_revenue(client, db_state):
     r = client.post(f"/admin/stores/{db_state['store_a']}/revenue",
                     data=f"config={config}&db_path=:memory:",
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 200
+    assert r.status_code == 201
     assert r.json()["status"] == "configured"
 
 

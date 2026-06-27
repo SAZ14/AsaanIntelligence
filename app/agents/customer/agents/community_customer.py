@@ -5,11 +5,8 @@ messages for every restaurant simultaneously.
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
-
-import anthropic
 
 from app.agents.customer.community.models import CommunityMember, VenueConfig
 from app.agents.customer.community.store import (
@@ -37,14 +34,18 @@ MENU_RE = re.compile(
     re.I,
 )
 
-_anthropic_client: anthropic.Anthropic | None = None
+_zai_client = None
 
 
-def _get_client() -> anthropic.Anthropic | None:
-    global _anthropic_client
-    if _anthropic_client is None and os.environ.get("ANTHROPIC_API_KEY"):
-        _anthropic_client = anthropic.Anthropic()
-    return _anthropic_client
+def _get_client():
+    global _zai_client
+    if _zai_client is None:
+        try:
+            from app.core.llm import get_client
+            _zai_client = get_client()
+        except Exception:
+            pass
+    return _zai_client
 
 
 @dataclass
@@ -66,10 +67,10 @@ def _clean_name(raw: str) -> str:
 def _help_message(name: str, config: VenueConfig) -> str:
     return (
         f"Hi {name}! You can:\n"
-        f"• Text a receipt code (e.g. SR-AB12)\n"
-        f"• Say 'my stamps' for your progress\n"
-        f"• Say 'menu' or 'deals'\n"
-        f"• Say 'leaderboard' for this week's top collectors"
+        f"* Text a receipt code (e.g. SR-AB12)\n"
+        f"* Say 'my stamps' for your progress\n"
+        f"* Say 'menu' or 'deals'\n"
+        f"* Say 'leaderboard' for this week's top collectors"
     )
 
 
@@ -77,26 +78,27 @@ def _chat_reply(
     user_message: str, context: str, member: CommunityMember,
     history: list[dict], store_id: int, phone: str,
 ) -> str:
+    from app.core.llm import get_model
     client = _get_client()
     if not client:
         return (
             f"Hi {member.name}! Ask me about the menu or deals, "
             "say 'my stamps', or text a receipt code like SR-AB12."
         )
-    messages = history[-6:]
-    messages.append({"role": "user", "content": user_message})
-    resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
-        system=(
-            f"You are a friendly employee at the café chatting on WhatsApp. "
-            f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
-            f"Be warm and conversational. Naturally steer towards the café, menu, deals, or stamps.\n\n"
-            f"ALWAYS use exact prices from the MENU below.\n\n{context}"
-        ),
-        messages=messages,
+    system_content = (
+        f"You are a friendly employee at the cafe chatting on WhatsApp. "
+        f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
+        f"Be warm and conversational. Naturally steer towards the cafe, menu, deals, or stamps.\n\n"
+        f"ALWAYS use exact prices from the MENU below.\n\n{context}"
     )
-    reply = resp.content[0].text.strip()
+    messages = list(history[-6:])
+    messages.append({"role": "user", "content": user_message})
+    resp = client.chat.completions.create(
+        model=get_model(),
+        max_tokens=300,
+        messages=[{"role": "system", "content": system_content}] + messages,
+    )
+    reply = resp.choices[0].message.content.strip()
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
     save_chat_session(store_id, phone, history[-6:])

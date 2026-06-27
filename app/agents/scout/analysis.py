@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import json
 import logging
 import re
@@ -83,22 +83,20 @@ COMMAND_INSTRUCTIONS = {
 
 
 def _get_client():
-    if not _cfg.GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY not set")
+    if not _cfg.ZAI_API_KEY:
+        raise RuntimeError("ZAI_API_KEY not set")
     from openai import OpenAI
-    return OpenAI(api_key=_cfg.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+    return OpenAI(api_key=_cfg.ZAI_API_KEY, base_url="https://open.bigmodel.cn/api/paas/v4/")
 
 
 def _extract_json(text: str) -> list:
     text = text.strip()
-    # Strip markdown code fences
     text = re.sub(r"^```[a-z]*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
     text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Try to find a JSON array in the text
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if match:
             try:
@@ -108,51 +106,30 @@ def _extract_json(text: str) -> list:
     return []
 
 
-GROQ_FALLBACK_MODELS = ["llama-3.1-8b-instant", "gemma2-9b-it"]
-
-
 def _chat(system: str, user: str) -> str:
-    """Call Groq with automatic fallback to smaller models on rate limit (429)."""
     client = _get_client()
-    models_to_try = [_cfg.GROQ_MODEL] + GROQ_FALLBACK_MODELS
-
-    last_exc = None
-    for model in models_to_try:
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=0.4,
-            )
-            if model != _cfg.GROQ_MODEL:
-                logger.info("Used fallback model %s", model)
-            return resp.choices[0].message.content
-        except Exception as exc:
-            err = str(exc)
-            if "429" in err or "rate_limit" in err.lower() or "token" in err.lower():
-                logger.warning("Groq model %s rate-limited, trying next fallback: %s", model, err[:120])
-                last_exc = exc
-                continue
-            raise  # non-rate-limit errors bubble up immediately
-
-    raise last_exc
+    resp = client.chat.completions.create(
+        model=_cfg.ZAI_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.4,
+    )
+    return resp.choices[0].message.content
 
 
-MAX_ENRICH = 60  # cap to save daily token quota
+MAX_ENRICH = 60
 
 
 def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
     """Batch enrich findings with ai_summary and relevance_score."""
     if not findings:
         return findings
-    if not _cfg.GROQ_API_KEY:
-        logger.warning("Groq disabled — skipping enrichment")
+    if not _cfg.ZAI_API_KEY:
+        logger.warning("ZAI disabled — skipping enrichment")
         return findings
 
-    # Skip findings that were already enriched in a prior run
     to_enrich = [f for f in findings if not f.ai_summary][:MAX_ENRICH]
     if not to_enrich:
         return findings
@@ -186,7 +163,7 @@ def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
                     elif finding.relevance_score is None:
                         finding.relevance_score = 5
         except Exception as exc:
-            logger.error("Groq enrichment failed for batch %d: %s", i // BATCH, exc)
+            logger.error("ZAI enrichment failed for batch %d: %s", i // BATCH, exc)
             for finding in batch:
                 if finding.relevance_score is None:
                     finding.relevance_score = 5
@@ -214,14 +191,13 @@ _VALID_INTENTS = {"scout", "alerts", "competitors", "campaigns", "opportunities"
 
 
 def classify_intent(message: str) -> str:
-    """Map a free-form user message to the closest pipeline command using a fast small model."""
-    if not _cfg.GROQ_API_KEY:
+    """Map a free-form user message to the closest pipeline command."""
+    if not _cfg.ZAI_API_KEY:
         return "scout"
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=_cfg.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+        client = _get_client()
         resp = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=_cfg.ZAI_MODEL,
             messages=[
                 {"role": "system", "content": _INTENT_SYSTEM},
                 {"role": "user", "content": message},
@@ -244,10 +220,10 @@ def build_report(command: str, findings: list[FindingSchema], freshness_note: st
     if cmd == "help":
         return COMMAND_INSTRUCTIONS["help"]
 
-    if not _cfg.GROQ_API_KEY:
+    if not _cfg.ZAI_API_KEY:
         return (
             f"{freshness_note}\n\n"
-            "AI analysis unavailable (GROQ_API_KEY not set). "
+            "AI analysis unavailable (ZAI_API_KEY not set). "
             f"Found {len(findings)} raw findings but cannot generate a report."
         )
 
@@ -260,7 +236,6 @@ def build_report(command: str, findings: list[FindingSchema], freshness_note: st
 
     instruction = COMMAND_INSTRUCTIONS.get(cmd, COMMAND_INSTRUCTIONS["scout"])
 
-    # Sort by relevance desc, cap at 25
     top = sorted(findings, key=lambda f: -(f.relevance_score or 0))[:25]
 
     findings_text = "\n\n".join(
@@ -285,10 +260,9 @@ def build_report(command: str, findings: list[FindingSchema], freshness_note: st
         report = _chat(REPORT_SYSTEM, prompt)
         return f"{freshness_note}\n\n{report}"
     except Exception as exc:
-        logger.error("Groq report generation failed: %s", exc)
+        logger.error("ZAI report generation failed: %s", exc)
         return (
             f"{freshness_note}\n\n"
             f"Report generation failed: {exc}. "
             f"Raw findings count: {len(findings)}."
         )
-

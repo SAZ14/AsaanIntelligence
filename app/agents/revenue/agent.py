@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-import anthropic
-
 from app.models.canonical import MenuItem, Order, Staff
 from app.agents.revenue.analytics import (
     RevenueDigest,
@@ -63,7 +61,7 @@ class RevenueAgent:
         menu: dict[str, MenuItem] | None = None,
         staff: dict[str, Staff] | None = None,
         config: RevenueConfig | None = None,
-        client: anthropic.Anthropic | None = None,
+        client=None,
         as_of: date | None = None,
         data_dir=None,
     ) -> None:
@@ -396,7 +394,7 @@ def run_revenue_agent(
     menu: dict[str, MenuItem] | None = None,
     staff: dict[str, Staff] | None = None,
     config: RevenueConfig | None = None,
-    client: anthropic.Anthropic | None = None,
+    client=None,
     as_of: date | None = None,
     phone: str = "+920000000000",
 ) -> list[RevenueReply]:

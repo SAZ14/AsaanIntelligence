@@ -1,15 +1,15 @@
-﻿"""Integrity agent — LLM reasoning over a deterministic financial audit.
+"""Integrity agent — LLM reasoning over a deterministic financial audit.
 
 The agent never invents numbers. It runs two exact, deterministic engines —
 ``analyze_integrity`` (behavioural leakage) and ``reconcile_payments`` (payment /
 profit / tax reconciliation) — turns their output into a ranked list of
-findings, then uses Claude to:
+findings, then uses the LLM to:
 
   * write an owner-facing executive summary,
   * attach a concrete recommended action to each finding,
   * answer free-form questions about the audited data.
 
-If no Anthropic client / API key is available, every LLM step degrades to a
+If no LLM client / API key is available, every LLM step degrades to a
 deterministic fallback so the agent still produces a complete report offline.
 """
 
@@ -21,29 +21,20 @@ from app.agents.integrity.analysis.integrity import IntegrityReport, analyze_int
 from app.agents.integrity.analysis.reconciliation import ReconciliationReport, reconcile_payments
 from app.models.canonical import MenuItem, Order, Staff
 
-try:  # anthropic is an optional runtime dep; the agent works without it.
-    import anthropic
-except Exception:  # pragma: no cover - import guard
-    anthropic = None  # type: ignore
-
 DEFAULT_VENUE_NAME = "Restaurant"
-SUMMARY_MODEL = "claude-sonnet-4-6"
-ACTION_MODEL = "claude-haiku-4-5-20251001"
 
-# Severity thresholds on monetary impact (PKR over the analysed period).
 SEVERITY_HIGH = 10_000.0
 SEVERITY_MEDIUM = 2_000.0
 
-# How many findings get an individually-tailored LLM action.
 MAX_LLM_ACTIONS = 10
 
 
 @dataclass
 class Finding:
     rank: int
-    category: str  # theft / comp_abuse / discount_abuse / payment_discrepancy / tax_anomaly
+    category: str
     subject: str
-    severity: str  # high / medium / low
+    severity: str
     monetary_impact: float
     evidence: str
     recommended_action: str = ""
@@ -60,8 +51,6 @@ class IntegrityAgentReport:
     llm_used: bool = False
 
 
-# ── Severity / findings (deterministic) ──
-
 def _severity(impact: float) -> str:
     if impact >= SEVERITY_HIGH:
         return "high"
@@ -73,7 +62,6 @@ def _severity(impact: float) -> str:
 def build_findings(
     integrity: IntegrityReport, reconciliation: ReconciliationReport
 ) -> list[Finding]:
-    """Merge both engines' output into one impact-ranked list of findings."""
     raw: list[Finding] = []
 
     for si in integrity.staff_integrity:
@@ -116,7 +104,7 @@ def build_findings(
             severity=_severity(reconciliation.payment_mismatch_abs_value),
             monetary_impact=reconciliation.payment_mismatch_abs_value,
             evidence=(
-                f"collected ≠ expected on {reconciliation.payment_mismatch_count} orders; "
+                f"collected != expected on {reconciliation.payment_mismatch_count} orders; "
                 f"net unreconciled PKR {reconciliation.net_unreconciled:,.0f}"
             ),
         ))
@@ -128,7 +116,7 @@ def build_findings(
             severity=_severity(reconciliation.tax_anomaly_value),
             monetary_impact=reconciliation.tax_anomaly_value,
             evidence=f"orders taxed at the wrong cash/digital rate; "
-                     f"≈ PKR {reconciliation.tax_anomaly_value:,.0f} impact",
+                     f"approx PKR {reconciliation.tax_anomaly_value:,.0f} impact",
         ))
 
     raw.sort(key=lambda f: f.monetary_impact, reverse=True)
@@ -136,8 +124,6 @@ def build_findings(
         f.rank = i
     return raw
 
-
-# ── Context for the LLM (exact numbers only) ──
 
 def _context(report: IntegrityAgentReport) -> str:
     integ = report.integrity
@@ -162,7 +148,7 @@ def _context(report: IntegrityAgentReport) -> str:
     ]
     for f in report.findings:
         lines.append(
-            f"  {f.rank}. [{f.severity}] {f.category} — {f.subject}: "
+            f"  {f.rank}. [{f.severity}] {f.category} -- {f.subject}: "
             f"PKR {f.monetary_impact:,.0f}. {f.evidence}"
         )
     return "\n".join(lines)
@@ -194,9 +180,8 @@ def _fallback_summary(report: IntegrityAgentReport) -> str:
     return " ".join(parts)
 
 
-# ── LLM steps (each degrades gracefully) ──
-
 def _generate_summary(client, report: IntegrityAgentReport) -> str | None:
+    from app.core.llm import get_model
     prompt = (
         "You are a restaurant loss-prevention analyst. Write a concise, owner-facing "
         "executive summary (3-5 sentences) of this POS integrity audit. Use the exact "
@@ -204,17 +189,18 @@ def _generate_summary(client, report: IntegrityAgentReport) -> str | None:
         + _context(report)
     )
     try:
-        resp = client.messages.create(
-            model=SUMMARY_MODEL,
+        resp = client.chat.completions.create(
+            model=get_model(),
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.content[0].text.strip()
+        return resp.choices[0].message.content.strip()
     except Exception:
         return None
 
 
 def _recommend_action(client, finding: Finding, venue_name: str) -> str | None:
+    from app.core.llm import get_model
     prompt = (
         f"Restaurant: {venue_name}. A POS integrity audit produced this finding:\n"
         f"Category: {finding.category}\nSubject: {finding.subject}\n"
@@ -223,12 +209,12 @@ def _recommend_action(client, finding: Finding, venue_name: str) -> str | None:
         "No preamble, just the action."
     )
     try:
-        resp = client.messages.create(
-            model=ACTION_MODEL,
+        resp = client.chat.completions.create(
+            model=get_model(),
             max_tokens=80,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.content[0].text.strip()
+        return resp.choices[0].message.content.strip()
     except Exception:
         return None
 
@@ -236,15 +222,12 @@ def _recommend_action(client, finding: Finding, venue_name: str) -> str | None:
 def _make_client(client):
     if client is not None:
         return client
-    if anthropic is None:
-        return None
     try:
-        return anthropic.Anthropic()
+        from app.core.llm import get_client
+        return get_client()
     except Exception:
         return None
 
-
-# ── Public API ──
 
 def run_integrity_agent(
     orders: list[Order],
@@ -283,22 +266,21 @@ def run_integrity_agent(
 
 
 def answer_question(report: IntegrityAgentReport, question: str, client=None) -> str:
-    """Answer a free-form question grounded in the audit's exact figures."""
+    from app.core.llm import get_model
     llm = _make_client(client)
     if llm is None:
-        return "LLM unavailable — set ANTHROPIC_API_KEY to enable Q&A about the audit."
+        return "LLM unavailable — set ZAI_API_KEY to enable Q&A about the audit."
     prompt = (
         "Answer the question using ONLY the audit data below. Cite exact figures. "
         "If the data does not contain the answer, say so.\n\n"
         f"{_context(report)}\n\nQuestion: {question}"
     )
     try:
-        resp = llm.messages.create(
-            model=SUMMARY_MODEL,
+        resp = llm.chat.completions.create(
+            model=get_model(),
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.content[0].text.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         return f"[question answering failed: {e}]"
-

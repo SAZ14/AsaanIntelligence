@@ -257,13 +257,13 @@ def test_ranking_keyword_also_triggers_leaderboard():
     assert reply.body  # non-empty
 
 
-# ── No Anthropic key → deterministic fallback ─────────────────────────────────
+# ── No ZAI key → deterministic fallback ─────────────────────────────────────
 
 def test_no_llm_key_returns_help_fallback(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("ZAI_API_KEY", "")
     # Reset cached client
     import app.agents.customer.agents.community_customer as mod
-    mod._anthropic_client = None
+    mod._zai_client = None
 
     reply = _call("Tell me about the croissant", member=_member())
     assert reply.body  # must return something even without LLM

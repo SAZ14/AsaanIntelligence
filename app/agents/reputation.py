@@ -5,8 +5,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-import anthropic
-
 from app.models.canonical import MenuItem, Order, Review, Staff
 
 
@@ -227,8 +225,9 @@ def correlate_review(
 
 def classify_reviews_batch(
     reviews: list[ReviewAnalysis],
-    client: anthropic.Anthropic,
+    client,
 ) -> list[ReviewAnalysis]:
+    from app.core.llm import get_model
     for ra in reviews:
         prompt = f"""Classify this review. Respond with EXACTLY two words separated by a comma: issue_class,sentiment
 
@@ -240,12 +239,12 @@ Review (rating {ra.rating}/5): "{ra.text}"
 Reply format: issue_class,sentiment"""
 
         try:
-            resp = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+            resp = client.chat.completions.create(
+                model=get_model(),
                 max_tokens=20,
                 messages=[{"role": "user", "content": prompt}],
             )
-            parts = resp.content[0].text.strip().lower().split(",")
+            parts = resp.choices[0].message.content.strip().lower().split(",")
             if len(parts) >= 2:
                 issue = parts[0].strip()
                 sent = parts[1].strip()
@@ -304,10 +303,11 @@ def detect_patterns(
 
 def draft_replies(
     reviews: list[ReviewAnalysis],
-    client: anthropic.Anthropic,
+    client,
     venue_name: str = DEFAULT_VENUE_NAME,
     brand_voice: str = DEFAULT_BRAND_VOICE,
 ) -> list[ReviewAnalysis]:
+    from app.core.llm import get_model
     for ra in reviews:
         if ra.rating >= 5 and ra.issue_class == "praise":
             tone = "thankful, invite them to try something new"
@@ -339,12 +339,12 @@ Issue: {ra.issue_class}
 Reply as the venue. Be specific to their experience, not generic. Do not use emojis."""
 
         try:
-            resp = client.messages.create(
-                model="claude-sonnet-4-6",
+            resp = client.chat.completions.create(
+                model=get_model(),
                 max_tokens=150,
                 messages=[{"role": "user", "content": prompt}],
             )
-            ra.draft_reply = resp.content[0].text.strip()
+            ra.draft_reply = resp.choices[0].message.content.strip()
         except Exception as e:
             ra.draft_reply = f"[draft generation failed: {e}]"
 
@@ -360,10 +360,11 @@ def run_reputation_agent(
     menu: dict[str, MenuItem],
     venue_name: str = DEFAULT_VENUE_NAME,
     brand_voice: str = DEFAULT_BRAND_VOICE,
-    client: anthropic.Anthropic | None = None,
+    client=None,
 ) -> ReputationReport:
     if client is None:
-        client = anthropic.Anthropic()
+        from app.core.llm import get_client
+        client = get_client()
 
     analyses: list[ReviewAnalysis] = []
     for r in reviews:
