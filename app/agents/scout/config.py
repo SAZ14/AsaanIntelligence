@@ -9,9 +9,12 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 TWILIO_VALIDATE_SIGNATURE = os.getenv("TWILIO_VALIDATE_SIGNATURE", "false").lower() == "true"
 
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 APIFY_IG_ACTOR = os.getenv("APIFY_IG_ACTOR", "apify/instagram-post-scraper")
+APIFY_WEBSITE_ACTOR = os.getenv("APIFY_WEBSITE_ACTOR", "apify/website-content-crawler")
+APIFY_SEARCH_ACTOR = os.getenv("APIFY_SEARCH_ACTOR", "apify/google-search-scraper")
+APIFY_MAPS_ACTOR = os.getenv("APIFY_MAPS_ACTOR", "apify/google-maps-reviews-scraper")
+APIFY_REVIEWS_PER_COMPETITOR = int(os.getenv("APIFY_REVIEWS_PER_COMPETITOR", "20"))
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 ZAI_API_KEY = os.getenv("ZAI_API_KEY", "")
 ZAI_MODEL = os.getenv("ZAI_MODEL", "glm-4.7")
@@ -84,8 +87,9 @@ SUGAR_RUSH = {
 
 def enabled_sources() -> dict:
     return {
-        "firecrawl": bool(FIRECRAWL_API_KEY),
+        "web": bool(APIFY_TOKEN),            # website crawl + web search via Apify
         "instagram": bool(APIFY_TOKEN),
+        "google_reviews": bool(APIFY_TOKEN), # deep Google Maps reviews via Apify
         "google_places": bool(GOOGLE_PLACES_API_KEY),
         "zai": bool(ZAI_API_KEY),
         "twilio": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),

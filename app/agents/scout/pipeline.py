@@ -71,20 +71,20 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     ok: list[str] = []
     failed: list[str] = []
 
-    if sources["firecrawl"]:
+    if sources["web"]:
         try:
-            from app.agents.scout.scrapers.firecrawl_scraper import find_menu_and_offers
-            fc_findings: list[FindingSchema] = []
+            from app.agents.scout.scrapers.web_scraper import find_menu_and_offers
+            web_findings: list[FindingSchema] = []
             for comp in competitors:
-                fc_findings.extend(find_menu_and_offers(comp))
-            findings.extend(fc_findings)
-            ok.append("firecrawl")
-            logger.info("Firecrawl: %d findings", len(fc_findings))
+                web_findings.extend(find_menu_and_offers(comp))
+            findings.extend(web_findings)
+            ok.append("web")
+            logger.info("Web scraper: %d findings", len(web_findings))
         except Exception as exc:
-            logger.error("Firecrawl scraper failed: %s", exc)
-            failed.append("firecrawl")
+            logger.error("Web scraper failed: %s", exc)
+            failed.append("web")
     else:
-        logger.info("Firecrawl skipped — no API key")
+        logger.info("Web scraper skipped — no APIFY_TOKEN")
 
     if sources["instagram"]:
         try:
@@ -108,6 +108,21 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
             failed.append("instagram")
     else:
         logger.info("Instagram skipped — no APIFY_TOKEN")
+
+    if sources["google_reviews"]:
+        try:
+            from app.agents.scout.scrapers.google_reviews_scraper import fetch_reviews
+            gr_findings: list[FindingSchema] = []
+            for comp in competitors:
+                gr_findings.extend(fetch_reviews(comp))
+            findings.extend(gr_findings)
+            ok.append("google_reviews")
+            logger.info("Google Maps Reviews: %d findings", len(gr_findings))
+        except Exception as exc:
+            logger.error("Google Maps Reviews scraper failed: %s", exc)
+            failed.append("google_reviews")
+    else:
+        logger.info("Google Maps Reviews skipped — no APIFY_TOKEN")
 
     if sources["google_places"]:
         try:

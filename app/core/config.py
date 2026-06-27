@@ -18,7 +18,6 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_INTERNAL_FROM = os.getenv("TWILIO_INTERNAL_FROM", "")
 
 # ── Scout-specific ──
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 

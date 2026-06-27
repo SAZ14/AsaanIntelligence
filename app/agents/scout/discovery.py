@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Optional
 
-from app.agents.scout.config import COMPETITORS, MAX_NEW_COMPETITORS, FIRECRAWL_API_KEY, GOOGLE_PLACES_API_KEY
+from app.agents.scout.config import COMPETITORS, MAX_NEW_COMPETITORS, APIFY_TOKEN, GOOGLE_PLACES_API_KEY
 from app.core.db import Competitor, SessionLocal, Store
 
 logger = logging.getLogger(__name__)
@@ -36,18 +36,18 @@ def _extract_ig_handle(url_or_text: str) -> Optional[str]:
     return None
 
 
-def _resolve_handle_via_firecrawl(name: str, city: str) -> Optional[str]:
-    if not FIRECRAWL_API_KEY:
+def _resolve_handle_via_web_search(name: str, city: str) -> Optional[str]:
+    if not APIFY_TOKEN:
         return None
     try:
-        from app.agents.scout.scrapers.firecrawl_scraper import search
+        from app.agents.scout.scrapers.web_scraper import search
         results = search(f"{name} {city} instagram", limit=5)
         for r in results:
             handle = _extract_ig_handle(r.get("url", "") + " " + r.get("description", ""))
             if handle:
                 return handle
     except Exception as exc:
-        logger.warning("Firecrawl handle resolution failed for %r: %s", name, exc)
+        logger.warning("Web search handle resolution failed for %r: %s", name, exc)
     return None
 
 
@@ -75,7 +75,7 @@ def confirm_seed_competitors(store_id: int) -> None:
         for row in rows:
             updated = False
             if row.instagram_handle is None:
-                handle = _resolve_handle_via_firecrawl(row.name, city)
+                handle = _resolve_handle_via_web_search(row.name, city)
                 if handle:
                     row.instagram_handle = handle
                     updated = True
@@ -92,14 +92,14 @@ def confirm_seed_competitors(store_id: int) -> None:
 
 def discover_new_competitors(store_id: int) -> None:
     """Search for new competitors not already in the store's DB."""
-    if not FIRECRAWL_API_KEY:
-        logger.info("Competitor discovery skipped — Firecrawl not configured")
+    if not APIFY_TOKEN:
+        logger.info("Competitor discovery skipped — APIFY_TOKEN not configured")
         return
 
     city, brand_name = _store_context(store_id)
     category = _store_category(store_id)
 
-    from app.agents.scout.scrapers.firecrawl_scraper import search
+    from app.agents.scout.scrapers.web_scraper import search
 
     discovery_queries = [
         f"best {category} {city} 2026",

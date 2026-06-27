@@ -294,19 +294,19 @@ def test_internal_handler_defaults_to_integrity(store_id):
 
 # ── Discovery skips when no API key ──────────────────────────────────────────
 
-def test_discover_new_competitors_skips_without_firecrawl(store_id, caplog):
+def test_discover_new_competitors_skips_without_apify(store_id, caplog):
     from app.agents.scout.discovery import discover_new_competitors
-    with patch("app.agents.scout.discovery.FIRECRAWL_API_KEY", ""):
+    with patch("app.agents.scout.discovery.APIFY_TOKEN", ""):
         discover_new_competitors(store_id)
     comps = get_all_competitors(store_id)
     assert comps == []  # nothing added
 
 
-def test_confirm_seed_skips_handle_resolution_without_firecrawl(store_id):
+def test_confirm_seed_skips_handle_resolution_without_apify(store_id):
     seed_competitors_for_store(store_id)
-    with patch("app.agents.scout.discovery.FIRECRAWL_API_KEY", ""):
+    with patch("app.agents.scout.discovery.APIFY_TOKEN", ""):
         from app.agents.scout.discovery import confirm_seed_competitors
-        confirm_seed_competitors(store_id)  # should not raise or call firecrawl
+        confirm_seed_competitors(store_id)  # should not raise or call web search
     # Handles that were already None remain None (no fake resolution)
     comps = {c["name"]: c for c in get_all_competitors(store_id)}
     loafology = comps.get("Loafology Bakery & Cafe")
