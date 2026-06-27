@@ -124,21 +124,6 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     else:
         logger.info("Google Maps Reviews skipped — no APIFY_TOKEN")
 
-    if sources["google_places"]:
-        try:
-            from app.agents.scout.scrapers.places_scraper import fetch_reviews_and_rating
-            gp_findings: list[FindingSchema] = []
-            for comp in competitors:
-                gp_findings.extend(fetch_reviews_and_rating(comp))
-            findings.extend(gp_findings)
-            ok.append("google_places")
-            logger.info("Google Places: %d findings", len(gp_findings))
-        except Exception as exc:
-            logger.error("Google Places scraper failed: %s", exc)
-            failed.append("google_places")
-    else:
-        logger.info("Google Places skipped — no API key")
-
     return findings, ok, failed
 
 

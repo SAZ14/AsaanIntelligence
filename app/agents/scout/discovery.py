@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Optional
 
-from app.agents.scout.config import COMPETITORS, MAX_NEW_COMPETITORS, APIFY_TOKEN, GOOGLE_PLACES_API_KEY
+from app.agents.scout.config import COMPETITORS, MAX_NEW_COMPETITORS, APIFY_TOKEN
 from app.core.db import Competitor, SessionLocal, Store
 
 logger = logging.getLogger(__name__)
@@ -51,18 +51,6 @@ def _resolve_handle_via_web_search(name: str, city: str) -> Optional[str]:
     return None
 
 
-def _resolve_place_id(name: str, city: str) -> Optional[str]:
-    if not GOOGLE_PLACES_API_KEY:
-        return None
-    try:
-        from app.agents.scout.scrapers.places_scraper import _text_search
-        places = _text_search(f"{name} {city}")
-        if places:
-            return places[0].get("id")
-    except Exception as exc:
-        logger.warning("Places resolve failed for %r: %s", name, exc)
-    return None
-
 
 def confirm_seed_competitors(store_id: int) -> None:
     """Resolve missing handles/place_ids for seed competitors of a store."""
@@ -80,12 +68,6 @@ def confirm_seed_competitors(store_id: int) -> None:
                     row.instagram_handle = handle
                     updated = True
                     logger.info("Resolved IG handle for %r: %s", row.name, handle)
-            if row.place_id is None:
-                place_id = _resolve_place_id(row.name, city)
-                if place_id:
-                    row.place_id = place_id
-                    updated = True
-                    logger.info("Resolved Place ID for %r: %s", row.name, place_id)
             if updated:
                 db.commit()
 
