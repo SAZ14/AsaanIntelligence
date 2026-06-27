@@ -140,8 +140,8 @@ def process_store_reviews(store: dict, wa: WhatsAppConfig) -> int:
         never_say=store_config.get("brand_never_say", BrandVoice().never_say)
     )
 
-    import anthropic
-    anth_client = anthropic.Anthropic()
+    from app.agents.reputation import ZaiClient
+    zai_client = ZaiClient()
 
     report = run_reputation_agent(
         reviews=reviews_models,
@@ -149,7 +149,7 @@ def process_store_reviews(store: dict, wa: WhatsAppConfig) -> int:
         staff=pos_data.staff,
         menu=pos_data.menu,
         brand=brand,
-        client=anth_client
+        client=zai_client
     )
 
     # 6. Save each finding and alert owners

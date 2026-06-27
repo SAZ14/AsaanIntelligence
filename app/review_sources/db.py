@@ -122,7 +122,8 @@ def save_review_finding(
             post_date = None
 
         try:
-            client.table("findings").upsert({
+            row_res = client.table("findings").select("id").eq("content_hash", review["hash"]).execute()
+            payload = {
                 "store_id": store_id,
                 "run_id": run_id,
                 "competitor_name": store_name,
@@ -136,7 +137,11 @@ def save_review_finding(
                 "ai_summary": json.dumps(ai_summary),
                 "relevance_score": relevance_score,
                 "content_hash": review["hash"]
-            }, on_conflict="content_hash").execute()
+            }
+            if row_res.data:
+                client.table("findings").update(payload).eq("id", row_res.data[0]["id"]).execute()
+            else:
+                client.table("findings").insert(payload).execute()
             return True
         except Exception:
             return False

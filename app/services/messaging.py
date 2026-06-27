@@ -40,6 +40,32 @@ def twilio_whatsapp_digits(env_key: str = "TWILIO_WHATSAPP_CUSTOMER_FROM") -> st
     return parse_twilio_whatsapp_phone(raw).lstrip("+")
 
 
+def split_message(body: str, max_chars: int = 1500) -> list[str]:
+    if len(body) <= max_chars:
+        return [body]
+    parts = []
+    current_part = []
+    current_length = 0
+    for line in body.splitlines(keepends=True):
+        if current_length + len(line) > max_chars:
+            if current_part:
+                parts.append("".join(current_part).strip())
+                current_part = []
+                current_length = 0
+            if len(line) > max_chars:
+                for i in range(0, len(line), max_chars):
+                    parts.append(line[i:i+max_chars].strip())
+            else:
+                current_part.append(line)
+                current_length = len(line)
+        else:
+            current_part.append(line)
+            current_length += len(line)
+    if current_part:
+        parts.append("".join(current_part).strip())
+    return parts
+
+
 def send_whatsapp_text(
     to_phone: str,
     body: str,
@@ -63,8 +89,18 @@ def send_whatsapp_text(
     if not from_number.startswith("whatsapp:"):
         from_number = f"whatsapp:{from_number}"
     client = Client(account_sid, auth_token)
-    msg = client.messages.create(body=body, from_=from_number, to=to_addr)
-    return msg.sid
+
+    parts = split_message(body, max_chars=1500)
+    sids = []
+    for part in parts:
+        try:
+            msg = client.messages.create(body=part, from_=from_number, to=to_addr)
+            sids.append(msg.sid)
+        except Exception as e:
+            import logging
+            logging.error(f"[WHATSAPP ERROR] Failed to send message to {to_addr}: {e}\nMessage Body:\n{part}", exc_info=True)
+            sids.append("failed-sid")
+    return ",".join(sids)
 
 
 async def send_whatsapp_typing_indicator(message_sid: str) -> None:

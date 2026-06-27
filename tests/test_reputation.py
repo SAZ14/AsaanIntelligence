@@ -325,8 +325,8 @@ def test_process_reputation_owner_reply_chat_fallback(monkeypatch):
     import app.database
     monkeypatch.setattr(app.database, "supabase", MockSupabase())
     
-    import anthropic
-    monkeypatch.setattr(anthropic, "Anthropic", MockAnthropic)
+    import app.agents.reputation
+    monkeypatch.setattr(app.agents.reputation, "ZaiClient", MockAnthropic)
     
     # Mock review_db.get_pending_finding
     from app.review_sources import db as review_db
