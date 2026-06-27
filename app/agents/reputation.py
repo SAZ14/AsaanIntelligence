@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from app.models.canonical import MenuItem, Order, Review, Staff
+
+logger = logging.getLogger(__name__)
 
 
 # ── Config ──
@@ -20,6 +23,9 @@ ISSUE_CLASSES = [
     "service_speed", "staff_attitude", "food_quality",
     "price", "ambiance", "praise", "other",
 ]
+
+CLASSIFIER_BATCH_SIZE = 15
+HISTORICAL_CUTOFF_DAYS = 7
 
 DAY_KEYWORDS = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -41,6 +47,13 @@ DAYPART_HOURS = {
 
 
 # ── Data classes ──
+
+@dataclass
+class BrandVoice:
+    name: str = DEFAULT_VENUE_NAME
+    tone: str = DEFAULT_BRAND_VOICE
+    never_say: list[str] = field(default_factory=list)
+
 
 @dataclass
 class VisitContext:
@@ -221,39 +234,75 @@ def correlate_review(
     return ctx
 
 
-# ── LLM classification ──
+# ── LLM classification (batched) ──
 
 def classify_reviews_batch(
     reviews: list[ReviewAnalysis],
     client,
+    cutoff_days: int = HISTORICAL_CUTOFF_DAYS,
 ) -> list[ReviewAnalysis]:
     from app.core.llm import get_model
+
+    now = datetime.utcnow()
+    historical: list[ReviewAnalysis] = []
+    recent: list[ReviewAnalysis] = []
+
     for ra in reviews:
-        prompt = f"""Classify this review. Respond with EXACTLY two words separated by a comma: issue_class,sentiment
+        try:
+            posted = datetime.strptime(ra.posted_at[:10], "%Y-%m-%d")
+            age = (now - posted).days
+        except Exception:
+            age = 0
+        if age > cutoff_days:
+            historical.append(ra)
+        else:
+            recent.append(ra)
 
-Issue classes: {', '.join(ISSUE_CLASSES)}
-Sentiments: positive, negative, neutral, mixed
+    # Rule-based for older reviews (no LLM cost)
+    for ra in historical:
+        if ra.rating >= 4:
+            ra.issue_class = "praise"
+            ra.sentiment = "positive"
+        elif ra.rating <= 2:
+            ra.issue_class = "service_speed"
+            ra.sentiment = "negative"
+        else:
+            ra.issue_class = "other"
+            ra.sentiment = "neutral"
 
-Review (rating {ra.rating}/5): "{ra.text}"
-
-Reply format: issue_class,sentiment"""
-
+    # Batch LLM for recent reviews
+    for i in range(0, len(recent), CLASSIFIER_BATCH_SIZE):
+        batch = recent[i : i + CLASSIFIER_BATCH_SIZE]
+        lines = [
+            f"{j}. [Rating {ra.rating}/5] \"{ra.text[:200]}\""
+            for j, ra in enumerate(batch, 1)
+        ]
+        prompt = (
+            f"Classify each review. Reply with one line per review: N. issue_class,sentiment\n"
+            f"Issue classes: {', '.join(ISSUE_CLASSES)}\n"
+            "Sentiments: positive, negative, neutral, mixed\n\n"
+            + "\n".join(lines)
+        )
         try:
             resp = client.chat.completions.create(
                 model=get_model(),
-                max_tokens=20,
+                max_tokens=CLASSIFIER_BATCH_SIZE * 12,
                 messages=[{"role": "user", "content": prompt}],
             )
-            parts = resp.choices[0].message.content.strip().lower().split(",")
-            if len(parts) >= 2:
-                issue = parts[0].strip()
-                sent = parts[1].strip()
-                if issue in ISSUE_CLASSES:
-                    ra.issue_class = issue
-                if sent in ("positive", "negative", "neutral", "mixed"):
-                    ra.sentiment = sent
-        except Exception:
-            pass
+            output = resp.choices[0].message.content.strip()
+            for line in output.split("\n"):
+                m = re.match(r"(\d+)\.\s*(\w+)\s*,\s*(\w+)", line.strip())
+                if m:
+                    idx = int(m.group(1)) - 1
+                    if 0 <= idx < len(batch):
+                        issue = m.group(2).strip().lower()
+                        sent = m.group(3).strip().lower()
+                        if issue in ISSUE_CLASSES:
+                            batch[idx].issue_class = issue
+                        if sent in ("positive", "negative", "neutral", "mixed"):
+                            batch[idx].sentiment = sent
+        except Exception as exc:
+            logger.warning("Batch classify failed: %s", exc)
 
     return reviews
 
@@ -304,10 +353,33 @@ def detect_patterns(
 def draft_replies(
     reviews: list[ReviewAnalysis],
     client,
-    venue_name: str = DEFAULT_VENUE_NAME,
-    brand_voice: str = DEFAULT_BRAND_VOICE,
+    venue_name: str | None = None,
+    brand_voice: str | BrandVoice | None = None,
 ) -> list[ReviewAnalysis]:
     from app.core.llm import get_model
+
+    if isinstance(brand_voice, BrandVoice):
+        effective_venue = venue_name or brand_voice.name or DEFAULT_VENUE_NAME
+        never_say_str = (
+            f"Never use these words/phrases: {', '.join(brand_voice.never_say)}. "
+            if brand_voice.never_say
+            else ""
+        )
+        system_msg = (
+            f"You write public review responses on behalf of {effective_venue}. "
+            f"Tone: {brand_voice.tone}. "
+            f"{never_say_str}"
+            "Reply directly — no quotation marks, no intro like 'Here is a reply:'."
+        )
+    else:
+        effective_venue = venue_name or DEFAULT_VENUE_NAME
+        bv_tone = brand_voice or DEFAULT_BRAND_VOICE
+        system_msg = (
+            f"You write public review responses on behalf of {effective_venue}. "
+            f"Brand voice: {bv_tone}. "
+            "Reply directly — no quotation marks."
+        )
+
     for ra in reviews:
         if ra.rating >= 5 and ra.issue_class == "praise":
             tone = "thankful, invite them to try something new"
@@ -328,21 +400,23 @@ def draft_replies(
                 context_lines.append(f"Staff involved: {ra.correlation.matched_staff_name}")
         context_str = "; ".join(context_lines) if context_lines else "No visit details available"
 
-        prompt = f"""Write a short reply (2-3 sentences) from {venue_name} to this review.
-
-Brand voice: {brand_voice}
-Tone: {tone}
-Review by {ra.reviewer_name} ({ra.rating}/5 on {ra.source}): "{ra.text}"
-Visit context: {context_str}
-Issue: {ra.issue_class}
-
-Reply as the venue. Be specific to their experience, not generic. Do not use emojis."""
+        prompt = (
+            f"Write a short reply (2-3 sentences) from {effective_venue} to this review.\n\n"
+            f"Tone: {tone}\n"
+            f"Review by {ra.reviewer_name} ({ra.rating}/5 on {ra.source}): \"{ra.text}\"\n"
+            f"Visit context: {context_str}\n"
+            f"Issue: {ra.issue_class}\n\n"
+            "Be specific to their experience, not generic. Do not use emojis."
+        )
 
         try:
             resp = client.chat.completions.create(
                 model=get_model(),
                 max_tokens=150,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
+                ],
             )
             ra.draft_reply = resp.choices[0].message.content.strip()
         except Exception as e:
@@ -359,12 +433,15 @@ def run_reputation_agent(
     staff: dict[str, Staff],
     menu: dict[str, MenuItem],
     venue_name: str = DEFAULT_VENUE_NAME,
-    brand_voice: str = DEFAULT_BRAND_VOICE,
+    brand_voice: str | BrandVoice | None = None,
     client=None,
 ) -> ReputationReport:
     if client is None:
         from app.core.llm import get_client
         client = get_client()
+
+    if brand_voice is None:
+        brand_voice = DEFAULT_BRAND_VOICE
 
     analyses: list[ReviewAnalysis] = []
     for r in reviews:
@@ -381,7 +458,7 @@ def run_reputation_agent(
 
     classify_reviews_batch(analyses, client)
     patterns = detect_patterns(analyses)
-    draft_replies(analyses, client, venue_name, brand_voice)
+    draft_replies(analyses, client, venue_name=venue_name, brand_voice=brand_voice)
 
     happy = [
         {"reviewer_name": ra.reviewer_name, "review_id": ra.review_id,
@@ -400,3 +477,216 @@ def run_reputation_agent(
         patterns=patterns,
         happy_reviewers=happy,
     )
+
+
+# ── WhatsApp owner reply handler ──
+
+def process_reputation_owner_reply(from_phone: str, body: str) -> str:
+    """Handle a reputation-related WhatsApp message from an owner/staff member.
+
+    Returns the reply string; the gateway handles sending it back via TwiML.
+    """
+    from app.core.db import (
+        get_stores_for_number, get_user_session, set_user_session,
+        SessionLocal, VenueConfig,
+    )
+    from app.review_sources import db as review_db
+
+    stores = get_stores_for_number(from_phone)
+    if not stores:
+        return "You are not registered as a staff member for any store."
+
+    if len(stores) == 1:
+        active_store = stores[0]
+    else:
+        session = get_user_session(from_phone)
+        matched = next(
+            (s for s in stores if s.id == (session.store_id if session else None)),
+            None,
+        )
+        active_store = matched or stores[0]
+
+    set_user_session(from_phone, active_store.id)
+    store_id = active_store.id
+
+    with SessionLocal() as db:
+        vc = db.query(VenueConfig).filter(VenueConfig.store_id == store_id).first()
+    store_name = (vc.venue_name if vc else None) or active_store.name
+
+    text = body.strip()
+    text_lower = text.lower()
+
+    if text_lower.startswith("post"):
+        finding = review_db.get_pending_finding(store_id)
+        if not finding:
+            return f"[{store_name}] No pending review drafts awaiting confirmation."
+        summary = finding["ai_summary"]
+        summary["status"] = "posted"
+        review_db.update_finding_summary(finding["id"], summary)
+        draft = summary.get("draft_reply", "")
+        return f"[{store_name}] Published draft response:\n\n{draft}"
+
+    if text_lower.startswith("edit"):
+        new_draft = text[4:].strip()
+        if not new_draft:
+            return f"[{store_name}] Reply with *EDIT <your new message>* to revise the draft."
+        finding = review_db.get_pending_finding(store_id)
+        if not finding:
+            return f"[{store_name}] No pending review draft found to edit."
+        summary = finding["ai_summary"]
+        summary["draft_reply"] = new_draft
+        review_db.update_finding_summary(finding["id"], summary)
+        return (
+            f"[{store_name}] Draft updated to:\n\n{new_draft}\n\n"
+            "Reply *POST* to publish or *IGNORE* to skip."
+        )
+
+    if text_lower.startswith("ignore"):
+        finding = review_db.get_pending_finding(store_id)
+        if not finding:
+            return f"[{store_name}] No pending review draft to ignore."
+        summary = finding["ai_summary"]
+        summary["status"] = "ignored"
+        review_db.update_finding_summary(finding["id"], summary)
+        return f"[{store_name}] Skipped — no reply will be posted."
+
+    if any(kw in text_lower for kw in ("check", "scrape", "crawl", "sync")):
+        return _check_reviews(store_id, store_name)
+
+    return _chat_about_reviews(store_id, store_name, text)
+
+
+def _check_reviews(store_id: int, store_name: str) -> str:
+    from app.review_sources.pipeline import run_pipeline
+    from app.review_sources import db as review_db
+    from app.review_sources.normalizer import to_review_model
+    from app.core.llm import get_client
+
+    try:
+        raw_reviews = run_pipeline()
+    except Exception as exc:
+        logger.error("review pipeline error: %s", exc)
+        return f"[{store_name}] Review check failed: {exc}"
+
+    if not raw_reviews:
+        return f"[{store_name}] No new reviews found across all platforms."
+
+    run_id = review_db.save_run(store_id, "whatsapp_check")
+    client = get_client()
+
+    analyses: list[tuple[dict, ReviewAnalysis]] = []
+    for r in raw_reviews:
+        try:
+            rev_model = to_review_model(r)
+            ctx = correlate_review(rev_model, [], {}, {})
+            ra = ReviewAnalysis(
+                review_id=rev_model.review_id,
+                source=rev_model.source,
+                rating=rev_model.rating,
+                posted_at=str(rev_model.posted_at),
+                reviewer_name=rev_model.reviewer_name,
+                text=rev_model.text,
+                correlation=ctx,
+            )
+            analyses.append((r, ra))
+        except Exception as exc:
+            logger.warning("Skipping review: %s", exc)
+
+    classify_reviews_batch([ra for _, ra in analyses], client)
+    draft_replies([ra for _, ra in analyses], client, venue_name=store_name)
+
+    new_count = 0
+    for raw, ra in analyses:
+        ai_summary = {
+            "status": "pending",
+            "sentiment": ra.sentiment,
+            "issue_class": ra.issue_class,
+            "draft_reply": ra.draft_reply,
+            "correlation": {
+                "estimated_date": ra.correlation.estimated_date,
+                "matched_staff_name": ra.correlation.matched_staff_name,
+                "confidence": ra.correlation.confidence,
+            },
+        }
+        if review_db.save_review_finding(store_id, run_id, store_name, raw, ai_summary):
+            new_count += 1
+
+    review_db.update_run(run_id, "ok", ["pipeline"], [], new_count)
+
+    if new_count == 0:
+        return f"[{store_name}] No new reviews found. All up to date."
+
+    pending = review_db.get_pending_finding(store_id)
+    if pending:
+        summary = pending["ai_summary"]
+        rating = pending.get("rating") or "N/A"
+        excerpt = (pending.get("content_text") or "")[:150]
+        draft = summary.get("draft_reply", "")
+        return (
+            f"[{store_name}] Processed {new_count} new reviews.\n\n"
+            f"Latest pending:\n"
+            f"⭐ {rating}/5: \"{excerpt}\"\n\n"
+            f"Suggested reply:\n{draft}\n\n"
+            "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip"
+        )
+
+    return f"[{store_name}] Processed {new_count} new reviews."
+
+
+def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
+    from app.review_sources import db as review_db
+    from app.core.llm import get_client, get_model
+
+    pending = review_db.get_pending_finding(store_id)
+    recent_reviews = review_db.get_recent_reviews(store_id, limit=10)
+
+    pending_ctx = ""
+    if pending:
+        s = pending.get("ai_summary") or {}
+        corr = s.get("correlation") or {}
+        pending_ctx = (
+            "\nPENDING REVIEW:\n"
+            f"- Rating: {pending.get('rating')}/5\n"
+            f"- Text: \"{(pending.get('content_text') or '')[:200]}\"\n"
+            f"- Suggested reply: \"{s.get('draft_reply', '')}\"\n"
+            f"- Served by: {corr.get('matched_staff_name') or 'unknown'}\n"
+        )
+
+    recent_ctx = "RECENT REVIEWS:\n"
+    if recent_reviews:
+        for i, r in enumerate(recent_reviews, 1):
+            recent_ctx += (
+                f"{i}. [{r.get('source')}] {r.get('rating') or 'N/A'}/5: "
+                f"\"{(r.get('text') or '')[:100]}\"\n"
+            )
+    else:
+        recent_ctx += "(None — type CHECK to scrape new reviews)\n"
+
+    system = (
+        f"You assist the owner of '{store_name}' with review management. "
+        "Be concise — this is WhatsApp.\n"
+        "Commands: POST (publish draft), EDIT <text> (revise draft), "
+        "IGNORE (skip), CHECK (scrape new reviews).\n\n"
+        f"{pending_ctx}\n{recent_ctx}"
+    )
+
+    try:
+        client = get_client()
+        resp = client.chat.completions.create(
+            model=get_model(),
+            max_tokens=500,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": text},
+            ],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.error("Reputation chat error: %s", exc)
+        return (
+            f"[{store_name}] Commands:\n"
+            "*POST* — publish draft reply\n"
+            "*EDIT <text>* — revise the draft\n"
+            "*IGNORE* — skip this review\n"
+            "*CHECK* — scrape new reviews"
+        )

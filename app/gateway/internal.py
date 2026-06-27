@@ -8,6 +8,8 @@ Keywords:
   integrity / audit / leakage / profit
   / staff / void / daily / weekly      → integrity agent
   revenue / sales / pricing / strategy → revenue agent
+  post / edit / ignore / check
+  / review / reviews / feedback        → reputation agent
   menu / back / home                   → return to mode-selection screen
   help                                 → show available commands
 """
@@ -26,21 +28,41 @@ HELP_TEXT = (
     "  revenue · sales · pricing · strategy · upsell\n\n"
     "Competitor scout:\n"
     "  scout  — triggers a live competitor report\n\n"
+    "Reputation (reviews):\n"
+    "  check  — scrape new reviews\n"
+    "  post   — publish pending draft reply\n"
+    "  edit <text> — revise draft reply\n"
+    "  ignore — skip pending review\n\n"
     "  help   — this message\n"
     "  menu   — switch between staff tools and customer app"
 )
 
 _SCOUT_TRIGGERS = {"scout", "competitors", "competitor", "intel"}
 
+# Explicit reputation commands that take priority over other routing
+_REPUTATION_EXACT = {"post", "ignore"}
+_REPUTATION_WORDS = {"review", "reviews", "feedback", "rating", "ratings", "check", "scrape"}
+
 
 def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str:
     """Route one staff message to the right internal agent. Returns reply text."""
+    import re as _re
+
     text = (body or "").strip()
 
     if not text or text.lower() == "help":
         return HELP_TEXT
 
     first = text.lower().split()[0]
+    text_lower = text.lower()
+    words = set(_re.sub(r"[^\w\s]", "", text_lower).split())
+
+    # Explicit reputation commands (unambiguous)
+    if first in _REPUTATION_EXACT:
+        return _reputation(store_id, from_number, text)
+
+    if first == "edit" and len(text.split()) > 1:
+        return _reputation(store_id, from_number, text)
 
     if first in _SCOUT_TRIGGERS:
         return _scout(store_id, from_number, text)
@@ -50,6 +72,10 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         return _scout(store_id, from_number, text)
     if agent == "revenue":
         return _revenue(store_id, from_number, text)
+
+    # Review/reputation keyword check (before defaulting to integrity)
+    if words & _REPUTATION_WORDS:
+        return _reputation(store_id, from_number, text)
 
     # Default — integrity handles the widest range of internal queries
     return _integrity(store_id, from_number, text)
@@ -81,3 +107,15 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
     except Exception as e:
         logger.warning("Scout error store=%d: %s", store_id, e)
         return "Scout report is being prepared — it'll arrive in a few minutes."
+
+
+def _reputation(store_id: int, from_number: str, text: str) -> str:
+    try:
+        from app.agents.reputation import process_reputation_owner_reply
+        return process_reputation_owner_reply(from_number, text)
+    except Exception as e:
+        logger.warning("Reputation error store=%d: %s", store_id, e)
+        return (
+            "Reputation agent unavailable right now.\n"
+            "Commands: POST · EDIT <text> · IGNORE · CHECK"
+        )
