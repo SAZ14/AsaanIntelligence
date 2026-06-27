@@ -9,14 +9,15 @@ internal staff alerts / outbound messages.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.maitre_d.agent import MaitreD
 from app.maitre_d.config import VenueConfig
 from app.maitre_d.store import Store
 
-# Fixed "now" so the demo is reproducible: Mon 15 Jun 2026, 11:00.
-NOW = datetime(2026, 6, 15, 11, 0)
+# A movable clock so the demo can fast-forward time for sweeps. Starts Mon 15
+# Jun 2026, 11:00 (the Friday that week is the 19th).
+CLOCK = {"t": datetime(2026, 6, 15, 11, 0)}
 
 
 def show(md: MaitreD, phone: str, text: str, who: str = "") -> None:
@@ -37,7 +38,7 @@ def main() -> None:
     config = VenueConfig.load()
     config.tables = [("T1", 2), ("T2", 2), ("W1", 4)]
     md = MaitreD(store=Store(":memory:"), config=config,
-                 client=None, now_fn=lambda: NOW)
+                 client=None, now_fn=lambda: CLOCK["t"])
 
     print("=" * 70)
     print("1) A normal guest books over a couple of messages")
@@ -64,6 +65,46 @@ def main() -> None:
     show(md, guest, "cancel", who="Omar")
     # The latecomer can now accept the freed table.
     show(md, "+923008887777", "yes", who="Latecomer")
+
+    print("\n" + "=" * 70)
+    print("5) A high-no-show-risk guest is held pending a deposit, then pays")
+    print("=" * 70)
+    risky = "+923005550000"
+    # Seed two prior no-shows so this booking scores high-risk.
+    from app.maitre_d.models import Reservation
+    for i in range(2):
+        md.store.add_reservation(Reservation(
+            reservation_id=f"seed{i}", phone=risky, party_size=2,
+            when=datetime(2026, 5, 1, 20, 0), status="no_show"))
+    show(md, risky, "table for 4 saturday 8pm, it's Hasan", who="Hasan")
+    show(md, risky, "yes", who="Hasan")            # → secure payment link
+    res = md.store.latest_active_reservation_for(risky)
+    reply = md.handle_payment_webhook({"ref": res.payment_ref, "status": "paid"})
+    print(f"             💳 payment webhook → {reply.text}")
+
+    print("\n" + "=" * 70)
+    print("6) Day-before reminders go out automatically")
+    print("=" * 70)
+    CLOCK["t"] = datetime(2026, 6, 18, 20, 0)      # ~24h before Friday dinner
+    result = md.send_due_reminders()
+    print(f"  Maintenance tick: {result.reminders_sent} reminder(s) sent")
+    for to, msg in result.outbound:
+        print(f"             ✉  → {to}: {msg}")
+
+    print("\n" + "=" * 70)
+    print("7) The door: check-ins, auto-complete and no-show sweep")
+    print("=" * 70)
+    CLOCK["t"] = datetime(2026, 6, 19, 20, 5)       # Friday, just after service
+    seated = md.store.list_reservations(status="confirmed")
+    if seated:
+        md.mark_seated(seated[0].reservation_id)
+        print(f"  Floor marked {seated[0].name or seated[0].phone} as seated.")
+    CLOCK["t"] = datetime(2026, 6, 19, 22, 30)       # later that night
+    sweep = md.run_maintenance()
+    print(f"  Maintenance tick: completed={sweep.completed} no_shows={sweep.no_shows} "
+          f"offers_expired={sweep.offers_expired} deposits_expired={sweep.deposits_expired}")
+    for alert in sweep.staff_alerts:
+        print(f"             ⚑ STAFF: {alert}")
 
     print("\n" + "=" * 70)
     print("Reservations on the book:")

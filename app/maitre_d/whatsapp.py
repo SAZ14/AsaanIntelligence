@@ -11,6 +11,9 @@ instead of sending, so the agent runs end-to-end in development and tests.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import os
 import urllib.parse
 import urllib.request
@@ -39,6 +42,28 @@ def parse_inbound(form: dict) -> InboundMessage:
         profile_name=(form.get("ProfileName", "") or "").strip(),
         raw_from=raw_from,
     )
+
+
+def validate_twilio_signature(
+    url: str, params: dict, signature: str, auth_token: str
+) -> bool:
+    """Verify Twilio's ``X-Twilio-Signature`` for an inbound webhook.
+
+    Twilio signs ``url`` with the POST params (sorted by key, concatenated as
+    ``key+value``) using HMAC-SHA1 keyed on the account auth token, base64'd.
+    Returns True when it matches. With no ``auth_token`` configured we cannot
+    verify, so we allow the request through (development / log-only mode).
+    """
+    if not auth_token:
+        return True
+    payload = url
+    for key in sorted(params):
+        payload += key + str(params[key])
+    digest = hmac.new(
+        auth_token.encode("utf-8"), payload.encode("utf-8"), hashlib.sha1
+    ).digest()
+    expected = base64.b64encode(digest).decode("ascii")
+    return hmac.compare_digest(expected, signature or "")
 
 
 def twiml_reply(text: str) -> str:

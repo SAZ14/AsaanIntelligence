@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 # ── Defaults (Sugar Rush café) ──
@@ -40,6 +42,20 @@ LARGE_PARTY_THRESHOLD = 6
 
 DEFAULT_MAX_PARTY_SIZE = 12  # above this we ask the guest to call the venue
 
+DEFAULT_CURRENCY = "PKR"
+# Flat deposit asked for to secure a high-no-show-risk booking.
+DEFAULT_DEPOSIT_AMOUNT = 1000
+
+# A waitlist offer (a freed table) is held this long for the guest to accept
+# before it lapses and rolls on to the next person in the queue.
+DEFAULT_OFFER_TTL_MINUTES = 15
+# A confirmed guest who hasn't arrived this long after their time is a no-show.
+DEFAULT_NO_SHOW_GRACE_MINUTES = 30
+# Send the day-before reminder this many hours ahead of the booking.
+DEFAULT_REMINDER_LEAD_HOURS = 24
+# Abandoned slot-filling conversations are forgotten after this long.
+DEFAULT_CONVERSATION_TTL_MINUTES = 180
+
 
 @dataclass
 class VenueConfig:
@@ -53,10 +69,28 @@ class VenueConfig:
     large_party_turn_minutes: int = DEFAULT_LARGE_PARTY_TURN_MINUTES
     large_party_threshold: int = LARGE_PARTY_THRESHOLD
     max_party_size: int = DEFAULT_MAX_PARTY_SIZE
+    currency: str = DEFAULT_CURRENCY
+    deposit_amount: int = DEFAULT_DEPOSIT_AMOUNT
+    offer_ttl_minutes: int = DEFAULT_OFFER_TTL_MINUTES
+    no_show_grace_minutes: int = DEFAULT_NO_SHOW_GRACE_MINUTES
+    reminder_lead_hours: int = DEFAULT_REMINDER_LEAD_HOURS
+    conversation_ttl_minutes: int = DEFAULT_CONVERSATION_TTL_MINUTES
     # phone (E.164, no "whatsapp:" prefix) → VIP details
     vips: dict[str, "VipProfile"] = field(default_factory=dict)
 
     # ── helpers ──
+
+    def now(self) -> datetime:
+        """Current wall-clock time *in the venue's timezone*, as a naive datetime.
+
+        Everything in the engine works in venue-local time, so this is the single
+        clock the agent reads. Using the venue tz (not the server's) means
+        "table for tonight 8pm" resolves correctly wherever the service runs.
+        """
+        try:
+            return datetime.now(ZoneInfo(self.timezone)).replace(tzinfo=None)
+        except Exception:  # unknown tz name → fall back to server local time
+            return datetime.now()
 
     def turn_time_for(self, party_size: int) -> int:
         if party_size >= self.large_party_threshold:
@@ -116,6 +150,18 @@ class VenueConfig:
             cfg.large_party_threshold = int(raw["large_party_threshold"])
         if "max_party_size" in raw:
             cfg.max_party_size = int(raw["max_party_size"])
+        if "currency" in raw:
+            cfg.currency = raw["currency"]
+        if "deposit_amount" in raw:
+            cfg.deposit_amount = int(raw["deposit_amount"])
+        if "offer_ttl_minutes" in raw:
+            cfg.offer_ttl_minutes = int(raw["offer_ttl_minutes"])
+        if "no_show_grace_minutes" in raw:
+            cfg.no_show_grace_minutes = int(raw["no_show_grace_minutes"])
+        if "reminder_lead_hours" in raw:
+            cfg.reminder_lead_hours = int(raw["reminder_lead_hours"])
+        if "conversation_ttl_minutes" in raw:
+            cfg.conversation_ttl_minutes = int(raw["conversation_ttl_minutes"])
 
         vips = {}
         for v in raw.get("vips", []):

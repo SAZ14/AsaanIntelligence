@@ -21,6 +21,12 @@
   "large_party_turn_minutes": 120,
   "large_party_threshold": 6,
   "max_party_size": 12,
+  "currency": "PKR",
+  "deposit_amount": 1000,
+  "offer_ttl_minutes": 15,
+  "no_show_grace_minutes": 30,
+  "reminder_lead_hours": 24,
+  "conversation_ttl_minutes": 180,
   "vips": [
     {"phone": "+923001112222", "name": "Ayesha Khan", "tier": "vip", "notes": "Food critic. Always offer the window table."},
     {"phone": "+923004445555", "name": "Bilal Sheikh", "tier": "regular", "notes": "Twice-weekly regular. Flat white, no sugar."},

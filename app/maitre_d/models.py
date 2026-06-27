@@ -51,6 +51,9 @@ class Reservation(BaseModel):
     no_show_risk: float = 0.0       # 0..1
     no_show_band: str = "low"       # "low" | "medium" | "high"
     deposit_required: bool = False
+    deposit_paid: bool = False
+    payment_ref: str = ""           # provider token/id once a deposit link is issued
+    reminder_sent: bool = False
     special_requests: str = ""
     source: str = "whatsapp"
     created_at: datetime = Field(default_factory=datetime.now)

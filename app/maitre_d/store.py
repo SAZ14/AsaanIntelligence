@@ -63,12 +63,16 @@ class Store:
                 no_show_risk     REAL DEFAULT 0,
                 no_show_band     TEXT DEFAULT 'low',
                 deposit_required INTEGER DEFAULT 0,
+                deposit_paid     INTEGER DEFAULT 0,
+                payment_ref      TEXT DEFAULT '',
+                reminder_sent    INTEGER DEFAULT 0,
                 special_requests TEXT DEFAULT '',
                 source           TEXT DEFAULT 'whatsapp',
                 created_at       TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_res_when ON reservations(when_at);
             CREATE INDEX IF NOT EXISTS idx_res_phone ON reservations(phone);
+            CREATE INDEX IF NOT EXISTS idx_res_status ON reservations(status);
 
             CREATE TABLE IF NOT EXISTS waitlist (
                 waitlist_id    TEXT PRIMARY KEY,
@@ -90,7 +94,21 @@ class Store:
             );
             """
         )
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first schema, for older DB files."""
+        cols = {r["name"] for r in self.conn.execute(
+            "PRAGMA table_info(reservations)"
+        ).fetchall()}
+        for col, ddl in (
+            ("deposit_paid", "INTEGER DEFAULT 0"),
+            ("payment_ref", "TEXT DEFAULT ''"),
+            ("reminder_sent", "INTEGER DEFAULT 0"),
+        ):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE reservations ADD COLUMN {col} {ddl}")
 
     # ── guests ──
 
@@ -128,12 +146,14 @@ class Store:
             """INSERT INTO reservations (
                 reservation_id, phone, name, party_size, when_at, status,
                 table_id, is_vip, vip_tier, no_show_risk, no_show_band,
-                deposit_required, special_requests, source, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                deposit_required, deposit_paid, payment_ref, reminder_sent,
+                special_requests, source, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (res.reservation_id, res.phone, res.name, res.party_size,
              _iso(res.when), res.status, res.table_id, int(res.is_vip),
              res.vip_tier, res.no_show_risk, res.no_show_band,
-             int(res.deposit_required), res.special_requests, res.source,
+             int(res.deposit_required), int(res.deposit_paid), res.payment_ref,
+             int(res.reminder_sent), res.special_requests, res.source,
              _iso(res.created_at)),
         )
         self.conn.commit()
@@ -145,6 +165,61 @@ class Store:
             (status, reservation_id),
         )
         self.conn.commit()
+
+    def set_payment_ref(self, reservation_id: str, payment_ref: str) -> None:
+        self.conn.execute(
+            "UPDATE reservations SET payment_ref = ? WHERE reservation_id = ?",
+            (payment_ref, reservation_id),
+        )
+        self.conn.commit()
+
+    def mark_deposit_paid(self, reservation_id: str) -> None:
+        self.conn.execute(
+            "UPDATE reservations SET deposit_paid = 1 WHERE reservation_id = ?",
+            (reservation_id,),
+        )
+        self.conn.commit()
+
+    def mark_reminder_sent(self, reservation_id: str) -> None:
+        self.conn.execute(
+            "UPDATE reservations SET reminder_sent = 1 WHERE reservation_id = ?",
+            (reservation_id,),
+        )
+        self.conn.commit()
+
+    def get_by_payment_ref(self, payment_ref: str) -> Reservation | None:
+        if not payment_ref:
+            return None
+        row = self.conn.execute(
+            "SELECT * FROM reservations WHERE payment_ref = ?", (payment_ref,),
+        ).fetchone()
+        return self._row_to_reservation(row) if row else None
+
+    def reservations_due(
+        self, statuses: tuple[str, ...], when_le: datetime
+    ) -> list[Reservation]:
+        """Reservations in ``statuses`` whose start time is at or before ``when_le``."""
+        rows = self.conn.execute(
+            f"""SELECT * FROM reservations
+                WHERE status IN ({_qmarks(statuses)}) AND when_at <= ?
+                ORDER BY when_at""",
+            (*statuses, when_le.isoformat()),
+        ).fetchall()
+        return [self._row_to_reservation(r) for r in rows]
+
+    def reminders_due(
+        self, now: datetime, lead_hours: int
+    ) -> list[Reservation]:
+        """Confirmed, unreminded bookings starting within ``lead_hours`` of now."""
+        horizon = (now + timedelta(hours=lead_hours)).isoformat()
+        rows = self.conn.execute(
+            """SELECT * FROM reservations
+               WHERE status = 'confirmed' AND reminder_sent = 0
+                 AND when_at > ? AND when_at <= ?
+               ORDER BY when_at""",
+            (now.isoformat(), horizon),
+        ).fetchall()
+        return [self._row_to_reservation(r) for r in rows]
 
     def get_reservation(self, reservation_id: str) -> Reservation | None:
         row = self.conn.execute(
@@ -219,6 +294,9 @@ class Store:
             vip_tier=row["vip_tier"], no_show_risk=row["no_show_risk"],
             no_show_band=row["no_show_band"],
             deposit_required=bool(row["deposit_required"]),
+            deposit_paid=bool(row["deposit_paid"]),
+            payment_ref=row["payment_ref"] or "",
+            reminder_sent=bool(row["reminder_sent"]),
             special_requests=row["special_requests"], source=row["source"],
             created_at=_parse(row["created_at"]),
         )
@@ -274,6 +352,17 @@ class Store:
         ).fetchall()
         return [self._row_to_waitlist(r) for r in rows]
 
+    def offered_entries_before(self, offered_le: datetime) -> list[WaitlistEntry]:
+        """Offers made at or before ``offered_le`` that are still unanswered."""
+        rows = self.conn.execute(
+            """SELECT * FROM waitlist
+               WHERE status = 'offered' AND offered_at IS NOT NULL
+                 AND offered_at <= ?
+               ORDER BY offered_at""",
+            (offered_le.isoformat(),),
+        ).fetchall()
+        return [self._row_to_waitlist(r) for r in rows]
+
     def list_waitlist(self, status: str | None = None) -> list[WaitlistEntry]:
         if status:
             rows = self.conn.execute(
@@ -297,19 +386,32 @@ class Store:
 
     # ── conversation state (slot-filling across messages) ──
 
-    def get_conversation(self, phone: str) -> dict:
+    def get_conversation(
+        self, phone: str, ttl_minutes: int | None = None,
+        now: datetime | None = None,
+    ) -> dict:
         row = self.conn.execute(
-            "SELECT state FROM conversations WHERE phone = ?", (phone,)
+            "SELECT state, updated_at FROM conversations WHERE phone = ?", (phone,)
         ).fetchone()
-        return json.loads(row["state"]) if row else {}
+        if not row:
+            return {}
+        if ttl_minutes:
+            updated = _parse(row["updated_at"])
+            ref = now or datetime.now()
+            if updated and (ref - updated) > timedelta(minutes=ttl_minutes):
+                self.clear_conversation(phone)  # abandoned flow — forget it
+                return {}
+        return json.loads(row["state"])
 
-    def set_conversation(self, phone: str, state: dict) -> None:
+    def set_conversation(
+        self, phone: str, state: dict, now: datetime | None = None
+    ) -> None:
         self.conn.execute(
             """INSERT INTO conversations (phone, state, updated_at)
                VALUES (?, ?, ?)
                ON CONFLICT(phone) DO UPDATE SET
                    state=excluded.state, updated_at=excluded.updated_at""",
-            (phone, json.dumps(state), _iso(datetime.now())),
+            (phone, json.dumps(state), _iso(now or datetime.now())),
         )
         self.conn.commit()
 
