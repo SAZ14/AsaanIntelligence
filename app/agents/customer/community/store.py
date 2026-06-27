@@ -17,21 +17,42 @@ from app.agents.customer.community.models import (
 
 def _sb():
     from supabase import create_client
-    url = os.environ["SUPABASE_URL"]
-    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ["SUPABASE_KEY"]
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        raise RuntimeError("Supabase not configured: SUPABASE_URL or SUPABASE_KEY missing")
     return create_client(url, key)
+
+
+def _sb_safe():
+    """Return (client, error_str). error_str is non-empty if the connection failed."""
+    try:
+        return _sb(), None
+    except Exception as exc:
+        return None, str(exc)
 
 
 # ── VenueConfig ──────────────────────────────────────────────────────────────
 
+def _store_name_fallback(store_id: int) -> str:
+    try:
+        from app.core.db import SessionLocal, Store
+        with SessionLocal() as db:
+            s = db.query(Store).filter(Store.id == store_id).first()
+            return s.name if s else "Restaurant"
+    except Exception:
+        return "Restaurant"
+
+
 def load_venue_config(store_id: int) -> VenueConfig:
-    result = _sb().table("venue_config").select("*").eq("store_id", store_id).maybe_single().execute()
-    if not result or not result.data:
-        # Fallback: load store name from stores table
-        s = _sb().table("stores").select("name").eq("id", store_id).maybe_single().execute()
-        name = s.data.get("name", "Restaurant") if s and s.data else "Restaurant"
-        return VenueConfig(venue_name=name)
-    row = result.data
+    try:
+        result = _sb().table("venue_config").select("*").eq("store_id", store_id).limit(1).execute()
+        rows = result.data if result else []
+    except Exception:
+        rows = []
+    if not rows:
+        return VenueConfig(venue_name=_store_name_fallback(store_id))
+    row = rows[0]
     return VenueConfig(
         venue_name=row.get("venue_name", "Restaurant"),
         stamp_goal=row.get("stamp_goal", 5),
@@ -46,9 +67,12 @@ def load_venue_config(store_id: int) -> VenueConfig:
 # ── CommunityMember ───────────────────────────────────────────────────────────
 
 def load_members(store_id: int) -> dict[str, CommunityMember]:
-    result = _sb().table("community_members").select("*").eq("store_id", store_id).execute()
+    try:
+        result = _sb().table("community_members").select("*").eq("store_id", store_id).execute()
+    except Exception:
+        return {}
     members = {}
-    for row in result.data:
+    for row in (result.data or []):
         m = CommunityMember(
             phone=row["phone"],
             name=row.get("name", ""),
@@ -64,8 +88,12 @@ def load_members(store_id: int) -> dict[str, CommunityMember]:
 
 
 def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
+    try:
+        sb = _sb()
+    except Exception:
+        return
     for m in members.values():
-        _sb().table("community_members").upsert({
+        sb.table("community_members").upsert({
             "store_id": store_id,
             "phone": m.phone,
             "name": m.name,
@@ -81,7 +109,11 @@ def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
 # ── RedeemCode ────────────────────────────────────────────────────────────────
 
 def load_redeem_codes(store_id: int) -> list[RedeemCode]:
-    result = _sb().table("redeem_codes").select("*").eq("store_id", store_id).order("issued_at").execute()
+    try:
+        result = _sb().table("redeem_codes").select("*").eq("store_id", store_id).order("issued_at").execute()
+        rows = result.data or []
+    except Exception:
+        return []
     return [
         RedeemCode(
             code=r["code"],
@@ -90,30 +122,40 @@ def load_redeem_codes(store_id: int) -> list[RedeemCode]:
             redeemed_at=r.get("redeemed_at") or "",
             redeemed_by=r.get("redeemed_by") or "",
         )
-        for r in result.data
+        for r in rows
     ]
 
 
 def append_redeem_code(store_id: int, code: RedeemCode) -> None:
-    _sb().table("redeem_codes").insert({
-        "store_id": store_id,
-        "code": code.code,
-        "order_id": code.order_id or None,
-        "issued_at": code.issued_at,
-    }).execute()
+    try:
+        _sb().table("redeem_codes").insert({
+            "store_id": store_id,
+            "code": code.code,
+            "order_id": code.order_id or None,
+            "issued_at": code.issued_at,
+        }).execute()
+    except Exception:
+        pass
 
 
 def update_redeem_code(store_id: int, code: RedeemCode) -> None:
-    _sb().table("redeem_codes").update({
-        "redeemed_at": code.redeemed_at or None,
-        "redeemed_by": code.redeemed_by or None,
-    }).eq("store_id", store_id).eq("code", code.code).execute()
+    try:
+        _sb().table("redeem_codes").update({
+            "redeemed_at": code.redeemed_at or None,
+            "redeemed_by": code.redeemed_by or None,
+        }).eq("store_id", store_id).eq("code", code.code).execute()
+    except Exception:
+        pass
 
 
 # ── StampEvent ────────────────────────────────────────────────────────────────
 
 def load_stamp_events(store_id: int) -> list[StampEvent]:
-    result = _sb().table("stamp_events").select("*").eq("store_id", store_id).order("at").execute()
+    try:
+        result = _sb().table("stamp_events").select("*").eq("store_id", store_id).order("at").execute()
+        rows = result.data or []
+    except Exception:
+        return []
     return [
         StampEvent(
             phone=r["phone"], code=r["code"],
@@ -121,62 +163,86 @@ def load_stamp_events(store_id: int) -> list[StampEvent]:
             reward_issued=r.get("reward_issued", False),
             at=r["at"],
         )
-        for r in result.data
+        for r in rows
     ]
 
 
 def append_stamp_event(store_id: int, event: StampEvent) -> None:
-    _sb().table("stamp_events").insert({
-        "store_id": store_id,
-        "phone": event.phone,
-        "code": event.code,
-        "stamp_number": event.stamp_number,
-        "reward_issued": event.reward_issued,
-        "at": event.at,
-    }).execute()
+    try:
+        _sb().table("stamp_events").insert({
+            "store_id": store_id,
+            "phone": event.phone,
+            "code": event.code,
+            "stamp_number": event.stamp_number,
+            "reward_issued": event.reward_issued,
+            "at": event.at,
+        }).execute()
+    except Exception:
+        pass
 
 
 # ── Deals ─────────────────────────────────────────────────────────────────────
 
 def load_deals(store_id: int) -> list[Deal]:
-    result = _sb().table("deals").select("*").eq("store_id", store_id).execute()
-    return [Deal(title=r["title"], description=r.get("description") or "", active=r.get("active", True)) for r in result.data]
+    try:
+        result = _sb().table("deals").select("*").eq("store_id", store_id).execute()
+        rows = result.data or []
+    except Exception:
+        return []
+    return [Deal(title=r["title"], description=r.get("description") or "", active=r.get("active", True)) for r in rows]
 
 
 # ── Onboarding Sessions ───────────────────────────────────────────────────────
 
 def load_onboarding_sessions(store_id: int) -> dict[str, str]:
-    result = _sb().table("onboarding_sessions").select("*").eq("store_id", store_id).execute()
-    return {r["phone"]: r["state"] for r in result.data}
+    try:
+        result = _sb().table("onboarding_sessions").select("*").eq("store_id", store_id).execute()
+        return {r["phone"]: r["state"] for r in (result.data or [])}
+    except Exception:
+        return {}
 
 
 def save_onboarding_sessions(store_id: int, sessions: dict[str, str]) -> None:
-    if sessions:
+    if not sessions:
+        return
+    try:
         _sb().table("onboarding_sessions").upsert(
             [{"store_id": store_id, "phone": p, "state": s} for p, s in sessions.items()]
         ).execute()
+    except Exception:
+        pass
 
 
 def clear_onboarding_session(store_id: int, phone: str) -> None:
-    _sb().table("onboarding_sessions").delete().eq("store_id", store_id).eq("phone", phone).execute()
+    try:
+        _sb().table("onboarding_sessions").delete().eq("store_id", store_id).eq("phone", phone).execute()
+    except Exception:
+        pass
 
 
 # ── Chat Sessions ─────────────────────────────────────────────────────────────
 
 def load_chat_session(store_id: int, phone: str) -> list[dict]:
-    result = (_sb().table("chat_sessions").select("history")
-              .eq("store_id", store_id).eq("phone", phone).maybe_single().execute())
-    if not result or not result.data:
+    try:
+        result = (_sb().table("chat_sessions").select("history")
+                  .eq("store_id", store_id).eq("phone", phone).limit(1).execute())
+        rows = result.data or []
+    except Exception:
         return []
-    return result.data.get("history", [])
+    if not rows:
+        return []
+    return rows[0].get("history", [])
 
 
 def save_chat_session(store_id: int, phone: str, history: list[dict]) -> None:
-    _sb().table("chat_sessions").upsert({
-        "store_id": store_id,
-        "phone": phone,
-        "history": history,
-    }).execute()
+    try:
+        _sb().table("chat_sessions").upsert({
+            "store_id": store_id,
+            "phone": phone,
+            "history": history,
+        }).execute()
+    except Exception:
+        pass
 
 
 # ── Knowledge Base (RAG) ──────────────────────────────────────────────────────

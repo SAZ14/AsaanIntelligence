@@ -38,8 +38,20 @@ from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+import json as _json_mod
 
 logger = logging.getLogger(__name__)
+
+
+async def _parse_body(request: Request) -> dict:
+    """Accept JSON or form-encoded body for admin endpoints."""
+    ct = request.headers.get("content-type", "")
+    raw = await request.body()
+    if not raw:
+        return {}
+    if "application/json" in ct:
+        return _json_mod.loads(raw)
+    return {k: v[0] for k, v in parse_qs(raw.decode()).items()}
 
 # Values stored in user_sessions.active_agent to track mode
 MODE_INTERNAL = "internal"
@@ -224,11 +236,11 @@ async def integrity_pdf(store_id: int) -> Response:
 
 # ── Admin endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/admin/chains")
+@app.post("/admin/chains", status_code=201)
 async def create_chain(request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Chain
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    name = params.get("name", "").strip()
+    params = await _parse_body(request)
+    name = str(params.get("name", "")).strip()
     if not name:
         return JSONResponse({"error": "name required"}, status_code=400)
     with SessionLocal() as db:
@@ -236,20 +248,21 @@ async def create_chain(request: Request) -> JSONResponse:
         db.add(chain)
         db.commit()
         db.refresh(chain)
-        return JSONResponse({"chain_id": chain.id, "name": chain.name})
+        return JSONResponse({"id": chain.id, "name": chain.name}, status_code=201)
 
 
-@app.post("/admin/stores")
+@app.post("/admin/stores", status_code=201)
 async def create_store(request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Store
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    name = params.get("name", "").strip()
+    params = await _parse_body(request)
+    name = str(params.get("name", "")).strip()
     if not name:
         return JSONResponse({"error": "name required"}, status_code=400)
     with SessionLocal() as db:
+        chain_id_val = params.get("chain_id")
         store = Store(
             name=name,
-            chain_id=int(params["chain_id"]) if params.get("chain_id") else None,
+            chain_id=int(chain_id_val) if chain_id_val else None,
             location=params.get("location") or None,
             category=params.get("category") or None,
             instagram_handle=params.get("instagram_handle") or None,
@@ -258,14 +271,14 @@ async def create_store(request: Request) -> JSONResponse:
         db.commit()
         store_id = store.id
         store_name = store.name
-    return JSONResponse({"store_id": store_id, "name": store_name})
+    return JSONResponse({"id": store_id, "name": store_name}, status_code=201)
 
 
-@app.post("/admin/stores/{store_id}/members")
+@app.post("/admin/stores/{store_id}/members", status_code=201)
 async def add_member(store_id: int, request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreMember
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    whatsapp = params.get("whatsapp", "").strip()
+    params = await _parse_body(request)
+    whatsapp = str(params.get("whatsapp", "")).strip()
     role = params.get("role", "owner")
     with SessionLocal() as db:
         if not db.query(Store).filter(Store.id == store_id).first():
@@ -274,17 +287,17 @@ async def add_member(store_id: int, request: Request) -> JSONResponse:
             StoreMember.store_id == store_id, StoreMember.whatsapp == whatsapp,
         ).first()
         if exists:
-            return JSONResponse({"status": "already_exists"})
+            return JSONResponse({"status": "already_exists"}, status_code=200)
         db.add(StoreMember(store_id=store_id, whatsapp=whatsapp, role=role))
         db.commit()
-    return JSONResponse({"status": "added", "store_id": store_id, "whatsapp": whatsapp})
+    return JSONResponse({"status": "added", "store_id": store_id, "whatsapp": whatsapp}, status_code=201)
 
 
-@app.post("/admin/stores/{store_id}/locations")
+@app.post("/admin/stores/{store_id}/locations", status_code=201)
 async def add_location(store_id: int, request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreLocation
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    address = params.get("address", "").strip()
+    params = await _parse_body(request)
+    address = str(params.get("address", "")).strip()
     if not address:
         return JSONResponse({"error": "address required"}, status_code=400)
     with SessionLocal() as db:
@@ -296,19 +309,22 @@ async def add_location(store_id: int, request: Request) -> JSONResponse:
             is_primary=params.get("is_primary", "false"),
         ))
         db.commit()
-    return JSONResponse({"status": "added", "store_id": store_id, "address": address})
+    return JSONResponse({"status": "added", "store_id": store_id, "address": address}, status_code=201)
 
 
-@app.post("/admin/stores/{store_id}/pos")
+@app.post("/admin/stores/{store_id}/pos", status_code=201)
 async def configure_pos(store_id: int, request: Request) -> JSONResponse:
-    import json as _json
     from app.core.db import SessionLocal, Store, POSConnection
     from app.agents.integrity.service import get_service
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    try:
-        config_json = _json.loads(params.get("config", "{}"))
-    except Exception:
-        return JSONResponse({"error": "config must be valid JSON"}, status_code=400)
+    params = await _parse_body(request)
+    config_val = params.get("config", {})
+    if isinstance(config_val, str):
+        try:
+            config_json = _json_mod.loads(config_val)
+        except Exception:
+            return JSONResponse({"error": "config must be valid JSON"}, status_code=400)
+    else:
+        config_json = config_val or {}
     with SessionLocal() as db:
         if not db.query(Store).filter(Store.id == store_id).first():
             return JSONResponse({"error": "store not found"}, status_code=404)
@@ -330,19 +346,16 @@ async def configure_pos(store_id: int, request: Request) -> JSONResponse:
             ))
         db.commit()
     get_service()._cache.pop(store_id, None)
-    return JSONResponse({"status": "configured", "store_id": store_id})
+    return JSONResponse({"status": "configured", "store_id": store_id}, status_code=201)
 
 
-@app.post("/admin/stores/{store_id}/revenue")
+@app.post("/admin/stores/{store_id}/revenue", status_code=201)
 async def configure_revenue(store_id: int, request: Request) -> JSONResponse:
-    import json as _json
     from app.core.db import SessionLocal, Store, RevenueConnection
     from app.agents.revenue.registry import get_registry
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    try:
-        config_json = _json.loads(params.get("config", "{}"))
-    except Exception:
-        return JSONResponse({"error": "config must be valid JSON"}, status_code=400)
+    params = await _parse_body(request)
+    config_val = params.get("config", {})
+    config_json = config_val if isinstance(config_val, dict) else {}
     with SessionLocal() as db:
         if not db.query(Store).filter(Store.id == store_id).first():
             return JSONResponse({"error": "store not found"}, status_code=404)
@@ -360,14 +373,14 @@ async def configure_revenue(store_id: int, request: Request) -> JSONResponse:
             ))
         db.commit()
     get_registry().invalidate(store_id)
-    return JSONResponse({"status": "configured", "store_id": store_id})
+    return JSONResponse({"status": "configured", "store_id": store_id}, status_code=201)
 
 
-@app.post("/admin/stores/{store_id}/twilio")
+@app.post("/admin/stores/{store_id}/twilio", status_code=201)
 async def set_twilio_number(store_id: int, request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreTwilioNumber
-    params = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
-    number = params.get("whatsapp_number", "").strip()
+    params = await _parse_body(request)
+    number = str(params.get("whatsapp_number", "")).strip()
     if not number:
         return JSONResponse({"error": "whatsapp_number required"}, status_code=400)
     with SessionLocal() as db:
@@ -379,7 +392,7 @@ async def set_twilio_number(store_id: int, request: Request) -> JSONResponse:
         else:
             db.add(StoreTwilioNumber(store_id=store_id, whatsapp_number=number))
         db.commit()
-    return JSONResponse({"status": "set", "store_id": store_id, "whatsapp_number": number})
+    return JSONResponse({"status": "set", "store_id": store_id, "whatsapp_number": number}, status_code=201)
 
 
 @app.post("/admin/stores/{store_id}/customer")
