@@ -20,7 +20,7 @@ TWILIO_INTERNAL_FROM = os.getenv("TWILIO_INTERNAL_FROM", "")
 # ── Scout-specific ──
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
-APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN", "")
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 
 # ── Signature validation ──
 TWILIO_VALIDATE_SIGNATURE = os.getenv("TWILIO_VALIDATE_SIGNATURE", "false").lower() == "true"
