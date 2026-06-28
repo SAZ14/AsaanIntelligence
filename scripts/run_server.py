@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
+
+# Ensure repo root is on sys.path so `import app` works when the script is
+# invoked directly (e.g. `python scripts/run_server.py` from any directory).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
+from app.agents.customer.jobs.winback import run_winback_all
+from app.agents.customer.jobs.leaderboard_broadcast import broadcast_all
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,13 +27,13 @@ def _start_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="Asia/Karachi")
     # Winback: daily at 10:00 AM
     scheduler.add_job(
-        "app.agents.customer.jobs.winback:run_winback_all",
+        run_winback_all,
         trigger="cron", hour=10, minute=0,
         id="winback_daily", replace_existing=True,
     )
     # Leaderboard broadcast: every Sunday at 18:00
     scheduler.add_job(
-        "app.agents.customer.jobs.leaderboard_broadcast:broadcast_all",
+        broadcast_all,
         trigger="cron", day_of_week="sun", hour=18, minute=0,
         id="leaderboard_sunday", replace_existing=True,
     )
