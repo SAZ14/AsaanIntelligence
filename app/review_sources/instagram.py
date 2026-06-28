@@ -11,7 +11,7 @@ def _sha256(source: str, text: str) -> str:
 
 
 def _fetch_posts(client: ApifyClient, usernames: list[str]) -> list[dict]:
-    urls = [f"https://www.instagram.com/{u}/" for u in usernames]
+    urls = list(dict.fromkeys(f"https://www.instagram.com/{u}/" for u in usernames))
     run = client.actor("apify/instagram-scraper").call(run_input={
         "directUrls": urls,
         "resultsType": "posts",
@@ -25,8 +25,11 @@ def _fetch_posts(client: ApifyClient, usernames: list[str]) -> list[dict]:
 def _fetch_comments(client: ApifyClient, post_urls: list[str]) -> list[dict]:
     if not post_urls:
         return []
+    unique_urls = list(dict.fromkeys(u for u in post_urls if u))[:5]
+    if not unique_urls:
+        return []
     run = client.actor("apify/instagram-scraper").call(run_input={
-        "directUrls": post_urls[:5],
+        "directUrls": unique_urls,
         "resultsType": "comments",
         "resultsLimit": 50,
     })

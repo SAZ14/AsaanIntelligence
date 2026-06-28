@@ -296,9 +296,8 @@ class CommunityMember(Base):
     __tablename__ = "community_members"
     __table_args__ = (UniqueConstraint("store_id", "phone"),)
 
-    id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
-    phone = Column(String, nullable=False)
+    phone = Column(String, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     name = Column(String, nullable=True)
     stamps_current = Column(Integer, default=0)
     stamps_lifetime = Column(Integer, default=0)
@@ -311,9 +310,8 @@ class CommunityMember(Base):
 class RedeemCode(Base):
     __tablename__ = "redeem_codes"
 
-    id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
-    code = Column(String, nullable=False)
+    code = Column(String, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     order_id = Column(String, nullable=True)
     issued_at = Column(DateTime, default=datetime.utcnow)
     redeemed_at = Column(DateTime, nullable=True)
@@ -346,9 +344,8 @@ class OnboardingSession(Base):
     __tablename__ = "onboarding_sessions"
     __table_args__ = (UniqueConstraint("store_id", "phone"),)
 
-    id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
-    phone = Column(String, nullable=False)
+    phone = Column(String, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     state = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -357,9 +354,8 @@ class CustomerChatSession(Base):
     __tablename__ = "chat_sessions"
     __table_args__ = (UniqueConstraint("store_id", "phone"),)
 
-    id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
-    phone = Column(String, nullable=False)
+    phone = Column(String, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     history = Column(JSON, default=list)
     updated_at = Column(DateTime, default=datetime.utcnow)
 

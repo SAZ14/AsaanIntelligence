@@ -51,10 +51,12 @@ class IntegrityService:
             pos = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
             if not store or not pos:
                 return None
+            conn = dict(pos.config or {})
+            conn["store_id"] = store_id  # always available so connectors can use it
             return RestaurantConfig(
                 venue_name=store.name,
                 pos_type=pos.pos_type,
-                connection=dict(pos.config or {}),
+                connection=conn,
                 mapping=pos.mapping or "cafe_generic",
                 currency=pos.currency or "PKR",
                 timezone=pos.timezone or "Asia/Karachi",
