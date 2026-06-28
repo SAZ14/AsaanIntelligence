@@ -133,7 +133,7 @@ app = FastAPI(title="AsaanPay Central Agent Server", lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "agents": ["scout", "integrity", "revenue", "customer"]}
+    return {"status": "ok", "agents": ["scout", "reputation", "integrity", "revenue", "customer"]}
 
 
 # ── Unified WhatsApp webhook ───────────────────────────────────────────────────
