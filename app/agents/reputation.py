@@ -500,37 +500,30 @@ def _load_brand_voice(store_id: int, store_name: str) -> BrandVoice:
 
 # ── WhatsApp owner reply handler ──
 
-def process_reputation_owner_reply(from_phone: str, body: str) -> str:
+def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | None = None) -> str:
     """Handle a reputation-related WhatsApp message from an owner/staff member.
 
+    store_id must be passed by the gateway (derived from the Twilio To field).
     Returns the reply string; the gateway handles sending it back via TwiML.
     """
-    from app.core.db import (
-        get_stores_for_number, get_user_session, set_user_session,
-        SessionLocal, VenueConfig,
-    )
+    from app.core.db import SessionLocal, Store, VenueConfig
     from app.review_sources import db as review_db
 
-    stores = get_stores_for_number(from_phone)
-    if not stores:
-        return "You are not registered as a staff member for any store."
-
-    if len(stores) == 1:
-        active_store = stores[0]
-    else:
-        session = get_user_session(from_phone)
-        matched = next(
-            (s for s in stores if s.id == (session.store_id if session else None)),
-            None,
-        )
-        active_store = matched or stores[0]
-
-    set_user_session(from_phone, active_store.id)
-    store_id = active_store.id
+    if store_id is None:
+        return "Internal error: store could not be determined."
 
     with SessionLocal() as db:
+        store = db.query(Store).filter(Store.id == store_id).first()
         vc = db.query(VenueConfig).filter(VenueConfig.store_id == store_id).first()
-    store_name = (vc.venue_name if vc else None) or active_store.name
+        if store:
+            db.expunge(store)
+        if vc:
+            db.expunge(vc)
+
+    if not store:
+        return "Internal error: store not found."
+
+    store_name = (vc.venue_name if vc else None) or store.name
 
     text = body.strip()
     text_lower = text.lower()

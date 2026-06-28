@@ -112,7 +112,7 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
 def _reputation(store_id: int, from_number: str, text: str) -> str:
     try:
         from app.agents.reputation import process_reputation_owner_reply
-        return process_reputation_owner_reply(from_number, text)
+        return process_reputation_owner_reply(from_number, text, store_id=store_id)
     except Exception as e:
         logger.warning("Reputation error store=%d: %s", store_id, e)
         return (

@@ -133,7 +133,53 @@ app = FastAPI(title="AsaanPay Central Agent Server", lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "agents": ["scout", "reputation", "integrity", "revenue", "customer"]}
+    import os
+    checks: dict[str, str] = {}
+
+    # DB
+    try:
+        from app.core.db import SessionLocal
+        with SessionLocal() as db:
+            db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+
+    # LLM
+    checks["llm"] = "ok" if os.environ.get("ZAI_API_KEY") else "error: ZAI_API_KEY not set"
+
+    # Apify (scout + reputation)
+    checks["apify"] = "ok" if os.environ.get("APIFY_TOKEN") else "error: APIFY_TOKEN not set"
+
+    # Twilio
+    checks["twilio"] = (
+        "ok"
+        if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN")
+        else "error: Twilio credentials not set"
+    )
+
+    # Agent imports
+    agents = {
+        "scout":      "app.agents.scout.pipeline",
+        "reputation": "app.agents.reputation",
+        "integrity":  "app.agents.integrity.agents.integrity_agent",
+        "revenue":    "app.agents.revenue.whatsapp",
+        "customer":   "app.agents.customer.agents.community_customer",
+    }
+    agent_status: dict[str, str] = {}
+    for name, module in agents.items():
+        try:
+            __import__(module)
+            agent_status[name] = "ok"
+        except Exception as exc:
+            agent_status[name] = f"error: {exc}"
+
+    all_ok = all(v == "ok" for v in {**checks, **agent_status}.values())
+    return {
+        "status": "ok" if all_ok else "degraded",
+        "checks": checks,
+        "agents": agent_status,
+    }
 
 
 # ── Unified WhatsApp webhook ───────────────────────────────────────────────────
