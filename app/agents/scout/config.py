@@ -10,18 +10,18 @@ TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886"
 TWILIO_VALIDATE_SIGNATURE = os.getenv("TWILIO_VALIDATE_SIGNATURE", "false").lower() == "true"
 
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
-APIFY_IG_ACTOR = os.getenv("APIFY_IG_ACTOR", "apify/instagram-post-scraper")
-APIFY_WEBSITE_ACTOR = os.getenv("APIFY_WEBSITE_ACTOR", "apify/website-content-crawler")
-APIFY_SEARCH_ACTOR = os.getenv("APIFY_SEARCH_ACTOR", "apify/google-search-scraper")
-APIFY_MAPS_ACTOR = os.getenv("APIFY_MAPS_ACTOR", "apify/google-maps-reviews-scraper")
-APIFY_REVIEWS_PER_COMPETITOR = int(os.getenv("APIFY_REVIEWS_PER_COMPETITOR", "20"))
+APIFY_IG_ACTOR = "apify/instagram-post-scraper"
+APIFY_WEBSITE_ACTOR = "apify/website-content-crawler"
+APIFY_SEARCH_ACTOR = "apify/google-search-scraper"
+APIFY_MAPS_ACTOR = "apify/google-maps-reviews-scraper"
+APIFY_REVIEWS_PER_COMPETITOR = 40   # reviews pulled per competitor via Google Maps
 ZAI_API_KEY = os.getenv("ZAI_API_KEY", "")
 ZAI_MODEL = os.getenv("ZAI_MODEL", "glm-4.7")
 
 # --- Pipeline tuning ---
-FRESHNESS_MINUTES = int(os.getenv("FRESHNESS_MINUTES", "90"))
-IG_POSTS_PER_PROFILE = int(os.getenv("IG_POSTS_PER_PROFILE", "8"))
-MAX_NEW_COMPETITORS = int(os.getenv("MAX_NEW_COMPETITORS", "3"))
+FRESHNESS_MINUTES = 90              # use cached run if last scout was < 90 min ago
+IG_POSTS_PER_PROFILE = 15          # posts scraped per Instagram profile
+MAX_NEW_COMPETITORS = 10            # max auto-discovered competitors added per run
 
 # --- Competitor seed list ---
 COMPETITORS = [
