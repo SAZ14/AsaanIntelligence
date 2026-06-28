@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re as _re
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 import json as _json_mod
 
@@ -239,6 +240,60 @@ async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> s
     return f"Saved {type_label} data ({row_count} rows). Type 'summary' to run a POS audit."
 
 
+# ── Async scout dispatch ───────────────────────────────────────────────────────
+
+_SCOUT_ASYNC_WORDS = {
+    "scout", "competitor", "competitors", "intel", "intelligence",
+    "rivals", "rival", "competition", "landscape",
+}
+
+
+def _is_scout_message(body: str) -> bool:
+    words = set(_re.sub(r"[^\w\s]", "", body.lower()).split())
+    return bool(words & _SCOUT_ASYNC_WORDS)
+
+
+def _send_outbound(to: str, from_: str, body: str) -> None:
+    sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    if not sid or not token:
+        logger.warning("gateway.outbound: Twilio credentials not set — cannot send to %s", to)
+        return
+    try:
+        from twilio.rest import Client as TwilioClient
+        TwilioClient(sid, token).messages.create(to=to, from_=from_, body=body)
+        logger.info("gateway.outbound: sent to=%s from=%s len=%d", to, from_, len(body))
+    except Exception as exc:
+        logger.error("gateway.outbound: failed to=%s error=%s", to, exc)
+
+
+def _bg_scout(store_id: int, from_number: str, to_number: str, body: str) -> None:
+    """Background task: run scout pipeline, deliver result via Twilio outbound."""
+    from app.agents.scout.analysis import classify_intent
+    from app.agents.scout.pipeline import run as scout_run
+    from app.core.db import SessionLocal, Store
+
+    try:
+        with SessionLocal() as db:
+            store = db.query(Store).filter(Store.id == store_id).first()
+            store_name = store.name if store else "the restaurant"
+            store_category = (store.category or "food") if store else "food"
+
+        command = classify_intent(body, store_name, store_category)
+        logger.info("bg_scout: store=%d command=%s from=%s", store_id, command, from_number)
+
+        report = scout_run(command, store_id=store_id, user_message=body)
+        _send_outbound(to=from_number, from_=to_number, body=report)
+        logger.info("bg_scout: delivered store=%d", store_id)
+    except Exception as exc:
+        logger.error("bg_scout: store=%d failed error=%s", store_id, exc)
+        _send_outbound(
+            to=from_number,
+            from_=to_number,
+            body="Scout report could not be completed. Please try again.",
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.db import init_db
@@ -310,7 +365,7 @@ def health():
 # ── Unified WhatsApp webhook ───────────────────────────────────────────────────
 
 @app.post("/whatsapp")
-async def unified_whatsapp(request: Request) -> Response:
+async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) -> Response:
     raw = (await request.body()).decode("utf-8")
     params = {k: v[0] for k, v in parse_qs(raw).items()}
     if not _verify(request, params):
@@ -378,6 +433,16 @@ async def unified_whatsapp(request: Request) -> Response:
     # ── Internal tools mode ────────────────────────────────────────────────────
     if current_mode == MODE_INTERNAL:
         logger.info("gateway.webhook: store=%d mode=internal from=%s", store_id, from_number)
+
+        # Scout is long-running (2-10 min) — dispatch async, return immediate ack
+        if _is_scout_message(body):
+            logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
+            background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
+            return _twiml(
+                "On it. Scanning competitors across Instagram, Google Maps, and "
+                "their websites. Your report will arrive in 7-10 minutes."
+            )
+
         from app.gateway.internal import handle_internal_for_store
         reply = handle_internal_for_store(from_number, body, store_id)
         return _twiml(reply) if reply else _twiml_empty()

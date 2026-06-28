@@ -142,10 +142,19 @@ def test_staff_internal_integrity_message_routed(client, db_state):
 
 
 def test_staff_internal_scout_message_routed(client, db_state):
+    # Scout is dispatched async in the gateway (not via handle_internal_for_store).
+    # The immediate TwiML response contains an "on it" acknowledgement.
     _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")
-    with patch("app.gateway.internal.handle_internal_for_store", return_value="Scout intel") as mock:
-        _post(client, STAFF_PHONE, STORE_NUMBER_A, "scout")
-    mock.assert_called_once_with(STAFF_PHONE, "scout", db_state["store_a"])
+    with patch("app.gateway.main._bg_scout") as mock_bg:
+        r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "scout")
+    # Background task should be registered (called once with correct store_id)
+    mock_bg.assert_called_once()
+    args = mock_bg.call_args[0]
+    assert args[0] == db_state["store_a"]  # store_id
+    assert args[1] == STAFF_PHONE           # from_number
+    # Immediate reply should mention the wait time
+    body = _body(r)
+    assert "7-10" in body or "minutes" in body or "competitors" in body.lower()
 
 
 def test_staff_internal_revenue_message_routed(client, db_state):
@@ -206,10 +215,14 @@ def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
     data = r.json()
-    assert data["status"] == "ok"
-    assert "scout" in data["agents"]
-    assert "integrity" in data["agents"]
-    assert "customer" in data["agents"]
+    assert "status" in data
+    assert data["status"] in ("ok", "degraded")  # degraded when API keys not set in test env
+    assert "agents" in data
+    assert "checks" in data
+    # All agent modules must import cleanly regardless of API key state
+    for name in ("scout", "integrity", "reputation", "revenue", "customer"):
+        assert name in data["agents"], f"Agent {name!r} missing from health response"
+        assert data["agents"][name] == "ok", f"Agent {name!r} failed to import: {data['agents'][name]}"
 
 
 # ── Admin endpoints ───────────────────────────────────────────────────────────

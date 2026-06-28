@@ -314,14 +314,15 @@ def test_confirm_seed_skips_handle_resolution_without_apify(store_id):
         assert loafology["instagram_handle"] is None  # still unresolved
 
 
-# ── Pipeline _store_name ──────────────────────────────────────────────────────
+# ── Pipeline _store_info ──────────────────────────────────────────────────────
 
 def test_pipeline_store_name_reads_from_db(store_id):
-    from app.agents.scout.pipeline import _store_name
-    name = _store_name(store_id)
+    from app.agents.scout.pipeline import _store_info
+    name, category = _store_info(store_id)
     assert name == "Sugar Rush"
 
 
 def test_pipeline_store_name_unknown_store_returns_restaurant():
-    from app.agents.scout.pipeline import _store_name
-    assert _store_name(999999) == "Restaurant"
+    from app.agents.scout.pipeline import _store_info
+    name, category = _store_info(999999)
+    assert name == "the restaurant"
