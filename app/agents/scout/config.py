@@ -76,13 +76,6 @@ COMPETITORS = [
     },
 ]
 
-# Sugar Rush itself — baseline, not a competitor
-SUGAR_RUSH = {
-    "name": "Sugar Rush",
-    "instagram_handle": "sugarrushisb",
-    "location": "Kohsar Market, F-6, Islamabad",
-}
-
 
 def enabled_sources() -> dict:
     return {

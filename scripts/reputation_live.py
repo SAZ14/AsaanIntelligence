@@ -91,7 +91,7 @@ def process_store_reviews(store: dict, wa_config=None) -> int:
     from app.whatsapp.notifier import send_review_alert
 
     store_id: int = store["id"]
-    store_name: str = store.get("name", "Sugar Rush")
+    store_name: str = store.get("name", "the venue")
 
     if wa_config is None:
         wa_config = WhatsAppConfig.from_env()

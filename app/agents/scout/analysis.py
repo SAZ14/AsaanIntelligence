@@ -11,75 +11,98 @@ from app.agents.scout.schemas import FindingSchema
 
 logger = logging.getLogger(__name__)
 
-ENRICH_SYSTEM = (
-    "You are a competitive-intelligence analyst for Sugar Rush, a dessert & ice-cream shop "
-    "in Islamabad. For each competitor finding, write a one-sentence summary of what it is "
-    "and why it matters to Sugar Rush, and rate its relevance to Sugar Rush from 1 (irrelevant) "
-    "to 10 (urgent/high-impact). Return strict JSON: a list of {\"id\", \"summary\", \"relevance_score\"}. "
-    "No prose outside JSON."
-)
+def _enrich_system(store_name: str, store_category: str) -> str:
+    return (
+        f"You are a competitive-intelligence analyst for {store_name}, a {store_category} restaurant. "
+        f"For each competitor finding, write a one-sentence summary of what it is "
+        f"and why it matters to {store_name}, and rate its relevance from 1 (irrelevant) "
+        "to 10 (urgent/high-impact). Return strict JSON: a list of {\"id\", \"summary\", \"relevance_score\"}. "
+        "No prose outside JSON."
+    )
 
-REPORT_SYSTEM = (
-    "You advise the owner of Sugar Rush (dessert & ice cream, Islamabad). "
-    "Be specific: name competitors and their concrete moves, cite engagement/ratings when present. "
-    "Give concrete, doable actions (limited-time bundles, specific reel ideas, counter-offers). "
-    "Never be generic. Keep it tight and skimmable for WhatsApp. "
-    "Use short numbered points, minimal emoji."
-)
 
-COMMAND_INSTRUCTIONS = {
-    "scout": (
-        "Write a full competitive intelligence report with these sections:\n"
-        "1. SUMMARY (2-3 sentences on the competitive landscape right now)\n"
-        "2. TOP COMPETITOR MOVES (numbered, each with competitor name + what they did + why it matters)\n"
-        "3. NEW PRODUCTS & OFFERS (specific items, prices if available)\n"
-        "4. CAMPAIGNS & CONTENT TRENDS\n"
-        "5. OPPORTUNITIES FOR SUGAR RUSH (concrete gaps)\n"
-        "6. SUGGESTED ACTIONS (3-5 specific, doable moves this week)\n"
-        "7. URGENCY: Low / Medium / High — with one sentence justifying it."
-    ),
-    "alerts": (
-        "List ONLY the highest-impact recent competitor moves — new product launches, "
-        "unusually high-engagement posts, new offers/discounts, or major campaigns. "
-        "Skip anything routine. For each: competitor name, what happened, why urgent."
-    ),
-    "competitors": (
-        "For each competitor mentioned in the findings, write 1-2 lines describing "
-        "what they are currently doing online (content strategy, recent posts, promotions). "
-        "Be specific about what you see in the data."
-    ),
-    "campaigns": (
-        "Identify all current promotions, seasonal campaigns (Eid/summer/winter/Valentine), "
-        "and content trends across competitors. Note which platforms they use and what engagement "
-        "they're getting. Suggest 2-3 campaign ideas Sugar Rush could run in response."
-    ),
-    "opportunities": (
-        "Identify 3-5 concrete gaps or underserved moments Sugar Rush can exploit based on "
-        "what competitors are NOT doing or doing poorly. For each opportunity: what the gap is, "
-        "why now, and a specific action Sugar Rush can take this week."
-    ),
-    "pricing": (
-        "Report any pricing or menu signals found in the data — specific prices, deals, "
-        "value offers, or bundle pricing. If price data is unavailable, say so explicitly "
-        "and describe menu/product signals instead. Do not invent prices."
-    ),
-    "content": (
-        "Analyze what content types are getting the best engagement across competitors "
-        "(cakes vs ice cream vs brownies, reels vs static posts, seasonal vs evergreen). "
-        "Give Sugar Rush 3-5 specific content ideas based on what is actually working."
-    ),
-    "help": (
-        "List the available commands for the Sugar Rush competitive scout agent:\n"
-        "- scout: Full competitive intelligence report (live fetch)\n"
-        "- alerts: Highest-impact competitor moves right now\n"
-        "- competitors: What each competitor is doing online\n"
-        "- campaigns: Current promotions and seasonal campaigns\n"
-        "- opportunities: Gaps Sugar Rush can exploit\n"
-        "- pricing: Competitor pricing and menu signals\n"
-        "- content: Top-performing content types + Sugar Rush content ideas\n"
-        "- help: Show this list\n\nSend any command to get started."
-    ),
-}
+def _report_system(store_name: str, store_category: str) -> str:
+    return (
+        f"You advise the owner of {store_name} ({store_category} restaurant). "
+        "Be specific: name competitors and their concrete moves, cite engagement/ratings when present. "
+        "Give concrete, doable actions (limited-time bundles, specific reel ideas, counter-offers). "
+        "Never be generic. Keep it tight and skimmable for WhatsApp. "
+        "Use short numbered points, minimal emoji."
+    )
+
+
+def _command_instructions(store_name: str) -> dict[str, str]:
+    return {
+        "scout": (
+            "Write a full competitive intelligence report with these sections:\n"
+            "1. SUMMARY (2-3 sentences on the competitive landscape right now)\n"
+            "2. TOP COMPETITOR MOVES (numbered, each with competitor name + what they did + why it matters)\n"
+            "3. NEW PRODUCTS & OFFERS (specific items, prices if available)\n"
+            "4. CAMPAIGNS & CONTENT TRENDS\n"
+            f"5. OPPORTUNITIES FOR {store_name.upper()} (concrete gaps)\n"
+            "6. SUGGESTED ACTIONS (3-5 specific, doable moves this week)\n"
+            "7. URGENCY: Low / Medium / High — with one sentence justifying it."
+        ),
+        "alerts": (
+            "List ONLY the highest-impact recent competitor moves — new product launches, "
+            "unusually high-engagement posts, new offers/discounts, or major campaigns. "
+            "Skip anything routine. For each: competitor name, what happened, why urgent."
+        ),
+        "competitors": (
+            "For each competitor mentioned in the findings, write 1-2 lines describing "
+            "what they are currently doing online (content strategy, recent posts, promotions). "
+            "Be specific about what you see in the data."
+        ),
+        "campaigns": (
+            "Identify all current promotions, seasonal campaigns (Eid/summer/winter/Valentine), "
+            "and content trends across competitors. Note which platforms they use and what engagement "
+            f"they're getting. Suggest 2-3 campaign ideas {store_name} could run in response."
+        ),
+        "opportunities": (
+            f"Identify 3-5 concrete gaps or underserved moments {store_name} can exploit based on "
+            "what competitors are NOT doing or doing poorly. For each opportunity: what the gap is, "
+            f"why now, and a specific action {store_name} can take this week."
+        ),
+        "pricing": (
+            "Report any pricing or menu signals found in the data — specific prices, deals, "
+            "value offers, or bundle pricing. If price data is unavailable, say so explicitly "
+            "and describe menu/product signals instead. Do not invent prices."
+        ),
+        "content": (
+            "Analyze what content types are getting the best engagement across competitors "
+            "(reels vs static posts, seasonal vs evergreen, food vs lifestyle). "
+            f"Give {store_name} 3-5 specific content ideas based on what is actually working."
+        ),
+        "help": (
+            f"List the available commands for the {store_name} competitive scout agent:\n"
+            "- scout: Full competitive intelligence report (live fetch)\n"
+            "- alerts: Highest-impact competitor moves right now\n"
+            "- competitors: What each competitor is doing online\n"
+            "- campaigns: Current promotions and seasonal campaigns\n"
+            f"- opportunities: Gaps {store_name} can exploit\n"
+            "- pricing: Competitor pricing and menu signals\n"
+            f"- content: Top-performing content types + {store_name} content ideas\n"
+            "- help: Show this list\n\nSend any command to get started."
+        ),
+    }
+
+
+def _intent_system(store_name: str, store_category: str) -> str:
+    return (
+        f"You route WhatsApp messages to the right competitive intelligence report for {store_name}, "
+        f"a {store_category} restaurant.\n"
+        "Map the user's message to exactly one of these commands:\n"
+        "  scout       - general update, full report, 'what's happening', unclear intent\n"
+        "  alerts      - urgent moves, threats, 'anything important', latest news\n"
+        "  competitors - asking about specific competitors or what they're doing\n"
+        "  campaigns   - promotions, deals, offers, discounts, campaigns\n"
+        "  opportunities - gaps, what should we do, how to compete, strategy\n"
+        "  pricing     - prices, menu costs, discounts, value\n"
+        "  content     - social media, what to post, reels, content ideas\n"
+        "  help        - asking what the bot can do or how to use it\n"
+        "  switch      - user wants to change restaurant / switch store / talk about a different business\n"
+        "Reply with ONLY the command name. No punctuation, no explanation."
+    )
 
 
 def _get_client():
@@ -122,7 +145,11 @@ def _chat(system: str, user: str) -> str:
 MAX_ENRICH = 60
 
 
-def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
+def enrich_findings(
+    findings: list[FindingSchema],
+    store_name: str = "the restaurant",
+    store_category: str = "food",
+) -> list[FindingSchema]:
     """Batch enrich findings with ai_summary and relevance_score."""
     if not findings:
         return findings
@@ -136,6 +163,7 @@ def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
 
     BATCH = 15
     results = list(findings)
+    enrich_system = _enrich_system(store_name, store_category)
 
     for i in range(0, len(to_enrich), BATCH):
         batch = to_enrich[i: i + BATCH]
@@ -147,7 +175,7 @@ def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
 
         prompt = f"Findings:\n{items_json}"
         try:
-            raw = _chat(ENRICH_SYSTEM, prompt)
+            raw = _chat(enrich_system, prompt)
             parsed = _extract_json(raw)
             if isinstance(parsed, list):
                 lookup = {item.get("id"): item for item in parsed if isinstance(item, dict)}
@@ -171,26 +199,15 @@ def enrich_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
     return results
 
 
-_INTENT_SYSTEM = (
-    "You route WhatsApp messages to the right competitive intelligence report for Sugar Rush, "
-    "a dessert & ice cream shop in Islamabad.\n"
-    "Map the user's message to exactly one of these commands:\n"
-    "  scout       - general update, full report, 'what's happening', unclear intent\n"
-    "  alerts      - urgent moves, threats, 'anything important', latest news\n"
-    "  competitors - asking about specific competitors or what they're doing\n"
-    "  campaigns   - promotions, deals, offers, discounts, campaigns\n"
-    "  opportunities - gaps, what should we do, how to compete, strategy\n"
-    "  pricing     - prices, menu costs, discounts, value\n"
-    "  content     - social media, what to post, reels, content ideas\n"
-    "  help        - asking what the bot can do or how to use it\n"
-    "  switch      - user wants to change restaurant / switch store / talk about a different business\n"
-    "Reply with ONLY the command name. No punctuation, no explanation."
-)
 
 _VALID_INTENTS = {"scout", "alerts", "competitors", "campaigns", "opportunities", "pricing", "content", "help", "switch"}
 
 
-def classify_intent(message: str) -> str:
+def classify_intent(
+    message: str,
+    store_name: str = "the restaurant",
+    store_category: str = "food",
+) -> str:
     """Map a free-form user message to the closest pipeline command."""
     if not _cfg.ZAI_API_KEY:
         return "scout"
@@ -199,7 +216,7 @@ def classify_intent(message: str) -> str:
         resp = client.chat.completions.create(
             model=_cfg.ZAI_MODEL,
             messages=[
-                {"role": "system", "content": _INTENT_SYSTEM},
+                {"role": "system", "content": _intent_system(store_name, store_category)},
                 {"role": "user", "content": message},
             ],
             temperature=0,
@@ -213,12 +230,19 @@ def classify_intent(message: str) -> str:
     return "scout"
 
 
-def build_report(command: str, findings: list[FindingSchema], freshness_note: str,
-                 user_message: Optional[str] = None) -> str:
+def build_report(
+    command: str,
+    findings: list[FindingSchema],
+    freshness_note: str,
+    user_message: Optional[str] = None,
+    store_name: str = "the restaurant",
+    store_category: str = "food",
+) -> str:
     cmd = command.lower().strip()
+    instructions = _command_instructions(store_name)
 
     if cmd == "help":
-        return COMMAND_INSTRUCTIONS["help"]
+        return instructions["help"]
 
     if not _cfg.ZAI_API_KEY:
         return (
@@ -234,7 +258,7 @@ def build_report(command: str, findings: list[FindingSchema], freshness_note: st
             "Try again shortly or check your API keys."
         )
 
-    instruction = COMMAND_INSTRUCTIONS.get(cmd, COMMAND_INSTRUCTIONS["scout"])
+    instruction = instructions.get(cmd, instructions["scout"])
 
     top = sorted(findings, key=lambda f: -(f.relevance_score or 0))[:25]
 
@@ -257,7 +281,7 @@ def build_report(command: str, findings: list[FindingSchema], freshness_note: st
     )
 
     try:
-        report = _chat(REPORT_SYSTEM, prompt)
+        report = _chat(_report_system(store_name, store_category), prompt)
         return f"{freshness_note}\n\n{report}"
     except Exception as exc:
         logger.error("ZAI report generation failed: %s", exc)

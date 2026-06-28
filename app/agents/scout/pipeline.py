@@ -160,19 +160,23 @@ def _store_findings(run_id: int, store_id: int, findings: list[FindingSchema]) -
         db.commit()
 
 
-def _store_name(store_id: int) -> str:
+def _store_info(store_id: int) -> tuple[str, str]:
     with SessionLocal() as db:
         from app.core.db import Store
         s = db.query(Store).filter(Store.id == store_id).first()
-        return s.name if s else "Restaurant"
+        name = s.name if s else "the restaurant"
+        category = s.category if s else "food"
+        return name, category
 
 
 def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINUTES,
         user_message: str | None = None) -> str:
     command = command.lower().strip()
+    store_name, store_category = _store_info(store_id)
 
     if command == "help":
-        return build_report("help", [], _store_name(store_id), user_message=user_message)
+        return build_report("help", [], "", user_message=user_message,
+                            store_name=store_name, store_category=store_category)
 
     is_live = command == "scout"
     latest_run, db_findings = _get_latest_run(store_id)
@@ -183,8 +187,9 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             logger.info("Reusing latest run #%d (age: %s)", latest_run.id, age)
             findings = _findings_from_db(db_findings)
             freshness_note = _build_freshness_note(latest_run, is_live=False)
-            enriched = enrich_findings(findings)
-            return build_report(command, enriched, freshness_note, user_message=user_message)
+            enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
+            return build_report(command, enriched, freshness_note, user_message=user_message,
+                                store_name=store_name, store_category=store_category)
         else:
             logger.info("Latest run too old (%s), fetching fresh data", age)
             is_live = True
@@ -217,7 +222,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
     logger.info("Clean: %d → %d findings after dedup/noise", len(raw_findings), len(cleaned))
 
-    enriched = enrich_findings(cleaned)
+    enriched = enrich_findings(cleaned, store_name=store_name, store_category=store_category)
     _store_findings(run_id, store_id, enriched)
 
     status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
@@ -235,7 +240,8 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     if sources_failed:
         freshness_note += f" (partial — {', '.join(sources_failed)} failed)"
 
-    report_text = build_report(command, enriched, freshness_note, user_message=user_message)
+    report_text = build_report(command, enriched, freshness_note, user_message=user_message,
+                               store_name=store_name, store_category=store_category)
 
     with SessionLocal() as db:
         db.add(Report(
