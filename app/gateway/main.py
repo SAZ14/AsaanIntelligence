@@ -114,13 +114,138 @@ def _customer_welcome() -> str:
     return "Switched to customer mode. Send a receipt code or say hi!"
 
 
+_CSV_CONTENT_TYPES = {
+    "text/csv", "text/plain", "application/csv",
+    "application/octet-stream", "application/vnd.ms-excel",
+}
+
+
+def _is_csv_upload(params: dict) -> bool:
+    if int(params.get("NumMedia", "0")) == 0:
+        return False
+    ct = params.get("MediaContentType0", "").split(";")[0].strip().lower()
+    return ct in _CSV_CONTENT_TYPES
+
+
+def _detect_file_type_from_caption(caption: str) -> str | None:
+    c = caption.lower()
+    if any(w in c for w in ("sales", "orders", "transactions")):
+        return "pos_sales"
+    if any(w in c for w in ("menu", "items", "products", "food")):
+        return "pos_menu"
+    if any(w in c for w in ("staff", "employees", "team", "crew")):
+        return "pos_staff"
+    return None
+
+
+def _detect_file_type_from_headers(content: str) -> str | None:
+    import csv as _csv, io as _io
+    try:
+        headers = {h.strip().lower() for h in next(_csv.reader(_io.StringIO(content)))}
+    except Exception:
+        return None
+    if headers & {"order_id", "is_void", "void_after_fire", "line_amount"}:
+        return "pos_sales"
+    if headers & {"sku", "price"} and len(headers) <= 8:
+        return "pos_menu"
+    if headers & {"staff_id", "role"}:
+        return "pos_staff"
+    return None
+
+
+async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> str:
+    import httpx
+    from datetime import datetime as _dt
+
+    media_url = params.get("MediaUrl0", "")
+    caption = (params.get("Body", "") or "").strip()
+
+    file_type = _detect_file_type_from_caption(caption)
+
+    twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    twilio_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                media_url,
+                auth=(twilio_sid, twilio_token),
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            content = resp.text
+    except Exception as exc:
+        logger.error("gateway.csv_upload: store=%d download_failed error=%s", store_id, exc)
+        return "Could not download the file. Please try again."
+
+    if file_type is None:
+        file_type = _detect_file_type_from_headers(content)
+
+    if file_type is None:
+        return (
+            "Could not detect the file type. Resend with a caption:\n"
+            "  'sales'  for sales/orders data\n"
+            "  'menu'   for menu/product data\n"
+            "  'staff'  for staff/employee data"
+        )
+
+    from app.core.db import SessionLocal, UploadedFile, POSConnection
+    from app.agents.integrity.service import get_service
+
+    with SessionLocal() as db:
+        row = (
+            db.query(UploadedFile)
+            .filter(UploadedFile.store_id == store_id, UploadedFile.file_type == file_type)
+            .first()
+        )
+        if row:
+            row.content = content
+            row.uploaded_by = from_number
+            row.uploaded_at = _dt.utcnow()
+        else:
+            db.add(UploadedFile(
+                store_id=store_id,
+                file_type=file_type,
+                content=content,
+                uploaded_by=from_number,
+            ))
+
+        pos = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
+        if pos is None:
+            db.add(POSConnection(
+                store_id=store_id,
+                pos_type="whatsapp_csv",
+                config={"store_id": store_id},
+                mapping="cafe_generic",
+                currency="PKR",
+                timezone="Asia/Karachi",
+            ))
+        elif pos.pos_type != "whatsapp_csv":
+            pos.pos_type = "whatsapp_csv"
+            pos.config = {"store_id": store_id}
+
+        db.commit()
+
+    svc = get_service()
+    svc._cache.pop(store_id, None)
+    svc._data_cache.pop(store_id, None)
+
+    row_count = max(0, len(content.strip().splitlines()) - 1)
+    type_label = {"pos_sales": "sales", "pos_menu": "menu", "pos_staff": "staff"}[file_type]
+    logger.info(
+        "gateway.csv_upload: store=%d type=%s rows=%d from=%s",
+        store_id, file_type, row_count, from_number,
+    )
+    return f"Saved {type_label} data ({row_count} rows). Type 'summary' to run a POS audit."
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.db import init_db
     init_db()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
     )
     logger.info("Central server started")
     yield
@@ -195,18 +320,25 @@ async def unified_whatsapp(request: Request) -> Response:
     to_number   = params.get("To", "")
     body        = params.get("Body", "").strip()
 
-    logger.info("Webhook: to=%s from=%s body=%r", to_number, from_number, body[:80])
+    logger.info("gateway.webhook: to=%s from=%s body=%r", to_number, from_number, body[:80])
 
     # ── Resolve store from the number they texted ──────────────────────────────
     from app.core.db import get_store_by_twilio_number, is_store_member, get_user_session, set_user_session
 
     store = get_store_by_twilio_number(to_number)
     if store is None:
-        logger.warning("No store mapped to number %s", to_number)
+        logger.warning("gateway.webhook: no store mapped to number=%s", to_number)
         return _twiml_empty()
 
     store_id   = store.id
     store_name = store.name
+    logger.info("gateway.webhook: store=%s(%d) from=%s", store_name, store_id, from_number)
+
+    # ── CSV file upload (staff only) ───────────────────────────────────────────
+    if _is_csv_upload(params) and is_store_member(from_number, store_id):
+        logger.info("gateway.webhook: csv_upload detected store=%d from=%s", store_id, from_number)
+        reply = await _handle_csv_upload(store_id, from_number, params)
+        return _twiml(reply)
 
     # ── Check if sender is a whitelisted staff member ──────────────────────────
     if not is_store_member(from_number, store_id):
@@ -245,11 +377,13 @@ async def unified_whatsapp(request: Request) -> Response:
 
     # ── Internal tools mode ────────────────────────────────────────────────────
     if current_mode == MODE_INTERNAL:
+        logger.info("gateway.webhook: store=%d mode=internal from=%s", store_id, from_number)
         from app.gateway.internal import handle_internal_for_store
         reply = handle_internal_for_store(from_number, body, store_id)
         return _twiml(reply) if reply else _twiml_empty()
 
     # ── Customer app mode (staff using loyalty features) ───────────────────────
+    logger.info("gateway.webhook: store=%d mode=customer from=%s", store_id, from_number)
     from app.gateway.customer import handle_customer_for_store
     reply = handle_customer_for_store(from_number, body, store_id)
     return _twiml(reply) if reply else _twiml_empty()

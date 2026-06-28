@@ -191,6 +191,22 @@ class POSConnection(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class UploadedFile(Base):
+    """CSV files uploaded via WhatsApp by whitelisted staff.
+    One row per (store, file_type). Re-uploading the same type replaces it.
+    Raw POS transaction data is stored here temporarily for analysis only."""
+    __tablename__ = "uploaded_files"
+    __table_args__ = (UniqueConstraint("store_id", "file_type"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    file_type = Column(String, nullable=False)   # "pos_sales" | "pos_menu" | "pos_staff"
+    filename = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    uploaded_by = Column(String, nullable=True)  # whatsapp number of uploader
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+
 class IntegrityRun(Base):
     """High-level stats from one audit run. No raw POS data stored."""
     __tablename__ = "integrity_runs"

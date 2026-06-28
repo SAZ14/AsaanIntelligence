@@ -59,25 +59,32 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
 
     # Explicit reputation commands (unambiguous)
     if first in _REPUTATION_EXACT:
+        logger.info("internal.routing: store=%d agent=reputation trigger=exact_cmd from=%s", store_id, from_number)
         return _reputation(store_id, from_number, text)
 
     if first == "edit" and len(text.split()) > 1:
+        logger.info("internal.routing: store=%d agent=reputation trigger=edit from=%s", store_id, from_number)
         return _reputation(store_id, from_number, text)
 
     if first in _SCOUT_TRIGGERS:
+        logger.info("internal.routing: store=%d agent=scout trigger=keyword from=%s", store_id, from_number)
         return _scout(store_id, from_number, text)
 
     agent = classify_agent(text)
     if agent == "scout":
+        logger.info("internal.routing: store=%d agent=scout trigger=classify from=%s", store_id, from_number)
         return _scout(store_id, from_number, text)
     if agent == "revenue":
+        logger.info("internal.routing: store=%d agent=revenue trigger=classify from=%s", store_id, from_number)
         return _revenue(store_id, from_number, text)
 
     # Review/reputation keyword check (before defaulting to integrity)
     if words & _REPUTATION_WORDS:
+        logger.info("internal.routing: store=%d agent=reputation trigger=keyword from=%s", store_id, from_number)
         return _reputation(store_id, from_number, text)
 
     # Default — integrity handles the widest range of internal queries
+    logger.info("internal.routing: store=%d agent=integrity trigger=default from=%s", store_id, from_number)
     return _integrity(store_id, from_number, text)
 
 

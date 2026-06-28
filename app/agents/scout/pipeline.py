@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -171,8 +172,10 @@ def _store_info(store_id: int) -> tuple[str, str]:
 
 def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINUTES,
         user_message: str | None = None) -> str:
+    t0 = time.monotonic()
     command = command.lower().strip()
     store_name, store_category = _store_info(store_id)
+    logger.info("scout.pipeline: run_start store=%d command=%s store_name=%s", store_id, command, store_name)
 
     if command == "help":
         return build_report("help", [], "", user_message=user_message,
@@ -184,14 +187,14 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     if not is_live and latest_run is not None:
         age = datetime.utcnow() - latest_run.finished_at
         if age < timedelta(minutes=freshness_minutes):
-            logger.info("Reusing latest run #%d (age: %s)", latest_run.id, age)
+            logger.info("scout.pipeline: cache_hit run_id=%d age_min=%d", latest_run.id, int(age.total_seconds() / 60))
             findings = _findings_from_db(db_findings)
             freshness_note = _build_freshness_note(latest_run, is_live=False)
             enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
             return build_report(command, enriched, freshness_note, user_message=user_message,
                                 store_name=store_name, store_category=store_category)
         else:
-            logger.info("Latest run too old (%s), fetching fresh data", age)
+            logger.info("scout.pipeline: cache_stale age_min=%d — live fetch", int(age.total_seconds() / 60))
             is_live = True
 
     # --- Live fetch ---
@@ -199,10 +202,10 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
         confirm_seed_competitors(store_id)
         discover_new_competitors(store_id)
     except Exception as exc:
-        logger.error("Discovery step failed: %s", exc)
+        logger.error("scout.pipeline: discovery_failed store=%d error=%s", store_id, exc)
 
     competitors = get_all_competitors(store_id)
-    logger.info("Running pipeline for %d competitors (store_id=%d)", len(competitors), store_id)
+    logger.info("scout.pipeline: scraping store=%d competitors=%d", store_id, len(competitors))
 
     with SessionLocal() as db:
         db_run = Run(store_id=store_id, command=command, status="running")
@@ -213,6 +216,10 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
 
     raw_findings, sources_ok, sources_failed = _fetch_all_sources(competitors)
     _dump_raw(run_id, "all_raw", [f.model_dump() for f in raw_findings])
+    logger.info(
+        "scout.pipeline: sources_done store=%d ok=%s failed=%s raw_findings=%d",
+        store_id, sources_ok, sources_failed, len(raw_findings),
+    )
 
     seen_hashes: set[str] = set()
     if latest_run:
@@ -220,7 +227,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             seen_hashes.add(dbf.content_hash)
 
     cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
-    logger.info("Clean: %d → %d findings after dedup/noise", len(raw_findings), len(cleaned))
+    logger.info("scout.pipeline: dedup store=%d raw=%d cleaned=%d", store_id, len(raw_findings), len(cleaned))
 
     enriched = enrich_findings(cleaned, store_name=store_name, store_category=store_category)
     _store_findings(run_id, store_id, enriched)
@@ -252,5 +259,10 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
         ))
         db.commit()
 
+    elapsed = int(time.monotonic() - t0)
+    logger.info(
+        "scout.pipeline: run_complete store=%d command=%s findings=%d status=%s duration=%ds",
+        store_id, command, len(enriched), status, elapsed,
+    )
     return report_text
 

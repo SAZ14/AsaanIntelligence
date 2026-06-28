@@ -11,6 +11,7 @@ from app.agents.integrity.pos.base import RestaurantConfig, build_connector
 # Import connectors so they self-register via register_connector()
 import app.agents.integrity.pos.csv_connector  # noqa: F401
 import app.agents.integrity.pos.rest_connector  # noqa: F401
+import app.agents.integrity.pos.db_connector   # noqa: F401
 from app.agents.integrity.agents.integrity_agent import (
     IntegrityAgentReport, run_integrity_agent, answer_question,
 )
@@ -92,6 +93,7 @@ class IntegrityService:
         if not text or text.lower() in ("help", "start", "hi", "hello", "commands"):
             return HELP_TEXT
         cmd = text.lower().split()[0]
+        logger.info("integrity: store=%d cmd=%s from=%s", store_id, cmd, from_phone)
         try:
             if cmd in ("refresh", "reload", "update"):
                 self.get_report(store_id, force=True)

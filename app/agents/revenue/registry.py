@@ -53,11 +53,13 @@ class RevenueRegistry:
     def handle(self, store_id: int, from_phone: str, text: str) -> RevenueReply:
         agent = self.agent_for_store(store_id)
         if agent is None:
+            logger.warning("revenue.registry: store=%d not_configured from=%s", store_id, from_phone)
             return RevenueReply(
                 text="Revenue analysis isn't configured for this restaurant yet. "
                      "Ask your admin to set it up via /admin/stores/{id}/revenue.",
                 intent="unknown", action="unconfigured",
             )
+        logger.info("revenue.registry: store=%d from=%s cmd=%s", store_id, from_phone, text.split()[0] if text else "")
         return agent.handle_message(from_phone, text)
 
     def invalidate(self, store_id: int) -> None:

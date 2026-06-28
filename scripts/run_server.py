@@ -18,7 +18,7 @@ from app.agents.customer.jobs.leaderboard_broadcast import broadcast_all
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 

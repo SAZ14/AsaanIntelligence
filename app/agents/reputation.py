@@ -530,6 +530,8 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
 
     text = body.strip()
     text_lower = text.lower()
+    cmd = text_lower.split()[0] if text_lower else ""
+    logger.info("reputation: store=%d cmd=%s from=%s", store_id, cmd, from_phone)
 
     if text_lower.startswith("post"):
         finding = review_db.get_pending_finding(store_id)
@@ -577,12 +579,14 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     from app.review_sources.normalizer import to_review_model
     from app.core.llm import get_client
 
+    logger.info("reputation.check: store=%d scraping_reviews", store_id)
     try:
         raw_reviews = run_pipeline(store_id)
     except Exception as exc:
-        logger.error("review pipeline error: %s", exc)
+        logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
         return f"[{store_name}] Review check failed: {exc}"
 
+    logger.info("reputation.check: store=%d reviews_found=%d", store_id, len(raw_reviews))
     if not raw_reviews:
         return f"[{store_name}] No new reviews found across all platforms."
 
