@@ -412,11 +412,20 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     )
 
     cmd = body.lower().strip()
+    first_word = cmd.split()[0] if cmd else ""
 
     # "menu" / "back" always returns to mode-selection screen
     if cmd in _MODE_TRIGGERS:
         set_user_session(from_number, store_id, active_agent=None)
         return _twiml(_mode_menu(store_name))
+
+    # Reputation action commands work regardless of session state — owners reply
+    # to review alerts from any context and must not hit the mode-selection screen.
+    if first_word in ("post", "ignore") or (first_word == "edit" and len(body.split()) > 1):
+        logger.info("gateway.webhook: reputation_action=%s store=%d from=%s", first_word, store_id, from_number)
+        from app.agents.reputation import process_reputation_owner_reply
+        reply = process_reputation_owner_reply(from_number, body, store_id=store_id)
+        return _twiml(reply)
 
     # No mode set — show selection or parse "1"/"2"
     if current_mode is None:
