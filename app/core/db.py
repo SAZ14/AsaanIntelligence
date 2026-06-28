@@ -18,6 +18,7 @@ from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey, Integer,
     JSON, String, Text, UniqueConstraint, create_engine,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 from app.core.config import DATABASE_URL
@@ -147,10 +148,10 @@ class Finding(Base):
     id = Column(Integer, primary_key=True)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
     run_id = Column(Integer, ForeignKey("runs.id"), nullable=False)
-    competitor_name = Column(String, nullable=True)
-    source_platform = Column(String, nullable=True)
-    update_type = Column(String, nullable=True)
-    content_text = Column(Text, nullable=True)
+    competitor_name = Column(String, nullable=False)
+    source_platform = Column(String, nullable=False)
+    update_type = Column(String, nullable=False)
+    content_text = Column(Text, nullable=False)
     rating = Column(Float, nullable=True)
     post_date = Column(DateTime, nullable=True)
     source_url = Column(String, nullable=True)
@@ -159,7 +160,7 @@ class Finding(Base):
     collected_at = Column(DateTime, default=datetime.utcnow)
     ai_summary = Column(Text, nullable=True)
     relevance_score = Column(Integer, nullable=True)
-    content_hash = Column(String, nullable=True)
+    content_hash = Column(String, nullable=False)
 
 
 class ScoutReport(Base):
@@ -281,15 +282,15 @@ class VenueConfig(Base):
     __tablename__ = "venue_config"
 
     id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, unique=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True, unique=True)
     venue_name = Column(String, nullable=False)
-    stamp_goal = Column(Integer, default=10)
-    reward_text = Column(String, default="Free item of your choice!")
-    winback_days = Column(Integer, default=30)
-    code_expiry_days = Column(Integer, default=7)
-    owner_phones = Column(JSON, default=list)
-    qr_greeting = Column(String, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    stamp_goal = Column(Integer, nullable=False, default=5)
+    reward_text = Column(String, nullable=False, default="a free drink or dessert")
+    winback_days = Column(Integer, nullable=False, default=5)
+    code_expiry_days = Column(Integer, nullable=False, default=30)
+    owner_phones = Column(ARRAY(String), nullable=False, default=list)
+    qr_greeting = Column(String, nullable=False, default="")
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class CommunityMember(Base):
@@ -298,12 +299,12 @@ class CommunityMember(Base):
 
     phone = Column(String, primary_key=True)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
-    name = Column(String, nullable=True)
-    stamps_current = Column(Integer, default=0)
-    stamps_lifetime = Column(Integer, default=0)
-    joined_at = Column(DateTime, default=datetime.utcnow)
-    last_activity_at = Column(DateTime, default=datetime.utcnow)
-    opted_in = Column(Boolean, default=True)
+    name = Column(String, nullable=False, default="")
+    stamps_current = Column(Integer, nullable=False, default=0)
+    stamps_lifetime = Column(Integer, nullable=False, default=0)
+    joined_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_activity_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    opted_in = Column(Boolean, nullable=False, default=True)
     winback_sent_at = Column(DateTime, nullable=True)
 
 
@@ -312,8 +313,8 @@ class RedeemCode(Base):
 
     code = Column(String, primary_key=True)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
-    order_id = Column(String, nullable=True)
-    issued_at = Column(DateTime, default=datetime.utcnow)
+    order_id = Column(String, nullable=False, default="")
+    issued_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     redeemed_at = Column(DateTime, nullable=True)
     redeemed_by = Column(String, nullable=True)
 
@@ -322,22 +323,22 @@ class StampEvent(Base):
     __tablename__ = "stamp_events"
 
     id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     phone = Column(String, nullable=False)
     code = Column(String, nullable=False)
     stamp_number = Column(Integer, nullable=False)
-    reward_issued = Column(Boolean, default=False)
-    at = Column(DateTime, default=datetime.utcnow)
+    reward_issued = Column(Boolean, nullable=False, default=False)
+    at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class Deal(Base):
     __tablename__ = "deals"
 
     id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     title = Column(String, nullable=False)
-    description = Column(String, nullable=True)
-    active = Column(Boolean, default=True)
+    description = Column(String, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
 
 
 class OnboardingSession(Base):
@@ -347,7 +348,7 @@ class OnboardingSession(Base):
     phone = Column(String, primary_key=True)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
     state = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class CustomerChatSession(Base):
@@ -356,8 +357,8 @@ class CustomerChatSession(Base):
 
     phone = Column(String, primary_key=True)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
-    history = Column(JSON, default=list)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    history = Column(JSON, nullable=False, default=list)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
