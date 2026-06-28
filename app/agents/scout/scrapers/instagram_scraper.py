@@ -51,13 +51,14 @@ def _parse_timestamp(ts) -> Optional[datetime]:
     retry=retry_if_exception_type(Exception),
     reraise=True,
 )
-def _run_actor(handles: list[str], limit: int) -> list[dict]:
+def _run_actor(usernames: list[str], hashtags: list[str], limit: int) -> list[dict]:
     from apify_client import ApifyClient
     client = ApifyClient(APIFY_TOKEN)
-    run_input = {
-        "username": handles,
-        "resultsLimit": limit,
-    }
+    run_input: dict = {"resultsLimit": limit}
+    if usernames:
+        run_input["username"] = usernames
+    if hashtags:
+        run_input["hashtags"] = hashtags
     run = client.actor(APIFY_IG_ACTOR).call(run_input=run_input)
     items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
     return items
@@ -71,8 +72,12 @@ def fetch_recent_posts(handles: list[str], limit: int = IG_POSTS_PER_PROFILE) ->
     if not handles:
         return []
 
+    # Split into regular handles and hashtag entries (stored as "#hashtag" in DB)
+    usernames = [h for h in handles if not h.startswith("#")]
+    hashtags = [h.lstrip("#") for h in handles if h.startswith("#")]
+
     try:
-        items = _run_actor(handles, limit)
+        items = _run_actor(usernames, hashtags, limit)
     except Exception as exc:
         logger.error("Apify Instagram actor failed: %s", exc)
         return []
@@ -84,19 +89,25 @@ def fetch_recent_posts(handles: list[str], limit: int = IG_POSTS_PER_PROFILE) ->
             if not caption or not caption.strip():
                 continue
 
-            owner = (
-                item.get("ownerUsername")
-                or item.get("username")
-                or item.get("ownerId", "")
-            )
-            # Map IG handle → competitor name using the handles list
-            competitor_name = _handle_to_name(str(owner), handles)
+            # Hashtag-sourced items carry the hashtag context; regular items carry ownerUsername
+            hashtag_ctx = item.get("hashtag") or item.get("topHashtag")
+            if hashtag_ctx:
+                competitor_name = f"Global Trend: #{hashtag_ctx}"
+            else:
+                owner = (
+                    item.get("ownerUsername")
+                    or item.get("username")
+                    or item.get("ownerId", "")
+                )
+                competitor_name = _handle_to_name(str(owner), usernames)
 
             text = caption[:1000]
             likes = _safe_int(item.get("likesCount") or item.get("likes"))
             comments = _safe_int(item.get("commentsCount") or item.get("comments"))
 
-            post_url = item.get("url") or item.get("shortCode") and f"https://instagram.com/p/{item['shortCode']}"
+            post_url = item.get("url") or (
+                item.get("shortCode") and f"https://instagram.com/p/{item['shortCode']}"
+            )
             image_url = item.get("displayUrl") or item.get("thumbnailUrl")
 
             findings.append(FindingSchema(

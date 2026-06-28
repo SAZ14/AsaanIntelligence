@@ -191,15 +191,23 @@ def get_all_competitors(store_id: int) -> list[dict]:
         ]
 
 
-def seed_competitors_for_store(store_id: int) -> int:
-    """Seed the config COMPETITORS list into the DB for a store. Skips duplicates."""
+def seed_competitors_for_store(
+    store_id: int,
+    competitors: list[dict] | None = None,
+) -> int:
+    """Seed competitors into the DB for a store. Skips duplicates.
+
+    If `competitors` is provided, uses that list. Otherwise falls back to the
+    module-level COMPETITORS list (Sugar Rush defaults).
+    """
+    source_list = competitors if competitors is not None else COMPETITORS
     added = 0
     with SessionLocal() as db:
         existing = {
             c.name.lower()
             for c in db.query(Competitor).filter(Competitor.store_id == store_id).all()
         }
-        for comp in COMPETITORS:
+        for comp in source_list:
             if comp["name"].lower() in existing:
                 continue
             db.add(Competitor(
