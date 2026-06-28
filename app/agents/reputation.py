@@ -120,7 +120,10 @@ def _extract_hour_range(text: str) -> tuple[int, int] | None:
         if m:
             if has_time and m.group(1).isdigit():
                 h = int(m.group(1))
-                ampm = m.group(3).lower() if m.group(3) else ""
+                try:
+                    ampm = (m.group(3) or "").lower()
+                except IndexError:
+                    ampm = (m.group(2) or "").lower()
                 if ampm in ("pm", "ish") and h < 12:
                     h += 12
                 elif ampm == "am" and h == 12:

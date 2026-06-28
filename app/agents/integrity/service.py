@@ -1,8 +1,11 @@
 """Integrity agent service — per-store cache, command routing, DB-driven POS config."""
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from app.agents.integrity.pos.base import RestaurantConfig, build_connector
 # Import connectors so they self-register via register_connector()
