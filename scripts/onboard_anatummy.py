@@ -276,10 +276,10 @@ def main() -> None:
 
     print(f"\nAnatummy onboarded. Store ID = {store_id}")
     print("\nRemaining steps (via admin API or WhatsApp):")
-    print(f"  Register Twilio number  →  POST /admin/stores/{store_id}/twilio")
-    print(f"  Add owner to WhatsApp   →  POST /admin/stores/{store_id}/members")
-    print(f"  Set loyalty config      →  POST /admin/stores/{store_id}/customer")
-    print(f"  Resolve missing handles →  POST /admin/stores/{store_id}/seed-competitors")
+    print(f"  Register Twilio number  ->  POST /admin/stores/{store_id}/twilio")
+    print(f"  Add owner to WhatsApp   ->  POST /admin/stores/{store_id}/members")
+    print(f"  Set loyalty config      ->  POST /admin/stores/{store_id}/customer")
+    print(f"  Resolve missing handles ->  POST /admin/stores/{store_id}/seed-competitors")
 
 
 if __name__ == "__main__":
