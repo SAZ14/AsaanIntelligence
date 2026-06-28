@@ -81,7 +81,10 @@ def save_review_finding(
         with SessionLocal() as db:
             existing = (
                 db.query(Finding)
-                .filter(Finding.content_hash == review.get("hash", ""))
+                .filter(
+                    Finding.store_id == store_id,
+                    Finding.content_hash == review.get("hash", ""),
+                )
                 .first()
             )
             if existing:
@@ -165,7 +168,7 @@ def get_recent_reviews(store_id: int, limit: int = 50) -> list[dict]:
 
 def save_reviews(
     reviews: list[dict],
-    store_id: int = 1,
+    store_id: int,
     run_id: int = 1,
     store_name: str = "",
 ) -> int:

@@ -125,7 +125,8 @@ class IntegrityService:
 
         except FileNotFoundError:
             return "POS not configured. Ask admin: POST /admin/stores/{id}/pos"
-        except Exception:
+        except Exception as exc:
+            logger.exception("Integrity agent error store=%d: %s", store_id, exc)
             return "Something went wrong. Try 'summary' or 'help'."
 
 

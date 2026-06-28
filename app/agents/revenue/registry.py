@@ -14,12 +14,6 @@ from app.agents.revenue.store import Store
 logger = logging.getLogger(__name__)
 
 
-def _normalize_phone(phone: str) -> str:
-    p = (phone or "").strip().lower()
-    if p.startswith("whatsapp:"):
-        p = p[len("whatsapp:"):]
-    return "".join(ch for ch in p if ch.isdigit() or ch == "+")
-
 
 class RevenueRegistry:
     """Routes owner messages to their store's RevenueAgent. DB-backed."""
@@ -45,7 +39,7 @@ class RevenueRegistry:
 
         config = RevenueConfig(venue_name=venue_name, **{
             k: v for k, v in cfg_overrides.items()
-            if hasattr(RevenueConfig, k)
+            if k in RevenueConfig.__dataclass_fields__
         })
         agent = RevenueAgent(
             store=Store(db_path),

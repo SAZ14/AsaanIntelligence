@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_VENUE_NAME = "Sugar Rush"
+DEFAULT_VENUE_NAME = "the venue"
 
 # Categories whose demand is habitual / routine → treated as more inelastic, so
 # they carry pricing power. Everything else is discretionary.

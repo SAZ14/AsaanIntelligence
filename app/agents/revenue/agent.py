@@ -396,7 +396,7 @@ def run_revenue_agent(
     config: RevenueConfig | None = None,
     client=None,
     as_of: date | None = None,
-    phone: str = "+920000000000",
+    phone: str = "+0",
 ) -> list[RevenueReply]:
     """Run a list of owner questions through a fresh Revenue agent."""
     agent = RevenueAgent(
