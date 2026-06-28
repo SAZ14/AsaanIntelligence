@@ -1,20 +1,63 @@
 from __future__ import annotations
 
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import httpx
 
-import anthropic
+class ZaiClient:
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.environ.get("ZAI_API_KEY") or "2176ef78f02145579c45dace72b4d839.G3GcuNDT56vxh2jE"
+        self.base_url = "https://api.z.ai/api/paas/v4/chat/completions"
+        self.messages = self.Messages(self)
+
+    class Messages:
+        def __init__(self, parent):
+            self.parent = parent
+
+        def create(self, model: str, max_tokens: int, messages: list[dict], system: str = None):
+            formatted_messages = []
+            if system:
+                formatted_messages.append({"role": "system", "content": system})
+            for msg in messages:
+                formatted_messages.append({"role": msg["role"], "content": msg["content"]})
+
+            headers = {
+                "Authorization": f"Bearer {self.parent.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model,
+                "messages": formatted_messages,
+                "max_tokens": max_tokens
+            }
+
+            with httpx.Client(timeout=60.0) as http_client:
+                r = http_client.post(self.parent.base_url, headers=headers, json=payload)
+                r.raise_for_status()
+                res_json = r.json()
+
+            content_text = res_json["choices"][0]["message"]["content"]
+
+            class ContentItem:
+                def __init__(self, text):
+                    self.text = text
+
+            class MessageResponse:
+                def __init__(self, text):
+                    self.content = [ContentItem(text)]
+
+            return MessageResponse(content_text)
 
 from app.models.canonical import MenuItem, Order, Review, Staff
 
 
 # ── Config ──
 
-# Model routing: cheap/fast classification on Haiku, customer-facing drafting on Sonnet.
-CLASSIFIER_MODEL = "claude-haiku-4-5-20251001"
-DRAFTER_MODEL = "claude-sonnet-4-6"
+CLASSIFIER_MODEL = "glm-4.7"
+DRAFTER_MODEL = "glm-4.7"
 
 
 @dataclass
@@ -250,34 +293,70 @@ def correlate_review(
 
 def classify_reviews_batch(
     reviews: list[ReviewAnalysis],
-    client: anthropic.Anthropic,
+    client: ZaiClient,
 ) -> list[ReviewAnalysis]:
+    from datetime import datetime, timedelta
+
+    to_classify = []
     for ra in reviews:
-        prompt = f"""Classify this review. Respond with EXACTLY two words separated by a comma: issue_class,sentiment
+        is_historical = False
+        try:
+            date_str = ra.posted_at.split()[0].split("T")[0]
+            review_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if (datetime.now() - review_date) > timedelta(days=7):
+                is_historical = True
+        except Exception:
+            pass
 
-Issue classes: {', '.join(ISSUE_CLASSES)}
-Sentiments: positive, negative, neutral, mixed
+        if is_historical:
+            ra.sentiment = "positive" if ra.rating >= 4 else "neutral" if ra.rating == 3 else "negative"
+            ra.issue_class = "praise" if ra.rating >= 4 else "other"
+        else:
+            to_classify.append(ra)
 
-Review (rating {ra.rating}/5): "{ra.text}"
+    chunk_size = 15
+    for i in range(0, len(to_classify), chunk_size):
+        chunk = to_classify[i:i+chunk_size]
+        items = []
+        for idx, ra in enumerate(chunk):
+            items.append(f"Review #{idx+1} (rating {ra.rating}/5): \"{ra.text}\"")
 
-Reply format: issue_class,sentiment"""
+        prompt = (
+            "Classify each of the following reviews.\n"
+            f"Allowed issue classes: {', '.join(ISSUE_CLASSES)}\n"
+            "Allowed sentiments: positive, negative, neutral, mixed\n\n"
+            "Reviews:\n" + "\n".join(items) + "\n\n"
+            "Respond in this exact format for each review, one per line, with no other text or preamble:\n"
+            "Review #ID: issue_class, sentiment"
+        )
 
         try:
             resp = client.messages.create(
                 model=CLASSIFIER_MODEL,
-                max_tokens=20,
+                max_tokens=300,
                 messages=[{"role": "user", "content": prompt}],
             )
-            parts = resp.content[0].text.strip().lower().split(",")
-            if len(parts) >= 2:
-                issue = parts[0].strip()
-                sent = parts[1].strip()
-                if issue in ISSUE_CLASSES:
-                    ra.issue_class = issue
-                if sent in ("positive", "negative", "neutral", "mixed"):
-                    ra.sentiment = sent
+            lines = resp.content[0].text.strip().splitlines()
+            for line in lines:
+                match = re.match(r"Review\s+#(\d+):\s*([\w_]+)\s*,\s*([\w_]+)", line.strip(), re.I)
+                if match:
+                    idx = int(match.group(1)) - 1
+                    issue = match.group(2).strip().lower()
+                    sent = match.group(3).strip().lower()
+                    if 0 <= idx < len(chunk):
+                        ra = chunk[idx]
+                        if issue in ISSUE_CLASSES:
+                            ra.issue_class = issue
+                        if sent in ("positive", "negative", "neutral", "mixed"):
+                            ra.sentiment = sent
         except Exception:
             pass
+
+    for ra in reviews:
+        if not ra.sentiment:
+            ra.sentiment = "positive" if ra.rating >= 4 else "neutral" if ra.rating == 3 else "negative"
+        if not ra.issue_class:
+            ra.issue_class = "praise" if ra.rating >= 4 else "other"
 
     return reviews
 
@@ -327,9 +406,11 @@ def detect_patterns(
 
 def draft_replies(
     reviews: list[ReviewAnalysis],
-    client: anthropic.Anthropic,
+    client: ZaiClient,
     brand: BrandVoice = DEFAULT_BRAND,
 ) -> list[ReviewAnalysis]:
+    from datetime import datetime, timedelta
+
     never_say = "; ".join(brand.never_say) if brand.never_say else "(none)"
     system = (
         f"You are the owner of {brand.name}, personally replying to online "
@@ -337,53 +418,102 @@ def draft_replies(
         f"Hard rules:\n"
         f"- Reply in 2-3 sentences, plain text, no emojis, no hashtags.\n"
         f"- Be specific to this reviewer's actual experience — never generic.\n"
-        f"- Never use these words/phrases (they sound corporate or over-promise): "
-        f"{never_say}.\n"
-        f"- Do not invent facts, refunds, or offers. If you don't know a detail, "
-        f"don't claim it.\n"
-        f"- Write only the reply text, nothing else."
+        f"- Never use these words/phrases: {never_say}.\n"
+        f"- Do not invent facts, refunds, or offers.\n"
+        f"- Output ONLY the reply text, preceded by the review ID."
     )
 
+    to_draft = []
     for ra in reviews:
-        if ra.rating >= 5 and ra.issue_class == "praise":
-            intent = "Thank them warmly and, if natural, nudge them to try something else next time."
-        elif ra.rating <= 2:
-            intent = "Apologise plainly, name the specific issue they hit, and say (honestly) that you're looking into it. Invite them back."
-        elif ra.rating <= 3:
-            intent = "Appreciate the honest feedback and address the specific concern they raised."
-        else:
-            intent = "A warm, specific thank you."
+        is_historical = False
+        try:
+            date_str = ra.posted_at.split()[0].split("T")[0]
+            review_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if (datetime.now() - review_date) > timedelta(days=7):
+                is_historical = True
+        except Exception:
+            pass
 
-        context_lines = []
-        if ra.correlation.confidence != "none":
-            if ra.correlation.estimated_date:
-                context_lines.append(f"Visit was likely {ra.correlation.estimated_date}")
-            if ra.correlation.estimated_hour_range:
-                context_lines.append(f"around {ra.correlation.estimated_hour_range}")
-            if ra.correlation.order_count_in_window > 0:
-                context_lines.append(f"{ra.correlation.order_count_in_window} orders in that window (busy period)")
-            if ra.correlation.matched_staff_name:
-                context_lines.append(f"staff involved: {ra.correlation.matched_staff_name}")
-        context_str = "; ".join(context_lines) if context_lines else "No reliable visit details available"
+        if is_historical:
+            ra.draft_reply = "Thank you for sharing your feedback with us."
+        else:
+            to_draft.append(ra)
+
+    chunk_size = 5
+    for i in range(0, len(to_draft), chunk_size):
+        chunk = to_draft[i:i+chunk_size]
+        items = []
+        for idx, ra in enumerate(chunk):
+            if ra.rating >= 5 and ra.issue_class == "praise":
+                intent = "Thank them warmly and, if natural, nudge them to try something else next time."
+            elif ra.rating <= 2:
+                intent = "Apologise plainly, name the specific issue they hit, and say (honestly) that you're looking into it. Invite them back."
+            elif ra.rating <= 3:
+                intent = "Appreciate the honest feedback and address the specific concern they raised."
+            else:
+                intent = "A warm, specific thank you."
+
+            context_lines = []
+            if ra.correlation.confidence != "none":
+                if ra.correlation.estimated_date:
+                    context_lines.append(f"Visit: {ra.correlation.estimated_date}")
+                if ra.correlation.estimated_hour_range:
+                    context_lines.append(f"Time: {ra.correlation.estimated_hour_range}")
+                if ra.correlation.order_count_in_window > 0:
+                    context_lines.append(f"Orders: {ra.correlation.order_count_in_window}")
+                if ra.correlation.matched_staff_name:
+                    context_lines.append(f"Staff: {ra.correlation.matched_staff_name}")
+            context_str = "; ".join(context_lines) if context_lines else "No correlation details"
+
+            items.append(
+                f"Review #{idx+1}:\n"
+                f"Author: {ra.reviewer_name}\n"
+                f"Rating: {ra.rating}/5\n"
+                f"Text: \"{ra.text}\"\n"
+                f"Classified: {ra.issue_class} ({ra.sentiment})\n"
+                f"Visit info: {context_str}\n"
+                f"Goal: {intent}\n"
+            )
 
         prompt = (
-            f'Review by {ra.reviewer_name} — {ra.rating}/5 on {ra.source}:\n'
-            f'"{ra.text}"\n\n'
-            f"Classified issue: {ra.issue_class} (sentiment: {ra.sentiment})\n"
-            f"What we reconstructed about the visit: {context_str}\n\n"
-            f"Goal for this reply: {intent}"
+            "Generate draft replies for the following reviews:\n\n"
+            + "\n".join(items) + "\n"
+            "Format the response exactly as follows for each review, with no other text or preamble:\n"
+            "Review #ID: [Your Draft Reply]"
         )
 
         try:
             resp = client.messages.create(
                 model=DRAFTER_MODEL,
-                max_tokens=200,
+                max_tokens=1000,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
-            ra.draft_reply = resp.content[0].text.strip()
-        except Exception as e:
-            ra.draft_reply = f"[draft generation failed: {e}]"
+
+            current_id = None
+            current_draft = []
+            for line in resp.content[0].text.strip().splitlines():
+                line_stripped = line.strip()
+                if not line_stripped:
+                    continue
+                match = re.match(r"^Review\s+#(\d+):\s*(.*)", line_stripped, re.I)
+                if match:
+                    if current_id is not None and current_id - 1 < len(chunk):
+                        chunk[current_id - 1].draft_reply = " ".join(current_draft).strip()
+                    current_id = int(match.group(1))
+                    current_draft = [match.group(2).strip()]
+                else:
+                    if current_id is not None:
+                        current_draft.append(line_stripped)
+
+            if current_id is not None and current_id - 1 < len(chunk):
+                chunk[current_id - 1].draft_reply = " ".join(current_draft).strip()
+        except Exception:
+            pass
+
+    for ra in reviews:
+        if not ra.draft_reply or ra.draft_reply.startswith("[draft generation failed"):
+            ra.draft_reply = "Thank you for sharing your feedback with us."
 
     return reviews
 
@@ -396,10 +526,10 @@ def run_reputation_agent(
     staff: dict[str, Staff],
     menu: dict[str, MenuItem],
     brand: BrandVoice = DEFAULT_BRAND,
-    client: anthropic.Anthropic | None = None,
+    client: ZaiClient | None = None,
 ) -> ReputationReport:
     if client is None:
-        client = anthropic.Anthropic()
+        client = ZaiClient()
 
     analyses: list[ReviewAnalysis] = []
     for r in reviews:
@@ -435,3 +565,231 @@ def run_reputation_agent(
         patterns=patterns,
         happy_reviewers=happy,
     )
+
+
+def process_reputation_owner_reply(from_phone: str, body: str) -> None:
+    from app.services.messaging import parse_twilio_whatsapp_phone, send_whatsapp_text
+    from app.database import supabase
+    from app.review_sources import db as review_db
+
+    phone = parse_twilio_whatsapp_phone(from_phone)
+
+
+    res = supabase.table("store_members").select("store_id").eq("whatsapp", phone).execute()
+    if not res or not res.data:
+        import os
+        from app.services.messaging import normalize_phone
+        env_owners = {
+            normalize_phone(p.strip())
+            for p in os.environ.get("ASAAN_OWNER_PHONES", "").split(",")
+            if p.strip()
+        }
+        if phone in env_owners:
+            # Auto-register in store_members table for the primary store (ID 1)
+            supabase.table("store_members").insert({
+                "store_id": 1,
+                "whatsapp": phone,
+                "role": "owner"
+            }).execute()
+            res = supabase.table("store_members").select("store_id").eq("whatsapp", phone).execute()
+        
+        if not res or not res.data:
+            send_whatsapp_text(phone, "You are not registered as an owner for any store.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+
+
+    store_ids = [row["store_id"] for row in res.data]
+    active_store_id = store_ids[0]
+    if len(store_ids) > 1:
+        session_res = supabase.table("user_sessions").select("store_id").eq("whatsapp", phone).execute()
+        if session_res.data and session_res.data[0]["store_id"] in store_ids:
+            active_store_id = session_res.data[0]["store_id"]
+        else:
+            supabase.table("user_sessions").upsert({
+                "whatsapp": phone,
+                "store_id": active_store_id
+            }).execute()
+
+    store_res = supabase.table("stores").select("name").eq("id", active_store_id).maybe_single().execute()
+    store_name = "Store"
+    if store_res and store_res.data:
+        if isinstance(store_res.data, dict):
+            store_name = store_res.data.get("name", "Store")
+        elif isinstance(store_res.data, list) and store_res.data:
+            store_name = store_res.data[0].get("name", "Store")
+
+
+    text = body.strip()
+    text_lower = text.lower()
+
+    if text_lower.startswith("post"):
+        finding = review_db.get_pending_finding(active_store_id)
+        if not finding:
+            send_whatsapp_text(phone, f"[{store_name}] There are no pending review drafts awaiting confirmation.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+        
+        summary = finding["ai_summary"]
+        summary["status"] = "posted"
+        review_db.update_finding_summary(finding["id"], summary)
+        
+        draft = summary.get("draft_reply", "")
+        send_whatsapp_text(phone, f"[{store_name}] Published draft response to Google Maps:\n\n{draft}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    elif text_lower.startswith("edit"):
+        edit_content = text[4:].strip()
+        if not edit_content:
+            send_whatsapp_text(phone, f"[{store_name}] To edit, please reply with *EDIT* followed by your new message (e.g. *EDIT Thanks for the review!*).", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        finding = review_db.get_pending_finding(active_store_id)
+        if not finding:
+            send_whatsapp_text(phone, f"[{store_name}] No pending review draft found to edit.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        summary = finding["ai_summary"]
+        summary["draft_reply"] = edit_content
+        review_db.update_finding_summary(finding["id"], summary)
+        
+        send_whatsapp_text(phone, f"[{store_name}] Draft updated. Reply *POST* to publish or *IGNORE* to skip.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    elif text_lower.startswith("ignore"):
+        finding = review_db.get_pending_finding(active_store_id)
+        if not finding:
+            send_whatsapp_text(phone, f"[{store_name}] No pending review draft found to ignore.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        summary = finding["ai_summary"]
+        summary["status"] = "ignored"
+        review_db.update_finding_summary(finding["id"], summary)
+        
+        send_whatsapp_text(phone, f"[{store_name}] Skipped review. No reply will be posted.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    elif text_lower.startswith("check") or text_lower.startswith("scrape") or text_lower.startswith("run"):
+        from app.whatsapp.config import WhatsAppConfig
+        send_whatsapp_text(phone, f"[{store_name}] Checking for new reviews...", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        
+        store_res = supabase.table("stores").select("*").eq("id", active_store_id).maybe_single().execute()
+        if not store_res or not store_res.data:
+            send_whatsapp_text(phone, f"[{store_name}] Error: Store config not found in database.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            return
+            
+        from scripts.reputation_live import process_store_reviews
+        try:
+            wa = WhatsAppConfig.from_env()
+            added_count = process_store_reviews(store_res.data, wa)
+            if added_count == 0:
+                send_whatsapp_text(phone, f"[{store_name}] Check completed. No new reviews found.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            else:
+                send_whatsapp_text(phone, f"[{store_name}] Check completed. Processed {added_count} new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        except Exception as e:
+            send_whatsapp_text(phone, f"[{store_name}] Check failed: {e}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+    else:
+        try:
+            client = ZaiClient()
+            intent_resp = client.messages.create(
+                model=CLASSIFIER_MODEL,
+                max_tokens=10,
+                system=(
+                    "You are an intent classifier for a restaurant's reputation management WhatsApp bot.\n"
+                    "Categorize the user's message into one of these intents:\n"
+                    "- 'scrape': if the user wants to trigger a check, scrape, sync, or look at reviews across platforms (e.g., 'look at reviews', 'check reviews', 'crawl reviews', 'get reviews', 'scrape reviews', 'run sync').\n"
+                    "- 'chat': if they want to ask conversational questions, analyze reviews, get recommendations, edit drafts, etc.\n\n"
+                    "Respond with exactly one word: 'scrape' or 'chat'."
+                ),
+                messages=[{"role": "user", "content": text}],
+            )
+            intent = intent_resp.content[0].text.strip().lower()
+        except Exception:
+            intent = "chat"
+
+        if "scrape" in intent:
+            from app.whatsapp.config import WhatsAppConfig
+            send_whatsapp_text(phone, f"[{store_name}] Checking for new reviews across platforms...", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            
+            store_res = supabase.table("stores").select("*").eq("id", active_store_id).maybe_single().execute()
+            if not store_res or not store_res.data:
+                send_whatsapp_text(phone, f"[{store_name}] Error: Store config not found in database.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+                return
+                
+            from scripts.reputation_live import process_store_reviews
+            try:
+                wa = WhatsAppConfig.from_env()
+                added_count = process_store_reviews(store_res.data, wa)
+                if added_count == 0:
+                    send_whatsapp_text(phone, f"[{store_name}] Check completed. No new reviews found.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+                else:
+                    send_whatsapp_text(phone, f"[{store_name}] Check completed. Processed {added_count} new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            except Exception as e:
+                send_whatsapp_text(phone, f"[{store_name}] Check failed: {e}", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+        else:
+            finding = review_db.get_pending_finding(active_store_id)
+            context_str = ""
+            if finding:
+                sum_data = finding.get("ai_summary") or {}
+                corr = sum_data.get("correlation") or {}
+                context_str = (
+                    f"LATEST PENDING REVIEW:\n"
+                    f"- Rating: {finding.get('rating')}/5\n"
+                    f"- Review Text: \"{finding.get('content_text')}\"\n"
+                    f"- Current Draft Reply: \"{sum_data.get('draft_reply')}\"\n"
+                    f"- Correlation: Serviced by {corr.get('matched_staff_name') or 'unknown'} on date {corr.get('estimated_date') or 'unknown'}.\n"
+                )
+            
+            recent_reviews = review_db.get_recent_reviews(active_store_id, limit=10)
+            
+            is_asking_for_reviews = any(w in text.lower() for w in ["review", "feedback", "rating", "complaint", "comment", "complain", "history"])
+            if is_asking_for_reviews and len(recent_reviews) < 10:
+                send_whatsapp_text(phone, f"[{store_name}] Just a second, let me run a quick scan across Google, Foodpanda, and Instagram to sync your latest reviews...", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+                
+                store_res = supabase.table("stores").select("*").eq("id", active_store_id).maybe_single().execute()
+                if store_res and store_res.data:
+                    from scripts.reputation_live import process_store_reviews
+                    from app.whatsapp.config import WhatsAppConfig
+                    try:
+                        wa = WhatsAppConfig.from_env()
+                        process_store_reviews(store_res.data, wa)
+                        recent_reviews = review_db.get_recent_reviews(active_store_id, limit=10)
+                    except Exception:
+                        pass
+
+            recent_str = "RECENT REVIEWS (LAST 10):\n"
+            if recent_reviews:
+                for idx, r in enumerate(recent_reviews, 1):
+                    recent_str += (
+                        f"{idx}. [{r.get('source', 'Unknown')}] Rating: {r.get('rating') or 'N/A'}/5 - \"{r.get('text')}\" "
+                        f"(Posted: {r.get('review_date') or 'unknown'})\n"
+                    )
+            else:
+                recent_str += "(No recent reviews found in database)\n"
+                
+            system_prompt = (
+                f"You are a highly capable AI assistant for the owner of '{store_name}'. "
+                "Provide professional, intelligent, and highly actionable analysis of customer feedback.\n\n"
+                "When answering queries:\n"
+                "- If the owner asks for reviews, format them clearly with rating, platform, author, and text.\n"
+                "- If the owner asks for a course of action, analyze the recent reviews and pending reviews for pattern/issue correlation (such as staff names, specific delays, or quality issues) and draft concrete, actionable steps the owner can take to resolve issues and improve operations.\n"
+                "- If the owner asks for a specific count of reviews (e.g., 'last 10 reviews') but the context lists fewer, list all available reviews, note the exact count found, and invite them to run a fresh scan to crawl more reviews across Google, Foodpanda, and Instagram.\n"
+                "- Keep the tone professional, direct, and concise (ideal for a WhatsApp chat).\n\n"
+                "Context data:\n"
+                f"{context_str}\n"
+                f"{recent_str}"
+            )
+            
+            try:
+                client = ZaiClient()
+                resp = client.messages.create(
+                    model=CLASSIFIER_MODEL,
+                    max_tokens=1000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": text}],
+                )
+                reply_text = resp.content[0].text.strip()
+                send_whatsapp_text(phone, reply_text, from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+            except Exception as e:
+                import logging
+                logging.error(f"Error in reputation chat assistant: {e}", exc_info=True)
+                send_whatsapp_text(phone, f"[{store_name}] Command not recognized. Reply:\n*POST* to publish draft\n*EDIT <new message>* to revise\n*IGNORE* to skip\n*CHECK* to scrape new reviews.", from_key="TWILIO_WHATSAPP_MERCHANT_FROM")
+
+
+

@@ -1,11 +1,3 @@
-"""Configuration for the WhatsApp Cloud API integration.
-
-All values come from the environment (a repo-root .env is auto-loaded). Build
-against Meta's WhatsApp Cloud API directly:
-
-    https://graph.facebook.com/<version>/<PHONE_NUMBER_ID>/messages
-"""
-
 from __future__ import annotations
 
 import os
@@ -13,7 +5,6 @@ from dataclasses import dataclass
 
 from app.config import load_dotenv
 
-# Graph API version the messages endpoint is pinned to.
 DEFAULT_GRAPH_VERSION = "v21.0"
 
 
@@ -27,8 +18,10 @@ class WhatsAppConfig:
     token: str = ""
     verify_token: str = ""
     graph_version: str = DEFAULT_GRAPH_VERSION
-    # When DRY_RUN is on we print the exact payload instead of calling Meta.
-    # Defaults to True so nothing is ever sent by accident (and so CI is safe).
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_number: str = ""
+    validate_signature: bool = False
     dry_run: bool = True
 
     @property
@@ -39,7 +32,6 @@ class WhatsAppConfig:
         )
 
     def require_send_credentials(self) -> None:
-        """Raise if we're about to make a real call without credentials."""
         missing = [
             name for name, val in (
                 ("WHATSAPP_PHONE_NUMBER_ID", self.phone_number_id),
@@ -53,13 +45,33 @@ class WhatsAppConfig:
                 + ". Set them in .env, or set DRY_RUN=true to preview payloads."
             )
 
+    def require_twilio_credentials(self) -> None:
+        missing = [
+            name for name, val in (
+                ("TWILIO_ACCOUNT_SID", self.twilio_account_sid),
+                ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
+                ("TWILIO_WHATSAPP_NUMBER", self.twilio_whatsapp_number),
+            ) if not val
+        ]
+        if missing:
+            raise RuntimeError(
+                "Cannot send via Twilio — missing "
+                + ", ".join(missing)
+                + ". Set them in .env, or set DRY_RUN=true to preview payloads."
+            )
+
     @classmethod
     def from_env(cls) -> "WhatsAppConfig":
         load_dotenv()
+        twilio_num = os.environ.get("TWILIO_WHATSAPP_NUMBER") or os.environ.get("TWILIO_WHATSAPP_MERCHANT_FROM") or ""
         return cls(
             phone_number_id=os.environ.get("WHATSAPP_PHONE_NUMBER_ID", ""),
             token=os.environ.get("WHATSAPP_TOKEN", ""),
             verify_token=os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
             graph_version=os.environ.get("WHATSAPP_GRAPH_VERSION", DEFAULT_GRAPH_VERSION),
+            twilio_account_sid=os.environ.get("TWILIO_ACCOUNT_SID", ""),
+            twilio_auth_token=os.environ.get("TWILIO_AUTH_TOKEN", ""),
+            twilio_whatsapp_number=twilio_num,
+            validate_signature=_truthy(os.environ.get("TWILIO_VALIDATE_SIGNATURE", "false")),
             dry_run=_truthy(os.environ.get("DRY_RUN", "true")),
         )

@@ -31,7 +31,7 @@ def main() -> None:
     print(f"Potential recoverable/mo (A+B total):    PKR {h.monthly_winback_total:,.0f}")
     print(f"Win-back as % of revenue:               {h.winback_pct_of_revenue:.1%}")
     if h.winback_sanity_warning:
-        print(f"⚠  WARNING: win-back exceeds 10% of monthly revenue — review assumptions")
+        print("WARNING: win-back exceeds 10% of monthly revenue — review assumptions")
 
     html = generate_report(integrity, retention, operations)
 
