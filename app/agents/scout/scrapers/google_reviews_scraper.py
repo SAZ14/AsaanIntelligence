@@ -67,7 +67,8 @@ def _run_actor(search_url: str, sort: str, max_reviews: int) -> list[dict]:
         "reviewsSort": sort,
         "language": "en",
     })
-    return list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    return list(client.dataset(dataset_id).iterate_items())
 
 
 def fetch_reviews(competitor: dict) -> list[FindingSchema]:

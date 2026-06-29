@@ -60,7 +60,8 @@ def _run_actor(usernames: list[str], hashtags: list[str], limit: int) -> list[di
     if hashtags:
         run_input["hashtags"] = hashtags
     run = client.actor(APIFY_IG_ACTOR).call(run_input=run_input)
-    items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    items = list(client.dataset(dataset_id).iterate_items())
     return items
 
 
