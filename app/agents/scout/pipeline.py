@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -66,64 +67,71 @@ def _findings_from_db(db_findings: list[DBFinding]) -> list[FindingSchema]:
 
 
 def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], list[str], list[str]]:
-    """Run all enabled scrapers. Returns (findings, sources_ok, sources_failed)."""
+    """Run all enabled scrapers in parallel. Returns (findings, sources_ok, sources_failed)."""
     sources = enabled_sources()
+
+    def _web() -> list[FindingSchema]:
+        from app.agents.scout.scrapers.web_scraper import find_menu_and_offers
+        results: list[FindingSchema] = []
+        for comp in competitors:
+            results.extend(find_menu_and_offers(comp))
+        return results
+
+    def _instagram() -> list[FindingSchema]:
+        from app.agents.scout.scrapers.instagram_scraper import fetch_recent_posts
+        handles = [c["instagram_handle"] for c in competitors if c.get("instagram_handle")]
+        if not handles:
+            logger.info("Instagram: no handles resolved yet")
+            return []
+        handle_to_name = {
+            c["instagram_handle"]: c["name"]
+            for c in competitors if c.get("instagram_handle")
+        }
+        ig_findings = fetch_recent_posts(handles, limit=IG_POSTS_PER_PROFILE)
+        for f in ig_findings:
+            f.competitor_name = handle_to_name.get(f.competitor_name, f.competitor_name)
+        return ig_findings
+
+    def _google_reviews() -> list[FindingSchema]:
+        from app.agents.scout.scrapers.google_reviews_scraper import fetch_reviews
+        results: list[FindingSchema] = []
+        for comp in competitors:
+            results.extend(fetch_reviews(comp))
+        return results
+
+    task_map: dict[str, object] = {}
+    if sources["web"]:
+        task_map["web"] = _web
+    else:
+        logger.info("Web scraper skipped — no APIFY_TOKEN")
+    if sources["instagram"]:
+        task_map["instagram"] = _instagram
+    else:
+        logger.info("Instagram skipped — no APIFY_TOKEN")
+    if sources["google_reviews"]:
+        task_map["google_reviews"] = _google_reviews
+    else:
+        logger.info("Google Maps Reviews skipped — no APIFY_TOKEN")
+
     findings: list[FindingSchema] = []
     ok: list[str] = []
     failed: list[str] = []
 
-    if sources["web"]:
-        try:
-            from app.agents.scout.scrapers.web_scraper import find_menu_and_offers
-            web_findings: list[FindingSchema] = []
-            for comp in competitors:
-                web_findings.extend(find_menu_and_offers(comp))
-            findings.extend(web_findings)
-            ok.append("web")
-            logger.info("Web scraper: %d findings", len(web_findings))
-        except Exception as exc:
-            logger.error("Web scraper failed: %s", exc)
-            failed.append("web")
-    else:
-        logger.info("Web scraper skipped — no APIFY_TOKEN")
+    if not task_map:
+        return findings, ok, failed
 
-    if sources["instagram"]:
-        try:
-            from app.agents.scout.scrapers.instagram_scraper import fetch_recent_posts
-            handles = [c["instagram_handle"] for c in competitors if c.get("instagram_handle")]
-            if handles:
-                ig_findings = fetch_recent_posts(handles, limit=IG_POSTS_PER_PROFILE)
-                handle_to_name = {
-                    c["instagram_handle"]: c["name"]
-                    for c in competitors if c.get("instagram_handle")
-                }
-                for f in ig_findings:
-                    f.competitor_name = handle_to_name.get(f.competitor_name, f.competitor_name)
-                findings.extend(ig_findings)
-                ok.append("instagram")
-                logger.info("Instagram: %d findings", len(ig_findings))
-            else:
-                logger.info("Instagram: no handles resolved yet")
-        except Exception as exc:
-            logger.error("Instagram scraper failed: %s", exc)
-            failed.append("instagram")
-    else:
-        logger.info("Instagram skipped — no APIFY_TOKEN")
-
-    if sources["google_reviews"]:
-        try:
-            from app.agents.scout.scrapers.google_reviews_scraper import fetch_reviews
-            gr_findings: list[FindingSchema] = []
-            for comp in competitors:
-                gr_findings.extend(fetch_reviews(comp))
-            findings.extend(gr_findings)
-            ok.append("google_reviews")
-            logger.info("Google Maps Reviews: %d findings", len(gr_findings))
-        except Exception as exc:
-            logger.error("Google Maps Reviews scraper failed: %s", exc)
-            failed.append("google_reviews")
-    else:
-        logger.info("Google Maps Reviews skipped — no APIFY_TOKEN")
+    with ThreadPoolExecutor(max_workers=len(task_map)) as executor:
+        future_to_name = {executor.submit(fn): name for name, fn in task_map.items()}
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                source_findings = future.result()
+                findings.extend(source_findings)
+                ok.append(name)
+                logger.info("%s: %d findings", name, len(source_findings))
+            except Exception as exc:
+                logger.error("%s scraper failed: %s", name, exc)
+                failed.append(name)
 
     return findings, ok, failed
 

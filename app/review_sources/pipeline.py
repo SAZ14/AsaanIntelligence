@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.review_sources import normalizer
 from app.review_sources.foodpanda import fetch_reviews as fetch_foodpanda
@@ -30,7 +31,7 @@ def _load_config_from_db(store_id: int) -> dict:
         }
 
     return {
-        "apify_api_key": os.environ.get("APIFY_TOKEN", ""),  # global credential, not per-store
+        "apify_api_key": os.environ.get("APIFY_TOKEN", ""),
         "google_maps_terms": rc.google_maps_terms or [],
         "google_maps_location": rc.google_maps_location or "",
         "foodpanda_url": rc.foodpanda_url or "",
@@ -40,7 +41,7 @@ def _load_config_from_db(store_id: int) -> dict:
 
 
 def run_pipeline(store_id: int | None = None) -> list[dict]:
-    """Run all review scrapers for one store.
+    """Run all review scrapers for one store in parallel.
 
     If store_id is provided, config is loaded from the ReputationConfig DB table.
     If omitted, returns an empty list (all per-store config must live in the DB).
@@ -50,39 +51,36 @@ def run_pipeline(store_id: int | None = None) -> list[dict]:
         return []
 
     cfg = _load_config_from_db(store_id)
+    key = cfg["apify_api_key"]
+
+    # Build task map: source_name → callable
+    tasks: dict[str, object] = {}
+    if key and cfg["google_maps_terms"]:
+        tasks["google_maps"] = lambda: fetch_maps(
+            key, cfg["google_maps_terms"], cfg["google_maps_location"]
+        )
+    if key and cfg["foodpanda_url"]:
+        tasks["foodpanda"] = lambda: fetch_foodpanda(
+            key, cfg["foodpanda_url"], cfg["foodpanda_keyword"]
+        )
+    if key and cfg["instagram_usernames"]:
+        tasks["instagram"] = lambda: fetch_instagram(key, cfg["instagram_usernames"])
+
+    if not tasks:
+        log.info("No scrape sources configured for store %d.", store_id)
+        return []
+
     all_raw: list[dict] = []
-
-    if cfg["apify_api_key"] and cfg["google_maps_terms"]:
-        try:
-            reviews = fetch_maps(
-                cfg["apify_api_key"],
-                cfg["google_maps_terms"],
-                cfg["google_maps_location"],
-            )
-            log.info("Google Maps: %d reviews", len(reviews))
-            all_raw.extend(reviews)
-        except Exception as e:
-            log.error("Google Maps scrape failed: %s", e)
-
-    if cfg["apify_api_key"] and cfg["foodpanda_url"]:
-        try:
-            reviews = fetch_foodpanda(
-                cfg["apify_api_key"],
-                cfg["foodpanda_url"],
-                cfg["foodpanda_keyword"],
-            )
-            log.info("FoodPanda: %d reviews", len(reviews))
-            all_raw.extend(reviews)
-        except Exception as e:
-            log.error("FoodPanda scrape failed: %s", e)
-
-    if cfg["apify_api_key"] and cfg["instagram_usernames"]:
-        try:
-            reviews = fetch_instagram(cfg["apify_api_key"], cfg["instagram_usernames"])
-            log.info("Instagram: %d items", len(reviews))
-            all_raw.extend(reviews)
-        except Exception as e:
-            log.error("Instagram scrape failed: %s", e)
+    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+        future_to_name = {executor.submit(fn): name for name, fn in tasks.items()}
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                reviews = future.result()
+                log.info("%s: %d reviews", name, len(reviews))
+                all_raw.extend(reviews)
+            except Exception as exc:
+                log.error("%s scrape failed: %s", name, exc)
 
     if not all_raw:
         log.info("No reviews found for store %d.", store_id)
