@@ -75,8 +75,8 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             "  integrity/refresh    re-pull POS data from source\n"
             "  integrity/free_form  any other POS or financial question\n"
             "  revenue/general      sales strategy, growth, upsell, campaigns\n"
-            "  reputation/check     scrape and classify new customer reviews now\n"
-            "  reputation/chat      questions about review trends or customer feedback\n"
+            "  reputation/check     fetch / scrape new customer reviews right now\n"
+            "  reputation/chat      anything about online reviews, ratings, complaints, what customers say, Google Maps, Instagram comments, food app feedback — e.g. 'what are people saying', 'any bad reviews', 'how are our ratings'\n"
             "  scout/scout          competitor intelligence (only if clearly about competitors)\n"
         )
         resp = client.chat.completions.create(
