@@ -138,6 +138,7 @@ def _chat(system: str, user: str) -> str:
             {"role": "user", "content": user},
         ],
         temperature=0.4,
+        timeout=90,
     )
     return resp.choices[0].message.content
 
