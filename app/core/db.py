@@ -26,7 +26,12 @@ from app.core.config import DATABASE_URL
 logger = logging.getLogger(__name__)
 
 _kw = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-engine = create_engine(DATABASE_URL, connect_args=_kw)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=_kw,
+    pool_pre_ping=True,   # test connection before use; reconnects if Supabase dropped it
+    pool_recycle=300,     # recycle connections every 5 min to avoid SSL EOF on idle
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
