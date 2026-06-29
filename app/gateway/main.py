@@ -273,6 +273,22 @@ def _scout_rate_ok(phone: str) -> bool:
     return True
 
 
+def _chunk_message(body: str, limit: int = 1500) -> list[str]:
+    if len(body) <= limit:
+        return [body]
+    chunks = []
+    while body:
+        if len(body) <= limit:
+            chunks.append(body)
+            break
+        split = body.rfind("\n", 0, limit)
+        if split == -1:
+            split = limit
+        chunks.append(body[:split].rstrip())
+        body = body[split:].lstrip()
+    return chunks
+
+
 def _send_outbound(to: str, from_: str, body: str) -> None:
     sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     token = os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -281,8 +297,11 @@ def _send_outbound(to: str, from_: str, body: str) -> None:
         return
     try:
         from twilio.rest import Client as TwilioClient
-        TwilioClient(sid, token).messages.create(to=to, from_=from_, body=body)
-        logger.info("gateway.outbound: sent to=%s from=%s len=%d", to, from_, len(body))
+        client = TwilioClient(sid, token)
+        chunks = _chunk_message(body)
+        for i, chunk in enumerate(chunks):
+            client.messages.create(to=to, from_=from_, body=chunk)
+        logger.info("gateway.outbound: sent to=%s from=%s len=%d chunks=%d", to, from_, len(body), len(chunks))
     except Exception as exc:
         logger.error("gateway.outbound: failed to=%s error=%s", to, exc)
 
