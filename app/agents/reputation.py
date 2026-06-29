@@ -581,6 +581,18 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     from app.core.llm import get_client
     from app.core.db import SessionLocal, ScoutRun as Run
 
+    # In-flight guard: if a scrape is already running for this store, wait for it
+    cutoff_inflight = datetime.utcnow() - timedelta(minutes=10)
+    with SessionLocal() as db:
+        in_flight = db.query(Run).filter(
+            Run.store_id == store_id,
+            Run.command == "whatsapp_check",
+            Run.status == "running",
+            Run.started_at >= cutoff_inflight,
+        ).first()
+    if in_flight:
+        return f"[{store_name}] Review scrape already in progress — you'll receive the results shortly."
+
     # Cache: if a review check completed within 60 min, skip Apify and read from DB
     cutoff = datetime.utcnow() - timedelta(minutes=60)
     with SessionLocal() as db:
@@ -611,18 +623,21 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             )
         return f"[{store_name}] Reviews up to date ({age_str}). No pending replies."
 
+    # Mark run as "running" before Apify so in-flight guard can detect it
+    run_id = review_db.save_run(store_id, "whatsapp_check")
+
     logger.info("reputation.check: store=%d scraping_reviews", store_id)
     try:
         raw_reviews = run_pipeline(store_id)
     except Exception as exc:
         logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
+        review_db.update_run(run_id, "error", [], [], 0)
         return f"[{store_name}] Review check failed: {exc}"
 
     logger.info("reputation.check: store=%d reviews_found=%d", store_id, len(raw_reviews))
     if not raw_reviews:
+        review_db.update_run(run_id, "ok", [], [], 0)
         return f"[{store_name}] No new reviews found across all platforms."
-
-    run_id = review_db.save_run(store_id, "whatsapp_check")
     client = get_client()
 
     # Load brand voice from per-store config

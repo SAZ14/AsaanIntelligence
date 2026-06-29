@@ -553,11 +553,18 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
                 age_str = f"{age_min} min ago" if age_min > 0 else "just now"
                 logger.info("gateway.webhook: scout_cache_hit store=%d age_min=%d", store_id, age_min)
-                background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
-                return _twiml(
-                    f"Sending your latest intel ({age_str}) — "
-                    "a fresh scan takes 7-10 min and will run automatically when the cache expires."
-                )
+                # Serve the saved report text from DB — no re-scrape, no Apify cost
+                from app.core.db import ScoutReport
+                with SessionLocal() as _db:
+                    saved = _db.query(ScoutReport).filter(
+                        ScoutReport.store_id == store_id,
+                        ScoutReport.run_id == cached_run.id,
+                    ).order_by(ScoutReport.id.desc()).first()
+                    cached_text = saved.report_text if saved else None
+                if cached_text:
+                    background_tasks.add_task(_send_outbound, from_number, to_number, cached_text)
+                    return _twiml(f"Sending your latest intel ({age_str}).")
+                # Report text missing in DB — fall through to fresh scan
 
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
             background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
