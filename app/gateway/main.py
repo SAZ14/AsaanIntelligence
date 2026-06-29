@@ -74,6 +74,17 @@ def _twiml(body: str) -> Response:
     )
 
 
+def _twiml_chunks(body: str) -> Response:
+    """TwiML response that splits long bodies into multiple <Message> elements."""
+    from app.core.twilio_send import _chunk
+    chunks = _chunk(body)
+    messages = "".join(f"<Message><Body>{escape(c)}</Body></Message>" for c in chunks)
+    return Response(
+        content=f'<?xml version="1.0" encoding="UTF-8"?><Response>{messages}</Response>',
+        media_type="application/xml",
+    )
+
+
 def _twiml_empty() -> Response:
     return Response(
         content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
@@ -553,8 +564,8 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                     ).order_by(ScoutReport.id.desc()).first()
                     cached_text = saved.report_text if saved else None
                 if cached_text:
-                    background_tasks.add_task(_send_outbound, from_number, to_number, cached_text)
-                    return _twiml(f"Sending your latest intel ({age_str}).")
+                    logger.info("gateway.webhook: scout_cache_serve store=%d chunks=%d", store_id, len(cached_text) // 1500 + 1)
+                    return _twiml_chunks(cached_text)
                 # Report text missing in DB — fall through to fresh scan
 
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
