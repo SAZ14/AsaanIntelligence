@@ -42,7 +42,8 @@ def _run_website_actor(url: str) -> list[dict]:
         "maxCrawlDepth": 1,
         "outputFormats": ["markdown"],
     })
-    return list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    return list(client.dataset(dataset_id).iterate_items())
 
 
 @retry(
@@ -60,7 +61,8 @@ def _run_search_actor(query: str, num_results: int) -> list[dict]:
         "resultsPerPage": num_results,
         "countryCode": "pk",
     })
-    return list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    return list(client.dataset(dataset_id).iterate_items())
 
 
 def search(query: str, limit: int = 5) -> list[dict]:
