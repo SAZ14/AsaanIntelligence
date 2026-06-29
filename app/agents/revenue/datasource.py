@@ -23,6 +23,44 @@ def load_pos(data_dir: str | Path | None = None) -> tuple[list[Order], dict[str,
     return load_dataset(d / "sales_detail.csv", d / "menu.csv", d / "staff.csv")
 
 
+def load_pos_from_db(store_id: int) -> tuple[list[Order], dict[str, MenuItem], dict[str, Staff]]:
+    """Load POS data from the uploaded_files DB table (same source as integrity agent)."""
+    import csv, io, logging
+    from app.core.db import SessionLocal, UploadedFile
+    from app.ingest.loader import row_to_menu_item, row_to_staff, rows_to_orders
+    from app.agents.integrity.pos.base import _load_mapping
+
+    log = logging.getLogger(__name__)
+    mapping = _load_mapping(None)
+
+    with SessionLocal() as db:
+        rows = db.query(UploadedFile).filter(UploadedFile.store_id == store_id).all()
+        files: dict[str, str] = {r.file_type: r.content for r in rows}
+
+    orders: list[Order] = []
+    menu: dict[str, MenuItem] = {}
+    staff: dict[str, Staff] = {}
+
+    if "pos_sales" in files:
+        reader = csv.DictReader(io.StringIO(files["pos_sales"]))
+        orders = rows_to_orders(list(reader), mapping.SALES_DETAIL)
+        log.info("revenue.db_load: store=%d orders=%d", store_id, len(orders))
+
+    if "pos_menu" in files:
+        reader = csv.DictReader(io.StringIO(files["pos_menu"]))
+        items = [row_to_menu_item(row, mapping.MENU) for row in reader]
+        menu = {item.sku: item for item in items}
+        log.info("revenue.db_load: store=%d menu_items=%d", store_id, len(menu))
+
+    if "pos_staff" in files:
+        reader = csv.DictReader(io.StringIO(files["pos_staff"]))
+        staff_list = [row_to_staff(row, mapping.STAFF) for row in reader]
+        staff = {s.staff_id: s for s in staff_list}
+        log.info("revenue.db_load: store=%d staff=%d", store_id, len(staff))
+
+    return orders, menu, staff
+
+
 def normalize_period(period: str) -> str:
     p = (period or "week").strip().lower()
     aliases = {

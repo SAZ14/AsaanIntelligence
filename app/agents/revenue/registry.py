@@ -41,12 +41,28 @@ class RevenueRegistry:
             k: v for k, v in cfg_overrides.items()
             if k in RevenueConfig.__dataclass_fields__
         })
-        agent = RevenueAgent(
-            store=Store(db_path),
-            config=config,
-            client=self._client,
-            data_dir=data_dir,
-        )
+
+        # Use DB-stored uploads (same source as integrity) when no filesystem path is set
+        from pathlib import Path
+        use_db = not data_dir or not Path(data_dir).exists()
+        if use_db:
+            from app.agents.revenue.datasource import load_pos_from_db
+            orders, menu, staff = load_pos_from_db(store_id)
+            agent = RevenueAgent(
+                store=Store(db_path),
+                config=config,
+                client=self._client,
+                orders=orders,
+                menu=menu,
+                staff=staff,
+            )
+        else:
+            agent = RevenueAgent(
+                store=Store(db_path),
+                config=config,
+                client=self._client,
+                data_dir=data_dir,
+            )
         self._agents[store_id] = agent
         return agent
 
