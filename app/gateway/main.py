@@ -314,43 +314,58 @@ def _bg_scout(store_id: int, from_number: str, to_number: str, body: str) -> Non
         )
 
 
-_REPUTATION_CHAT_KEYWORDS = {
-    "saying", "reviews", "review", "ratings", "rating",
-    "feedback", "complaints", "complaint", "comments", "comment",
-    "people", "customers", "online",
+_INTEGRITY_SHORTHAND = {
+    "summary", "audit", "overview", "leakage", "leak", "theft",
+    "profit", "margin", "cogs", "sales", "staff", "daily", "weekly",
+    "refresh", "pdf", "report",
 }
-_REPUTATION_ACTION_WORDS = {"post", "ignore", "edit", "check", "scrape", "sync", "crawl"}
-_REPUTATION_CHECK_WORDS  = {"check", "scrape", "sync", "crawl"}
+_REVIEW_KEYWORDS = {
+    "review", "reviews", "rating", "ratings", "feedback",
+    "complaint", "complaints", "comment", "comments", "saying", "people",
+}
+_REVENUE_KEYWORDS = {"revenue", "strategy", "upsell", "growth", "pricing", "campaign"}
 
 
-def _is_reputation_check(text: str) -> bool:
-    """True for 'check'/'scrape'/'sync' commands directed at reputation (not scout)."""
-    if _is_scout_message(text):
-        return False
-    words = set(_re.sub(r"[^\w\s]", "", text.lower()).split())
-    return bool(words & _REPUTATION_CHECK_WORDS)
-
-
-def _is_reputation_chat(text: str) -> bool:
-    """True for natural-language reputation queries (not action commands)."""
-    lower = text.lower()
-    first = lower.split()[0] if lower else ""
-    if first in _REPUTATION_ACTION_WORDS:
-        return False
+def _internal_ack(body: str) -> str:
+    """Return an immediate human-readable ack for any internal command."""
+    lower = body.lower()
     words = set(_re.sub(r"[^\w\s]", "", lower).split())
-    return bool(words & _REPUTATION_CHAT_KEYWORDS)
+    first = lower.split()[0] if lower else ""
+    if first in {"check", "scrape", "sync", "crawl"} and not _is_scout_message(body):
+        return "Scraping your latest reviews — I'll message you when done (30-90 sec)."
+    if words & _REVIEW_KEYWORDS:
+        return "Checking your reviews — I'll message you in a moment."
+    if words & _INTEGRITY_SHORTHAND:
+        return "Running POS audit — report incoming."
+    if words & _REVENUE_KEYWORDS:
+        return "Checking sales data — I'll message you back shortly."
+    return "On it — I'll message you back shortly."
 
 
-def _bg_reputation(store_id: int, from_number: str, to_number: str, text: str) -> None:
-    """Background task: run any reputation handler, deliver result via Twilio."""
+def _bg_internal(store_id: int, from_number: str, to_number: str, body: str) -> None:
+    """Background task: handle any internal staff command, deliver via Twilio."""
     try:
-        from app.agents.reputation import process_reputation_owner_reply
-        reply = process_reputation_owner_reply(from_number, text, store_id=store_id)
+        from app.gateway.internal import handle_internal_for_store
+        reply = handle_internal_for_store(from_number, body, store_id)
     except Exception as exc:
-        logger.error("bg_reputation: store=%d error=%s", store_id, exc)
-        reply = "Something went wrong. Try again or send CHECK to scrape fresh reviews."
-    _send_outbound(to=from_number, from_=to_number, body=reply)
-    logger.info("bg_reputation: delivered store=%d", store_id)
+        logger.error("bg_internal: store=%d error=%s", store_id, exc)
+        reply = "Something went wrong. Please try again."
+    if reply:
+        _send_outbound(to=from_number, from_=to_number, body=reply)
+        logger.info("bg_internal: delivered store=%d", store_id)
+
+
+def _bg_customer(store_id: int, from_number: str, to_number: str, body: str) -> None:
+    """Background task: handle customer agent message, deliver via Twilio."""
+    try:
+        from app.gateway.customer import handle_customer_for_store
+        reply = handle_customer_for_store(from_number, body, store_id)
+    except Exception as exc:
+        logger.error("bg_customer: store=%d error=%s", store_id, exc)
+        reply = None
+    if reply:
+        _send_outbound(to=from_number, from_=to_number, body=reply)
+        logger.info("bg_customer: delivered store=%d", store_id)
 
 
 @asynccontextmanager
@@ -456,10 +471,9 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
     # ── Check if sender is a whitelisted staff member ──────────────────────────
     if not is_store_member(from_number, store_id):
-        # Pure customer — no mode selection, go straight to community agent
-        from app.gateway.customer import handle_customer_for_store
-        reply = handle_customer_for_store(from_number, body, store_id)
-        return _twiml(reply) if reply else _twiml_empty()
+        # Pure customer — dispatch async so LLM calls don't exceed Twilio's 15s timeout
+        background_tasks.add_task(_bg_customer, store_id, from_number, to_number, body)
+        return _twiml_empty()
 
     # ── Staff flow ─────────────────────────────────────────────────────────────
     session = get_user_session(from_number)
@@ -552,27 +566,18 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 "their websites. Your report will arrive in 7-10 minutes."
             )
 
-        # Reputation check/scrape: Apify run takes 1-3 min — dispatch async.
-        if _is_reputation_check(body):
-            logger.info("gateway.webhook: reputation_check_async store=%d from=%s", store_id, from_number)
-            background_tasks.add_task(_bg_reputation, store_id, from_number, to_number, body)
-            return _twiml("Scraping your latest reviews — I'll message you when done (30-90 sec).")
+        # All internal commands (integrity/revenue/reputation) involve LLM calls
+        # (10-30s routing + 10-30s response) that exceed Twilio's 15s timeout.
+        # Dispatch every command as a background task and ack immediately.
+        ack = _internal_ack(body)
+        logger.info("gateway.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
+        background_tasks.add_task(_bg_internal, store_id, from_number, to_number, body)
+        return _twiml(ack)
 
-        # Reputation chat queries hit the LLM (~30s) — also dispatch async.
-        if _is_reputation_chat(body):
-            logger.info("gateway.webhook: reputation_chat_async store=%d from=%s", store_id, from_number)
-            background_tasks.add_task(_bg_reputation, store_id, from_number, to_number, body)
-            return _twiml("Checking your reviews — I'll message you in a moment.")
-
-        from app.gateway.internal import handle_internal_for_store
-        reply = handle_internal_for_store(from_number, body, store_id)
-        return _twiml(reply) if reply else _twiml_empty()
-
-    # ── Customer app mode (staff using loyalty features) ───────────────────────
+    # ── Customer app mode ───────────────────────────────────────────────────────
     logger.info("gateway.webhook: store=%d mode=customer from=%s", store_id, from_number)
-    from app.gateway.customer import handle_customer_for_store
-    reply = handle_customer_for_store(from_number, body, store_id)
-    return _twiml(reply) if reply else _twiml_empty()
+    background_tasks.add_task(_bg_customer, store_id, from_number, to_number, body)
+    return _twiml_empty()
 
 
 # ── Integrity PDF report ───────────────────────────────────────────────────────
