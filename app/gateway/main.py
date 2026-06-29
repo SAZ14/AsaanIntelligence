@@ -542,7 +542,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                     )
 
                 # 3. Return cached report if last successful run was recent (< 60 min)
-                cutoff_cache = datetime.utcnow() - timedelta(minutes=60)
+                cutoff_cache = datetime.utcnow() - timedelta(hours=24)
                 cached_run = _db.query(Run).filter(
                     Run.store_id == store_id,
                     Run.status.in_(["ok", "partial"]),

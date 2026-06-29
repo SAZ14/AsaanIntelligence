@@ -19,7 +19,7 @@ ZAI_API_KEY = os.getenv("ZAI_API_KEY", "")
 ZAI_MODEL = os.getenv("ZAI_MODEL", "glm-4.7")
 
 # --- Pipeline tuning ---
-FRESHNESS_MINUTES = 90              # use cached run if last scout was < 90 min ago
+FRESHNESS_MINUTES = 1440            # use cached run if last scout was < 24 hours ago
 IG_POSTS_PER_PROFILE = 15          # posts scraped per Instagram profile
 MAX_NEW_COMPETITORS = 10            # max auto-discovered competitors added per run
 
