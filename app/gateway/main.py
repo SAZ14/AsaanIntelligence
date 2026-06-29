@@ -314,6 +314,36 @@ def _bg_scout(store_id: int, from_number: str, to_number: str, body: str) -> Non
         )
 
 
+_REPUTATION_CHAT_KEYWORDS = {
+    "saying", "reviews", "review", "ratings", "rating",
+    "feedback", "complaints", "complaint", "comments", "comment",
+    "people", "customers", "online",
+}
+_REPUTATION_ACTION_WORDS = {"post", "ignore", "edit", "check", "scrape", "sync", "crawl"}
+
+
+def _is_reputation_chat(text: str) -> bool:
+    """True for natural-language reputation queries (not action commands)."""
+    lower = text.lower()
+    first = lower.split()[0] if lower else ""
+    if first in _REPUTATION_ACTION_WORDS:
+        return False
+    words = set(_re.sub(r"[^\w\s]", "", lower).split())
+    return bool(words & _REPUTATION_CHAT_KEYWORDS)
+
+
+def _bg_reputation_chat(store_id: int, from_number: str, to_number: str, text: str) -> None:
+    """Background task: answer a natural-language review question, deliver via Twilio."""
+    try:
+        from app.agents.reputation import process_reputation_owner_reply
+        reply = process_reputation_owner_reply(from_number, text, store_id=store_id)
+    except Exception as exc:
+        logger.error("bg_reputation_chat: store=%d error=%s", store_id, exc)
+        reply = "Something went wrong checking your reviews. Send CHECK to scrape fresh reviews."
+    _send_outbound(to=from_number, from_=to_number, body=reply)
+    logger.info("bg_reputation_chat: delivered store=%d", store_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.db import init_db
@@ -512,6 +542,13 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 "On it. Scanning competitors across Instagram, Google Maps, and "
                 "their websites. Your report will arrive in 7-10 minutes."
             )
+
+        # Reputation chat queries call the LLM for a response (~30s) — dispatch async
+        # so we return an immediate TwiML ack before Twilio's 15s webhook timeout.
+        if _is_reputation_chat(body):
+            logger.info("gateway.webhook: reputation_chat_async store=%d from=%s", store_id, from_number)
+            background_tasks.add_task(_bg_reputation_chat, store_id, from_number, to_number, body)
+            return _twiml("Checking your reviews — I'll message you in a moment.")
 
         from app.gateway.internal import handle_internal_for_store
         reply = handle_internal_for_store(from_number, body, store_id)
