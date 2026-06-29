@@ -33,6 +33,8 @@ from __future__ import annotations
 import logging
 import os
 import re as _re
+import time as _time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 from xml.sax.saxutils import escape
@@ -253,6 +255,24 @@ def _is_scout_message(body: str) -> bool:
     return bool(words & _SCOUT_ASYNC_WORDS)
 
 
+# Per-user rate limit: max 3 scout dispatches per 60-minute window (in-memory).
+_SCOUT_RATE_WINDOW = 3600   # seconds
+_SCOUT_RATE_MAX   = 3
+_scout_rate: dict[str, list[float]] = defaultdict(list)  # phone → [timestamps]
+
+
+def _scout_rate_ok(phone: str) -> bool:
+    """Return True (and record the hit) if this user is within the rate limit."""
+    now = _time.monotonic()
+    hits = [t for t in _scout_rate[phone] if now - t < _SCOUT_RATE_WINDOW]
+    if len(hits) >= _SCOUT_RATE_MAX:
+        _scout_rate[phone] = hits   # keep pruned list
+        return False
+    hits.append(now)
+    _scout_rate[phone] = hits
+    return True
+
+
 def _send_outbound(to: str, from_: str, body: str) -> None:
     sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     token = os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -447,17 +467,45 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         if _is_scout_message(body):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
+
+            # 1. Per-user rate limit (3 per hour)
+            if not _scout_rate_ok(from_number):
+                return _twiml(
+                    "You've sent too many scout requests. Limit is 3 per hour — "
+                    "please wait before trying again."
+                )
+
             with SessionLocal() as _db:
-                cutoff = datetime.utcnow() - timedelta(minutes=15)
+                # 2. Block if a run is already in flight for this store
+                cutoff_running = datetime.utcnow() - timedelta(minutes=15)
                 in_flight = _db.query(Run).filter(
                     Run.store_id == store_id,
                     Run.status == "running",
-                    Run.started_at >= cutoff,
+                    Run.started_at >= cutoff_running,
                 ).first()
-            if in_flight:
+                if in_flight:
+                    return _twiml(
+                        "Scout is already running — your report will arrive in a few minutes. Please wait."
+                    )
+
+                # 3. Return cached report if last successful run was recent (< 60 min)
+                cutoff_cache = datetime.utcnow() - timedelta(minutes=60)
+                cached_run = _db.query(Run).filter(
+                    Run.store_id == store_id,
+                    Run.status.in_(["ok", "partial"]),
+                    Run.finished_at >= cutoff_cache,
+                ).order_by(Run.finished_at.desc()).first()
+
+            if cached_run:
+                age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
+                age_str = f"{age_min} min ago" if age_min > 0 else "just now"
+                logger.info("gateway.webhook: scout_cache_hit store=%d age_min=%d", store_id, age_min)
+                background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
                 return _twiml(
-                    "Scout is already running — your report will arrive in a few minutes. Please wait."
+                    f"Sending your latest intel ({age_str}) — "
+                    "a fresh scan takes 7-10 min and will run automatically when the cache expires."
                 )
+
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
             background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
             return _twiml(
