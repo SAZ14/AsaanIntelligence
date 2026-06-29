@@ -103,29 +103,8 @@ def find_menu_and_offers(competitor: dict) -> list[FindingSchema]:
     name = competitor["name"]
     website = competitor.get("website")
 
-    if website:
-        try:
-            items = _run_website_actor(website)
-            for item in items:
-                md = item.get("markdown") or item.get("text") or ""
-                url = item.get("url", website)
-                if not md or len(md.strip()) < 50:
-                    continue
-                text = md[:1000]
-                findings.append(FindingSchema(
-                    competitor_name=name,
-                    source_platform="website",
-                    update_type=_infer_update_type(text),
-                    content_text=text,
-                    source_url=url,
-                    content_hash=_make_hash(name, text),
-                ))
-        except Exception as exc:
-            logger.warning("Website crawl failed for %s: %s", website, exc)
-
     for query in [
-        f"{name} Islamabad new offer 2026",
-        f"{name} Islamabad new product launch",
+        f"{name} Islamabad new offer OR launch 2026",
     ]:
         for r in search(query, limit=3):
             desc = r.get("description", "")

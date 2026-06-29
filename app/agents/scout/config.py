@@ -14,13 +14,13 @@ APIFY_IG_ACTOR = "apify/instagram-post-scraper"
 APIFY_WEBSITE_ACTOR = "apify/website-content-crawler"
 APIFY_SEARCH_ACTOR = "apify/google-search-scraper"
 APIFY_MAPS_ACTOR = "apify/google-maps-reviews-scraper"
-APIFY_REVIEWS_PER_COMPETITOR = 40   # reviews pulled per competitor via Google Maps
+APIFY_REVIEWS_PER_COMPETITOR = 15   # reviews pulled per competitor via Google Maps
 ZAI_API_KEY = os.getenv("ZAI_API_KEY", "")
 ZAI_MODEL = os.getenv("ZAI_MODEL", "glm-4.7")
 
 # --- Pipeline tuning ---
 FRESHNESS_MINUTES = 1440            # use cached run if last scout was < 24 hours ago
-IG_POSTS_PER_PROFILE = 15          # posts scraped per Instagram profile
+IG_POSTS_PER_PROFILE = 6           # posts scraped per Instagram profile
 MAX_NEW_COMPETITORS = 10            # max auto-discovered competitors added per run
 
 # --- Competitor seed list ---

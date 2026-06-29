@@ -143,7 +143,7 @@ def _chat(system: str, user: str) -> str:
     return resp.choices[0].message.content
 
 
-MAX_ENRICH = 60
+MAX_ENRICH = 20
 
 
 def enrich_findings(

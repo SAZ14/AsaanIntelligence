@@ -73,8 +73,13 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     def _web() -> list[FindingSchema]:
         from app.agents.scout.scrapers.web_scraper import find_menu_and_offers
         results: list[FindingSchema] = []
-        for comp in competitors:
-            results.extend(find_menu_and_offers(comp))
+        with ThreadPoolExecutor(max_workers=min(len(competitors), 6)) as ex:
+            futures = {ex.submit(find_menu_and_offers, comp): comp["name"] for comp in competitors}
+            for future in as_completed(futures):
+                try:
+                    results.extend(future.result())
+                except Exception as exc:
+                    logger.error("web scraper failed for %s: %s", futures[future], exc)
         return results
 
     def _instagram() -> list[FindingSchema]:
