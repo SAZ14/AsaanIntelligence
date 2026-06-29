@@ -445,6 +445,19 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
         # Scout is long-running (2-10 min) — dispatch async, return immediate ack
         if _is_scout_message(body):
+            from app.core.db import SessionLocal, ScoutRun as Run
+            from datetime import datetime, timedelta
+            with SessionLocal() as _db:
+                cutoff = datetime.utcnow() - timedelta(minutes=15)
+                in_flight = _db.query(Run).filter(
+                    Run.store_id == store_id,
+                    Run.status == "running",
+                    Run.started_at >= cutoff,
+                ).first()
+            if in_flight:
+                return _twiml(
+                    "Scout is already running — your report will arrive in a few minutes. Please wait."
+                )
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
             background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
             return _twiml(
