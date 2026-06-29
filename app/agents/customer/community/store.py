@@ -305,28 +305,63 @@ def save_chat_session(store_id: int, phone: str, history: list[dict]) -> None:
 
 # ── Knowledge Base (RAG via pgvector) ────────────────────────────────────────
 
-def search_knowledge_base(store_id: int, query: str, top_k: int = 3) -> list[dict]:
+def _embedding_model():
+    """Return a SentenceTransformer model, or None if unavailable (e.g. missing libstdc++)."""
     try:
         from sentence_transformers import SentenceTransformer
-        from sqlalchemy import text
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        embedding = model.encode(query).tolist()
+        return SentenceTransformer("all-MiniLM-L6-v2")
+    except Exception:
+        return None
+
+
+def search_knowledge_base(store_id: int, query: str, top_k: int = 3) -> list[dict]:
+    from sqlalchemy import text
+
+    # Try vector search first
+    model = _embedding_model()
+    if model is not None:
+        try:
+            embedding = model.encode(query).tolist()
+            with SessionLocal() as db:
+                result = db.execute(
+                    text(
+                        "SELECT * FROM match_knowledge_chunks("
+                        "  query_embedding := CAST(:embedding AS vector),"
+                        "  match_threshold := :threshold,"
+                        "  match_count := :count,"
+                        "  store_id_filter := :store_id"
+                        ")"
+                    ),
+                    {
+                        "embedding": _json.dumps(embedding),
+                        "threshold": 0.25,
+                        "count": top_k,
+                        "store_id": store_id,
+                    },
+                )
+                rows = [dict(r._mapping) for r in result]
+            if rows:
+                return rows
+        except Exception:
+            pass
+
+    # Fallback: keyword text search (works without sentence_transformers)
+    try:
+        keywords = [w for w in query.lower().split() if len(w) > 2]
+        if not keywords:
+            return []
         with SessionLocal() as db:
+            like_clauses = " OR ".join(f"LOWER(content) LIKE :kw{i}" for i in range(len(keywords)))
+            params: dict = {"store_id": store_id, "limit": top_k}
+            params.update({f"kw{i}": f"%{kw}%" for i, kw in enumerate(keywords)})
             result = db.execute(
                 text(
-                    "SELECT * FROM match_knowledge_chunks("
-                    "  query_embedding := CAST(:embedding AS vector),"
-                    "  match_threshold := :threshold,"
-                    "  match_count := :count,"
-                    "  store_id_filter := :store_id"
-                    ")"
+                    f"SELECT id, store_id, content, metadata, 0.5 AS similarity "
+                    f"FROM knowledge_base "
+                    f"WHERE store_id = :store_id AND ({like_clauses}) "
+                    f"LIMIT :limit"
                 ),
-                {
-                    "embedding": _json.dumps(embedding),
-                    "threshold": 0.25,
-                    "count": top_k,
-                    "store_id": store_id,
-                },
+                params,
             )
             return [dict(r._mapping) for r in result]
     except Exception:
@@ -334,28 +369,43 @@ def search_knowledge_base(store_id: int, query: str, top_k: int = 3) -> list[dic
 
 
 def store_knowledge_chunks(store_id: int, documents: list[dict]) -> None:
-    try:
-        from sentence_transformers import SentenceTransformer
-        from sqlalchemy import text
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        with SessionLocal() as db:
-            for doc in documents:
-                embedding = model.encode(doc["content"]).tolist()
-                db.execute(
-                    text(
-                        "INSERT INTO knowledge_base (store_id, content, embedding, metadata) "
-                        "VALUES (:store_id, :content, CAST(:embedding AS vector), CAST(:metadata AS jsonb))"
-                    ),
-                    {
-                        "store_id": store_id,
-                        "content": doc["content"],
-                        "embedding": _json.dumps(embedding),
-                        "metadata": _json.dumps(doc.get("metadata", {})),
-                    },
-                )
-            db.commit()
-    except Exception:
-        pass
+    from sqlalchemy import text
+
+    model = _embedding_model()
+    with SessionLocal() as db:
+        for doc in documents:
+            try:
+                if model is not None:
+                    embedding = model.encode(doc["content"]).tolist()
+                    db.execute(
+                        text(
+                            "INSERT INTO knowledge_base (store_id, content, embedding, metadata) "
+                            "VALUES (:store_id, :content, CAST(:embedding AS vector), CAST(:metadata AS jsonb)) "
+                            "ON CONFLICT DO NOTHING"
+                        ),
+                        {
+                            "store_id": store_id,
+                            "content": doc["content"],
+                            "embedding": _json.dumps(embedding),
+                            "metadata": _json.dumps(doc.get("metadata", {})),
+                        },
+                    )
+                else:
+                    # No ML available — store without embedding, text search will still work
+                    db.execute(
+                        text(
+                            "INSERT INTO knowledge_base (store_id, content, metadata) "
+                            "VALUES (:store_id, :content, CAST(:metadata AS jsonb))"
+                        ),
+                        {
+                            "store_id": store_id,
+                            "content": doc["content"],
+                            "metadata": _json.dumps(doc.get("metadata", {})),
+                        },
+                    )
+            except Exception:
+                pass
+        db.commit()
 
 
 def clear_knowledge_by_source(store_id: int, source: str) -> None:
