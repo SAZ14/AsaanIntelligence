@@ -23,11 +23,8 @@ def _get_store_twilio_number(store_id: int) -> str | None:
 
 
 def _send(to_phone: str, body: str, from_number: str) -> None:
-    from twilio.rest import Client
-    from app.core.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    to_addr = to_phone if to_phone.startswith("whatsapp:") else f"whatsapp:{to_phone}"
-    client.messages.create(to=to_addr, from_=from_number, body=body)
+    from app.core.twilio_send import send_whatsapp
+    send_whatsapp(to=to_phone, body=body, from_=from_number)
 
 
 def broadcast_for_store(store_id: int) -> int:

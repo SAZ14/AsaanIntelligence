@@ -20,14 +20,12 @@ def _active_store_ids() -> list[int]:
 
 
 def _send_winback(phone: str, name: str, venue_name: str, from_number: str) -> None:
-    from twilio.rest import Client
-    from app.core.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    from app.core.twilio_send import send_whatsapp
     body = (
         f"Hi {name or 'there'}! We miss you at {venue_name}. "
         "Come visit us and text your next receipt code to earn stamps."
     )
-    client.messages.create(to=f"whatsapp:{phone}", from_=from_number, body=body)
+    send_whatsapp(to=phone, body=body, from_=from_number)
 
 
 def _get_store_twilio_number(store_id: int) -> str | None:

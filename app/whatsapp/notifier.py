@@ -58,14 +58,9 @@ def send_text(to_number: str, body: str, config: WhatsAppConfig | None = None) -
         return False
 
     try:
-        from twilio.rest import Client
-        client = Client(config.account_sid, config.auth_token)
-        msg = client.messages.create(
-            from_=wa_address(config.from_number),
-            to=wa_address(to_number),
-            body=body,
-        )
-        logger.info("Sent WhatsApp SID=%s to=%s", msg.sid, to_number)
+        from app.core.twilio_send import send_whatsapp
+        send_whatsapp(to=to_number, body=body, from_=config.from_number)
+        logger.info("Sent WhatsApp to=%s", to_number)
         return True
     except Exception as exc:
         logger.error("Twilio send_text failed: %s", exc)

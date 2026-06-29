@@ -273,37 +273,9 @@ def _scout_rate_ok(phone: str) -> bool:
     return True
 
 
-def _chunk_message(body: str, limit: int = 1500) -> list[str]:
-    if len(body) <= limit:
-        return [body]
-    chunks = []
-    while body:
-        if len(body) <= limit:
-            chunks.append(body)
-            break
-        split = body.rfind("\n", 0, limit)
-        if split == -1:
-            split = limit
-        chunks.append(body[:split].rstrip())
-        body = body[split:].lstrip()
-    return chunks
-
-
 def _send_outbound(to: str, from_: str, body: str) -> None:
-    sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
-    token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-    if not sid or not token:
-        logger.warning("gateway.outbound: Twilio credentials not set — cannot send to %s", to)
-        return
-    try:
-        from twilio.rest import Client as TwilioClient
-        client = TwilioClient(sid, token)
-        chunks = _chunk_message(body)
-        for i, chunk in enumerate(chunks):
-            client.messages.create(to=to, from_=from_, body=chunk)
-        logger.info("gateway.outbound: sent to=%s from=%s len=%d chunks=%d", to, from_, len(body), len(chunks))
-    except Exception as exc:
-        logger.error("gateway.outbound: failed to=%s error=%s", to, exc)
+    from app.core.twilio_send import send_whatsapp
+    send_whatsapp(to=to, body=body, from_=from_)
 
 
 def _bg_scout(store_id: int, from_number: str, to_number: str, body: str) -> None:

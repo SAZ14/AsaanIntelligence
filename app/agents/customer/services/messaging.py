@@ -63,8 +63,9 @@ def send_whatsapp_text(
     if not from_number.startswith("whatsapp:"):
         from_number = f"whatsapp:{from_number}"
     client = Client(account_sid, auth_token)
-    msg = client.messages.create(body=body, from_=from_number, to=to_addr)
-    return msg.sid
+    from app.core.twilio_send import send_whatsapp
+    send_whatsapp(to=to_addr, body=body, from_=from_number)
+    return ""
 
 
 async def send_whatsapp_typing_indicator(message_sid: str) -> None:
