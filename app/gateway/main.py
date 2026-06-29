@@ -831,6 +831,21 @@ async def list_stores() -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.get("/admin/stores/{store_id}/enroll-link")
+async def get_enroll_link(store_id: int) -> JSONResponse:
+    from urllib.parse import quote
+    from app.core.db import SessionLocal, StoreTwilioNumber, VenueConfig
+    with SessionLocal() as db:
+        twilio = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
+        vc     = db.query(VenueConfig).filter(VenueConfig.store_id == store_id).first()
+    if not twilio:
+        return JSONResponse({"error": "no Twilio number configured for this store"}, status_code=404)
+    digits = twilio.whatsapp_number.replace("whatsapp:", "").replace("+", "")
+    greeting = (vc.qr_greeting if vc and vc.qr_greeting else "Hi! I'd like to join the loyalty programme.")
+    url = f"https://wa.me/{digits}?text={quote(greeting)}"
+    return JSONResponse({"store_id": store_id, "enroll_url": url, "greeting": greeting})
+
+
 @app.get("/admin/stores/{store_id}")
 async def get_store(store_id: int) -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreMember, StoreTwilioNumber, POSConnection, RevenueConnection
