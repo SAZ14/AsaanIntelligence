@@ -320,6 +320,15 @@ _REPUTATION_CHAT_KEYWORDS = {
     "people", "customers", "online",
 }
 _REPUTATION_ACTION_WORDS = {"post", "ignore", "edit", "check", "scrape", "sync", "crawl"}
+_REPUTATION_CHECK_WORDS  = {"check", "scrape", "sync", "crawl"}
+
+
+def _is_reputation_check(text: str) -> bool:
+    """True for 'check'/'scrape'/'sync' commands directed at reputation (not scout)."""
+    if _is_scout_message(text):
+        return False
+    words = set(_re.sub(r"[^\w\s]", "", text.lower()).split())
+    return bool(words & _REPUTATION_CHECK_WORDS)
 
 
 def _is_reputation_chat(text: str) -> bool:
@@ -332,16 +341,16 @@ def _is_reputation_chat(text: str) -> bool:
     return bool(words & _REPUTATION_CHAT_KEYWORDS)
 
 
-def _bg_reputation_chat(store_id: int, from_number: str, to_number: str, text: str) -> None:
-    """Background task: answer a natural-language review question, deliver via Twilio."""
+def _bg_reputation(store_id: int, from_number: str, to_number: str, text: str) -> None:
+    """Background task: run any reputation handler, deliver result via Twilio."""
     try:
         from app.agents.reputation import process_reputation_owner_reply
         reply = process_reputation_owner_reply(from_number, text, store_id=store_id)
     except Exception as exc:
-        logger.error("bg_reputation_chat: store=%d error=%s", store_id, exc)
-        reply = "Something went wrong checking your reviews. Send CHECK to scrape fresh reviews."
+        logger.error("bg_reputation: store=%d error=%s", store_id, exc)
+        reply = "Something went wrong. Try again or send CHECK to scrape fresh reviews."
     _send_outbound(to=from_number, from_=to_number, body=reply)
-    logger.info("bg_reputation_chat: delivered store=%d", store_id)
+    logger.info("bg_reputation: delivered store=%d", store_id)
 
 
 @asynccontextmanager
@@ -543,11 +552,16 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 "their websites. Your report will arrive in 7-10 minutes."
             )
 
-        # Reputation chat queries call the LLM for a response (~30s) — dispatch async
-        # so we return an immediate TwiML ack before Twilio's 15s webhook timeout.
+        # Reputation check/scrape: Apify run takes 1-3 min — dispatch async.
+        if _is_reputation_check(body):
+            logger.info("gateway.webhook: reputation_check_async store=%d from=%s", store_id, from_number)
+            background_tasks.add_task(_bg_reputation, store_id, from_number, to_number, body)
+            return _twiml("Scraping your latest reviews — I'll message you when done (30-90 sec).")
+
+        # Reputation chat queries hit the LLM (~30s) — also dispatch async.
         if _is_reputation_chat(body):
             logger.info("gateway.webhook: reputation_chat_async store=%d from=%s", store_id, from_number)
-            background_tasks.add_task(_bg_reputation_chat, store_id, from_number, to_number, body)
+            background_tasks.add_task(_bg_reputation, store_id, from_number, to_number, body)
             return _twiml("Checking your reviews — I'll message you in a moment.")
 
         from app.gateway.internal import handle_internal_for_store
