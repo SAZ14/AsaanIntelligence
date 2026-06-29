@@ -28,7 +28,8 @@ def fetch_reviews(api_key: str, url: str, keyword: str = "") -> list[dict]:
     collected_at = datetime.now(timezone.utc).isoformat()
     all_reviews: list[dict] = []
 
-    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    for item in client.dataset(dataset_id).iterate_items():
         name = item.get("name", "FoodPanda")
         source = f"FoodPanda - {name}"
         rating = item.get("rating")

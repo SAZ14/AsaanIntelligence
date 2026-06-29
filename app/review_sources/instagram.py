@@ -19,7 +19,8 @@ def _fetch_posts(client: ApifyClient, usernames: list[str]) -> list[dict]:
     })
     if not run:
         return []
-    return list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    return list(client.dataset(dataset_id).iterate_items())
 
 
 def _fetch_comments(client: ApifyClient, post_urls: list[str]) -> list[dict]:
@@ -35,7 +36,8 @@ def _fetch_comments(client: ApifyClient, post_urls: list[str]) -> list[dict]:
     })
     if not run:
         return []
-    return list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    return list(client.dataset(dataset_id).iterate_items())
 
 
 def fetch_reviews(api_key: str, usernames: list[str]) -> list[dict]:

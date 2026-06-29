@@ -30,7 +30,8 @@ def fetch_reviews(api_key: str, search_terms: list[str], location: str) -> list[
     collected_at = datetime.now(timezone.utc).isoformat()
     all_reviews: list[dict] = []
 
-    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    for item in client.dataset(dataset_id).iterate_items():
         title = item.get("title", "Google Maps")
         source = f"Google Maps - {title}"
 
