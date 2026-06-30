@@ -89,7 +89,9 @@ def _chat_reply(
         f"You are a friendly employee at the cafe chatting on WhatsApp. "
         f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
         f"Be warm and conversational. Naturally steer towards the cafe, menu, deals, or stamps.\n\n"
-        f"ALWAYS use exact prices from the MENU below.\n\n{context}"
+        f"Rules: (1) ALWAYS use exact prices from the MENU. "
+        f"(2) For location questions, copy the exact branch names and areas from STORE KNOWLEDGE word-for-word — never say 'Islamabad' alone when specific branches are listed. "
+        f"(3) For hours questions, state the exact open/close times from STORE KNOWLEDGE.\n\n{context}"
     )
     messages = list(history[-6:])
     messages.append({"role": "user", "content": user_message})
@@ -174,7 +176,7 @@ def handle_customer_message(
     if len(text) >= 3 and _get_client():
         from app.agents.customer.community.menu_context import build_menu_context
         ctx = build_menu_context(store_id)
-        docs = search_knowledge_base(store_id, text, top_k=2)
+        docs = search_knowledge_base(store_id, text, top_k=3)
         if docs:
             ctx += "\n\nSTORE KNOWLEDGE:\n"
             for i, doc in enumerate(docs, 1):
