@@ -112,7 +112,7 @@ def _mode_menu(store_name: str) -> str:
     return (
         f"Welcome to {store_name}!\n\n"
         "Reply with:\n"
-        "  1 — Staff tools (audit, revenue, scout)\n"
+        "  1 — Staff tools (integrity, revenue, scout, reputation)\n"
         "  2 — Customer app (stamps, deals, loyalty)\n\n"
         "Type *menu* anytime to return here."
     )
@@ -121,9 +121,14 @@ def _mode_menu(store_name: str) -> str:
 def _internal_welcome(store_name: str) -> str:
     return (
         f"Staff tools — {store_name}\n\n"
-        "Integrity: summary · audit · leakage · profit · staff · daily · weekly\n"
-        "Revenue:   revenue · sales · pricing · strategy\n"
-        "Scout:     scout\n\n"
+        "*Integrity* — POS audit & leakage detection\n"
+        "  summary · leakage · profit · staff · daily · weekly\n\n"
+        "*Revenue* — Sales performance & strategy\n"
+        "  revenue · sales · pricing · strategy\n\n"
+        "*Scout* — Competitor intelligence report\n"
+        "  scout\n\n"
+        "*Reputation* — Customer review management\n"
+        "  check (scrape reviews) · post · ignore · edit\n\n"
         "Type *menu* to switch modes."
     )
 
