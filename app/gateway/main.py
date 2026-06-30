@@ -687,6 +687,7 @@ async def add_member(store_id: int, request: Request) -> JSONResponse:
     params = await _parse_body(request)
     raw = str(params.get("whatsapp", "")).strip()
     whatsapp = raw if raw.startswith("whatsapp:") else f"whatsapp:{raw}"
+    bare = whatsapp[len("whatsapp:"):]  # e.g. "+16292595668"
     role = params.get("role", "owner")
     with SessionLocal() as db:
         if not db.query(Store).filter(Store.id == store_id).first():
@@ -694,7 +695,7 @@ async def add_member(store_id: int, request: Request) -> JSONResponse:
         # Remove any un-prefixed duplicate for this number
         db.query(StoreMember).filter(
             StoreMember.store_id == store_id,
-            StoreMember.whatsapp == raw,
+            StoreMember.whatsapp == bare,
         ).delete()
         exists = db.query(StoreMember).filter(
             StoreMember.store_id == store_id, StoreMember.whatsapp == whatsapp,
