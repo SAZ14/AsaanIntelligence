@@ -77,6 +77,7 @@ def _help_message(name: str, config: VenueConfig) -> str:
 def _chat_reply(
     user_message: str, context: str, member: CommunityMember,
     history: list[dict], store_id: int, phone: str,
+    venue_name: str = "the restaurant",
 ) -> str:
     from app.core.llm import get_model
     client = _get_client()
@@ -86,7 +87,7 @@ def _chat_reply(
             "send *my stamps* to check your progress, or text a receipt code like SR-AB12 😊"
         )
     system_content = (
-        f"You are a friendly team member at {config.venue_name} chatting on WhatsApp. "
+        f"You are a friendly team member at {venue_name} chatting on WhatsApp. "
         f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
         f"Be warm, natural, and conversational — like a real human, not a robot. "
         f"Naturally steer towards the menu, deals, or stamps.\n\n"
@@ -190,6 +191,6 @@ def handle_customer_message(
             for i, doc in enumerate(docs, 1):
                 ctx += f"--- {i} ---\n{doc['content']}\n"
         history = load_chat_session(store_id, phone)
-        return AgentReply(_chat_reply(text, ctx, member, history, store_id, phone))
+        return AgentReply(_chat_reply(text, ctx, member, history, store_id, phone, venue_name=config.venue_name))
 
     return AgentReply(_help_message(member.name, config))
