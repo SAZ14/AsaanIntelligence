@@ -765,10 +765,10 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
     store_name = store.name
     logger.info("openwa.webhook: store=%s(%d) from=%s", store_name, store_id, from_number)
 
-    # Build provider-specific send function
+    # Build provider-specific send function — reply to resolved @c.us JID, not LID
     from app.core.openwa_send import send_openwa as _openwa_send_fn
     def _owa_send(reply: str) -> None:
-        _openwa_send_fn(session_id, from_jid, reply)
+        _openwa_send_fn(session_id, resolved_jid, reply)
 
     # ── Customer path ──────────────────────────────────────────────────────────
     if not is_store_member(from_number, store_id):
