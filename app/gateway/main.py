@@ -330,6 +330,33 @@ def _internal_to_jid(num: str) -> str:
     return f"{bare}@c.us"
 
 
+def _resolve_lid(session_id: str, lid_jid: str) -> str | None:
+    """Resolve a WhatsApp @lid JID to the real @c.us JID via OpenWA contacts API.
+
+    Returns the @c.us JID string on success, None on failure.
+    WhatsApp multi-device uses privacy LIDs instead of phone numbers for some
+    contacts; the contacts endpoint maps them back to the real number.
+    """
+    import httpx
+    base_url = os.environ.get("OPENWA_BASE_URL", "").rstrip("/")
+    api_key = os.environ.get("OPENWA_API_KEY", "")
+    if not base_url or not api_key:
+        return None
+    try:
+        url = f"{base_url}/api/sessions/{session_id}/contacts/{lid_jid}"
+        with httpx.Client(timeout=5) as client:
+            r = client.get(url, headers={"X-API-Key": api_key})
+        if r.status_code == 200:
+            contact = r.json()
+            real_jid = contact.get("id", "")  # e.g. "923327398165@c.us"
+            if real_jid and real_jid.endswith("@c.us"):
+                logger.info("openwa.lid_resolve: %s -> %s", lid_jid, real_jid)
+                return real_jid
+    except Exception as exc:
+        logger.warning("openwa.lid_resolve: failed for %s: %s", lid_jid, exc)
+    return None
+
+
 def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None) -> None:
     """Background task: run scout pipeline, deliver result via provider send_fn.
 
@@ -717,8 +744,15 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
     if from_me or is_group or not body_text or msg_type not in ("chat", "text", ""):
         return JSONResponse({"status": "ignored"})
 
-    from_number = _jid_to_internal(from_jid)
-    logger.info("openwa.webhook: session=%s from=%s body=%r", session_id, from_number, body_text[:80])
+    # WhatsApp multi-device sends @lid (privacy ID) instead of @c.us (phone) for
+    # some contacts. Resolve to the real @c.us JID so is_store_member() can match
+    # against phone numbers stored in store_members.
+    resolved_jid = from_jid
+    if from_jid.endswith("@lid"):
+        resolved_jid = _resolve_lid(session_id, from_jid) or from_jid
+
+    from_number = _jid_to_internal(resolved_jid)
+    logger.info("openwa.webhook: session=%s from=%s (raw_jid=%s) body=%r", session_id, from_number, from_jid, body_text[:80])
 
     from app.core.db import get_store_by_openwa_session, is_store_member, get_user_session, set_user_session
 
