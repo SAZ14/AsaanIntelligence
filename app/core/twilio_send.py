@@ -42,8 +42,9 @@ def send_whatsapp(to: str, body: str, from_: str, *, retry: bool = True) -> None
     from twilio.rest import Client
     client = Client(account_sid, auth_token)
     chunks = _chunk(body)
+    labeled = [f"[{i+1}/{len(chunks)}]\n{c}" if len(chunks) > 1 else c for i, c in enumerate(chunks)]
 
-    for i, chunk in enumerate(chunks):
+    for i, chunk in enumerate(labeled):
         try:
             msg = client.messages.create(to=to_addr, from_=from_addr, body=chunk)
             logger.info("twilio_send: sent chunk %d/%d sid=%s to=%s", i + 1, len(chunks), msg.sid, to_addr)

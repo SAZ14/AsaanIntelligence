@@ -78,7 +78,11 @@ def _twiml_chunks(body: str) -> Response:
     """TwiML response that splits long bodies into multiple <Message> elements."""
     from app.core.twilio_send import _chunk
     chunks = _chunk(body)
-    messages = "".join(f"<Message><Body>{escape(c)}</Body></Message>" for c in chunks)
+    if len(chunks) > 1:
+        labeled = [f"[{i+1}/{len(chunks)}]\n{c}" for i, c in enumerate(chunks)]
+    else:
+        labeled = chunks
+    messages = "".join(f"<Message><Body>{escape(c)}</Body></Message>" for c in labeled)
     return Response(
         content=f'<?xml version="1.0" encoding="UTF-8"?><Response>{messages}</Response>',
         media_type="application/xml",
