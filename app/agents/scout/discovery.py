@@ -175,20 +175,22 @@ def _extract_business_name(text: str) -> Optional[str]:
 
 
 def get_all_competitors(store_id: int) -> list[dict]:
-    """Return all competitors for a store as dicts."""
+    """Return all competitors for a store as dicts, primary sources first."""
     with SessionLocal() as db:
         rows = db.query(Competitor).filter(Competitor.store_id == store_id).all()
-        return [
-            {
-                "name": r.name,
-                "category": r.category,
-                "instagram_handle": r.instagram_handle,
-                "website": r.website,
-                "place_id": r.place_id,
-                "source": r.source,
-            }
-            for r in rows
-        ]
+    # Sort: "primary" first, then rest by insertion order
+    rows.sort(key=lambda r: (0 if r.source == "primary" else 1, r.id))
+    return [
+        {
+            "name": r.name,
+            "category": r.category,
+            "instagram_handle": r.instagram_handle,
+            "website": r.website,
+            "place_id": r.place_id,
+            "source": r.source,
+        }
+        for r in rows
+    ]
 
 
 def seed_competitors_for_store(
