@@ -4,7 +4,7 @@ import re
 from typing import Optional
 
 from app.agents.scout.config import COMPETITORS, MAX_NEW_COMPETITORS, APIFY_TOKEN
-from app.core.db import Competitor, SessionLocal, Store
+from app.core.db import Competitor, SessionLocal, Store, StoreLocation
 
 logger = logging.getLogger(__name__)
 
@@ -12,19 +12,28 @@ _IG_URL_RE = re.compile(r"instagram\.com/([A-Za-z0-9_.]+)/?")
 
 
 def _store_context(store_id: int) -> tuple[str, str]:
-    """Return (city, brand_name) for a store — used in discovery queries and exclusion."""
+    """Return (city, brand_name) for a store."""
     with SessionLocal() as db:
         store = db.query(Store).filter(Store.id == store_id).first()
         if not store:
-            return "city", "this restaurant"
-        # location field holds the human-readable location string, e.g. "Kohsar Market, F-6, Islamabad"
+            return "Islamabad", "this restaurant"
         city = "Islamabad"
         if store.location:
-            # take the last comma-separated token as city hint
             parts = [p.strip() for p in store.location.split(",")]
             if parts:
                 city = parts[-1]
         return city, store.name
+
+
+def _store_cities(store_id: int) -> set[str]:
+    """Return the set of cities the store operates in (from StoreLocation rows)."""
+    with SessionLocal() as db:
+        locs = db.query(StoreLocation).filter(StoreLocation.store_id == store_id).all()
+        cities = {l.city.strip().lower() for l in locs if l.city}
+    if not cities:
+        city, _ = _store_context(store_id)
+        cities = {city.strip().lower()}
+    return cities
 
 
 def _extract_ig_handle(url_or_text: str) -> Optional[str]:
@@ -116,7 +125,7 @@ def discover_new_competitors(store_id: int) -> None:
                 continue
             if _is_own_brand(name, brand_name):
                 continue
-            db.add(Competitor(store_id=store_id, name=name, source="discovered"))
+            db.add(Competitor(store_id=store_id, name=name, source="discovered", city=city))
             existing_names.add(name.lower())
             added += 1
             logger.info("Discovered new competitor: %r (store=%d)", name, store_id)
@@ -175,21 +184,35 @@ def _extract_business_name(text: str) -> Optional[str]:
 
 
 def get_all_competitors(store_id: int) -> list[dict]:
-    """Return all competitors for a store as dicts, primary sources first."""
+    """Return competitors for a store, filtered to the store's operating cities.
+
+    Competitors with no city set are always included (primary/seed entries added
+    before city tracking was introduced). City-tagged entries are included only
+    if their city matches one of the store's StoreLocation cities.
+    Primary competitors are sorted first.
+    """
+    store_cities = _store_cities(store_id)
     with SessionLocal() as db:
         rows = db.query(Competitor).filter(Competitor.store_id == store_id).all()
-    # Sort: "primary" first, then rest by insertion order
-    rows.sort(key=lambda r: (0 if r.source == "primary" else 1, r.id))
+
+    def _include(r: Competitor) -> bool:
+        if not r.city:
+            return True  # untagged entries grandfathered in
+        return r.city.strip().lower() in store_cities
+
+    filtered = [r for r in rows if _include(r)]
+    filtered.sort(key=lambda r: (0 if r.source == "primary" else 1, r.id))
     return [
         {
             "name": r.name,
             "category": r.category,
+            "city": r.city,
             "instagram_handle": r.instagram_handle,
             "website": r.website,
             "place_id": r.place_id,
             "source": r.source,
         }
-        for r in rows
+        for r in filtered
     ]
 
 

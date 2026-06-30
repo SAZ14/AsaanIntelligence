@@ -140,6 +140,7 @@ class Competitor(Base):
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
     name = Column(String, nullable=False)
     category = Column(String, nullable=True)
+    city = Column(String, nullable=True)
     instagram_handle = Column(String, nullable=True)
     website = Column(String, nullable=True)
     place_id = Column(String, nullable=True)
