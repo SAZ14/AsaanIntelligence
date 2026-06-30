@@ -500,7 +500,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
     # Reputation action commands work regardless of session state — owners reply
     # to review alerts from any context and must not hit the mode-selection screen.
-    if first_word in ("post", "ignore") or (first_word == "edit" and len(body.split()) > 1):
+    if first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body.split()) > 1):
         logger.info("gateway.webhook: reputation_action=%s store=%d from=%s", first_word, store_id, from_number)
         from app.agents.reputation import process_reputation_owner_reply
         reply = process_reputation_owner_reply(from_number, body, store_id=store_id)

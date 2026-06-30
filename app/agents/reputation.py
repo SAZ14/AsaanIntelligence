@@ -503,6 +503,21 @@ def _load_brand_voice(store_id: int, store_name: str) -> BrandVoice:
     return BrandVoice(name=store_name, tone=DEFAULT_BRAND_VOICE)
 
 
+# ── Helpers ──
+
+def _format_pending(pending: dict) -> str:
+    summary = pending["ai_summary"]
+    rating = pending.get("rating")
+    rating_str = f"{rating}/5" if rating is not None else "no rating"
+    excerpt = (pending.get("content_text") or "")[:150]
+    draft = summary.get("draft_reply", "")
+    return (
+        f"⭐ {rating_str}: \"{excerpt}\"\n\n"
+        f"Suggested reply:\n{draft}\n\n"
+        "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip · *DONE* to exit"
+    )
+
+
 # ── WhatsApp owner reply handler ──
 
 def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | None = None) -> str:
@@ -535,6 +550,9 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
     cmd = text_lower.split()[0] if text_lower else ""
     logger.info("reputation: store=%d cmd=%s from=%s", store_id, cmd, from_phone)
 
+    if text_lower.startswith("done") or text_lower.startswith("exit"):
+        return f"[{store_name}] Review session ended. Send *CHECK* anytime to resume."
+
     if text_lower.startswith("post"):
         finding = review_db.get_pending_finding(store_id)
         if not finding:
@@ -543,7 +561,9 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         summary["status"] = "posted"
         review_db.update_finding_summary(finding["id"], summary)
         draft = summary.get("draft_reply", "")
-        return f"[{store_name}] Published draft response:\n\n{draft}"
+        reply = f"[{store_name}] Published draft response:\n\n{draft}"
+        nxt = review_db.get_pending_finding(store_id)
+        return reply + ("\n\n" + _format_pending(nxt) if nxt else "\n\nNo more pending reviews. Send *DONE* to exit.")
 
     if text_lower.startswith("edit"):
         new_draft = text[4:].strip()
@@ -557,7 +577,7 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         review_db.update_finding_summary(finding["id"], summary)
         return (
             f"[{store_name}] Draft updated to:\n\n{new_draft}\n\n"
-            "Reply *POST* to publish or *IGNORE* to skip."
+            "Reply *POST* to publish · *IGNORE* to skip · *DONE* to exit."
         )
 
     if text_lower.startswith("ignore"):
@@ -567,7 +587,9 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         summary = finding["ai_summary"]
         summary["status"] = "ignored"
         review_db.update_finding_summary(finding["id"], summary)
-        return f"[{store_name}] Skipped — no reply will be posted."
+        nxt = review_db.get_pending_finding(store_id)
+        reply = f"[{store_name}] Skipped."
+        return reply + ("\n\n" + _format_pending(nxt) if nxt else "\n\nNo more pending reviews. Send *DONE* to exit.")
 
     if any(kw in text_lower for kw in ("check", "scrape", "crawl", "sync")):
         return _check_reviews(store_id, store_name)
@@ -601,15 +623,9 @@ def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
 
     pending = review_db.get_pending_finding(store_id)
     if pending:
-        summary = pending["ai_summary"]
-        rating = pending.get("rating") or "N/A"
-        excerpt = (pending.get("content_text") or "")[:150]
-        draft = summary.get("draft_reply", "")
         text = (
             f"[{store_name}] Reviews cached ({age_str}). Pending reply:\n\n"
-            f"⭐ {rating}/5: \"{excerpt}\"\n\n"
-            f"Suggested reply:\n{draft}\n\n"
-            "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip"
+            + _format_pending(pending)
         )
     else:
         text = f"[{store_name}] Reviews up to date ({age_str}). No pending replies."
@@ -716,16 +732,17 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
     classify_reviews_batch([ra for _, ra in analyses], client)
 
-    # Only draft replies for negative/mixed reviews, capped to MAX_DRAFT_REPLIES
-    needs_reply = [ra for _, ra in analyses if ra.rating <= 3][:MAX_DRAFT_REPLIES]
+    # Only draft replies for rated negative reviews (excludes Instagram with no rating)
+    needs_reply = [ra for _, ra in analyses if ra.rating and 0 < ra.rating <= 3][:MAX_DRAFT_REPLIES]
     draft_replies(needs_reply, client, venue_name=store_name, brand_voice=brand)
     reply_map = {ra.review_id: ra for ra in needs_reply}
 
     new_count = 0
     for raw, ra in analyses:
         drafted = reply_map.get(ra.review_id)
+        is_actionable = bool(ra.rating and 0 < ra.rating <= 3)
         ai_summary = {
-            "status": "pending",
+            "status": "pending" if is_actionable else "auto_closed",
             "sentiment": ra.sentiment,
             "issue_class": ra.issue_class,
             "draft_reply": drafted.draft_reply if drafted else "",
@@ -745,19 +762,12 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
     pending = review_db.get_pending_finding(store_id)
     if pending:
-        summary = pending["ai_summary"]
-        rating = pending.get("rating") or "N/A"
-        excerpt = (pending.get("content_text") or "")[:150]
-        draft = summary.get("draft_reply", "")
         return (
             f"[{store_name}] Processed {new_count} new reviews.\n\n"
-            f"Latest pending:\n"
-            f"⭐ {rating}/5: \"{excerpt}\"\n\n"
-            f"Suggested reply:\n{draft}\n\n"
-            "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip"
+            f"Latest pending:\n" + _format_pending(pending)
         )
 
-    return f"[{store_name}] Processed {new_count} new reviews."
+    return f"[{store_name}] Processed {new_count} new reviews. No negative reviews to action."
 
 
 def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
