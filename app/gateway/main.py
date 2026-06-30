@@ -708,6 +708,24 @@ async def add_member(store_id: int, request: Request) -> JSONResponse:
     return JSONResponse({"status": "added", "store_id": store_id, "whatsapp": whatsapp}, status_code=201)
 
 
+@app.delete("/admin/stores/{store_id}/members", status_code=200)
+async def remove_member(store_id: int, request: Request) -> JSONResponse:
+    from app.core.db import SessionLocal, StoreMember
+    params = await _parse_body(request)
+    raw = str(params.get("whatsapp", "")).strip()
+    whatsapp = raw if raw.startswith("whatsapp:") else f"whatsapp:{raw}"
+    bare = whatsapp[len("whatsapp:"):]
+    with SessionLocal() as db:
+        deleted = db.query(StoreMember).filter(
+            StoreMember.store_id == store_id,
+            StoreMember.whatsapp.in_([whatsapp, bare]),
+        ).delete(synchronize_session=False)
+        db.commit()
+    if deleted:
+        return JSONResponse({"status": "removed", "count": deleted})
+    return JSONResponse({"status": "not_found"}, status_code=404)
+
+
 @app.post("/admin/stores/{store_id}/locations", status_code=201)
 async def add_location(store_id: int, request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreLocation
