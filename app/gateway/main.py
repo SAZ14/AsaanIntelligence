@@ -698,7 +698,7 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
         logger.warning("openwa.webhook: non-JSON body received")
         return JSONResponse({"status": "bad_request"}, status_code=400)
 
-    logger.info("openwa.webhook: raw=%s", _json.dumps(payload)[:400])
+    logger.info("openwa.webhook: raw=%s", _json.dumps(payload)[:2000])
 
     event = payload.get("event", "")
     if event != "message.received":
