@@ -595,8 +595,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     if in_flight:
         return f"[{store_name}] Review scrape already in progress — you'll receive the results shortly."
 
-    # Cache: if a review check completed within 60 min, skip Apify and read from DB
-    cutoff = datetime.utcnow() - timedelta(minutes=60)
+    # Cache: if a review check completed within 24h, skip Apify and read from DB
+    cutoff = datetime.utcnow() - timedelta(hours=24)
     with SessionLocal() as db:
         cached = db.query(Run).filter(
             Run.store_id == store_id,
