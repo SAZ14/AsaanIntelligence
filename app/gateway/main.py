@@ -11,22 +11,26 @@ Staff can type "menu" at any time to return to the mode-selection screen.
 Within internal mode, messages are routed transparently to scout, integrity,
 or revenue based on keyword — no agent-selection needed from the user.
 
-Webhook:
-  POST /whatsapp
+Webhooks:
+  POST /whatsapp          ← Twilio (form-encoded, TwiML response)
+  POST /openwa/webhook    ← OpenWA (JSON, 200 OK + outbound API replies)
 
 Admin endpoints (no auth — add middleware before production):
-  POST /admin/chains
-  POST /admin/stores
-  POST /admin/stores/{id}/members
-  POST /admin/stores/{id}/locations
-  POST /admin/stores/{id}/pos
-  POST /admin/stores/{id}/revenue
-  POST /admin/stores/{id}/customer
-  POST /admin/stores/{id}/twilio
-  GET  /admin/stores
-  GET  /admin/stores/{id}
-  GET  /health
-  GET  /report/{store_id}.pdf
+  POST   /admin/chains
+  POST   /admin/stores
+  POST   /admin/stores/{id}/members
+  DELETE /admin/stores/{id}/members
+  POST   /admin/stores/{id}/locations
+  POST   /admin/stores/{id}/pos
+  POST   /admin/stores/{id}/revenue
+  POST   /admin/stores/{id}/customer
+  POST   /admin/stores/{id}/twilio
+  POST   /admin/stores/{id}/openwa
+  DELETE /admin/stores/{id}/openwa
+  GET    /admin/stores
+  GET    /admin/stores/{id}
+  GET    /health
+  GET    /report/{store_id}.pdf
 """
 from __future__ import annotations
 
@@ -308,8 +312,31 @@ def _send_outbound(to: str, from_: str, body: str) -> None:
     send_whatsapp(to=to, body=body, from_=from_)
 
 
-def _bg_scout(store_id: int, from_number: str, to_number: str, body: str) -> None:
-    """Background task: run scout pipeline, deliver result via Twilio outbound."""
+def _jid_to_internal(jid: str) -> str:
+    """Convert OpenWA JID to internal whatsapp: format.
+    '923328085405@c.us' -> 'whatsapp:+923328085405'
+    """
+    bare = jid.split("@")[0]
+    if not bare.startswith("+"):
+        bare = "+" + bare
+    return f"whatsapp:{bare}"
+
+
+def _internal_to_jid(num: str) -> str:
+    """Convert internal whatsapp: format to OpenWA JID.
+    'whatsapp:+923328085405' -> '923328085405@c.us'
+    """
+    bare = num.removeprefix("whatsapp:").lstrip("+")
+    return f"{bare}@c.us"
+
+
+def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None) -> None:
+    """Background task: run scout pipeline, deliver result via provider send_fn.
+
+    ack – if provided, sent immediately before the pipeline runs (OpenWA path).
+    """
+    if ack:
+        send_fn(ack)
     from app.agents.scout.analysis import classify_intent
     from app.agents.scout.pipeline import run as scout_run
     from app.core.db import SessionLocal, Store
@@ -324,15 +351,11 @@ def _bg_scout(store_id: int, from_number: str, to_number: str, body: str) -> Non
         logger.info("bg_scout: store=%d command=%s from=%s", store_id, command, from_number)
 
         report = scout_run(command, store_id=store_id, user_message=body)
-        _send_outbound(to=from_number, from_=to_number, body=report)
+        send_fn(report)
         logger.info("bg_scout: delivered store=%d", store_id)
     except Exception as exc:
         logger.error("bg_scout: store=%d failed error=%s", store_id, exc)
-        _send_outbound(
-            to=from_number,
-            from_=to_number,
-            body="Scout report could not be completed. Please try again.",
-        )
+        send_fn("Scout report could not be completed. Please try again.")
 
 
 _INTEGRITY_SHORTHAND = {
@@ -363,8 +386,14 @@ def _internal_ack(body: str) -> str:
     return "On it — I'll message you back shortly."
 
 
-def _bg_internal(store_id: int, from_number: str, to_number: str, body: str) -> None:
-    """Background task: handle any internal staff command, deliver via Twilio."""
+def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None) -> None:
+    """Background task: handle any internal staff command, deliver via send_fn.
+
+    ack – if provided, sent immediately before processing (used by OpenWA path
+          where there is no synchronous TwiML response to carry the ack).
+    """
+    if ack:
+        send_fn(ack)
     try:
         from app.gateway.internal import handle_internal_for_store
         reply = handle_internal_for_store(from_number, body, store_id)
@@ -372,12 +401,12 @@ def _bg_internal(store_id: int, from_number: str, to_number: str, body: str) -> 
         logger.error("bg_internal: store=%d error=%s", store_id, exc)
         reply = "Something went wrong. Please try again."
     if reply:
-        _send_outbound(to=from_number, from_=to_number, body=reply)
+        send_fn(reply)
         logger.info("bg_internal: delivered store=%d", store_id)
 
 
-def _bg_customer(store_id: int, from_number: str, to_number: str, body: str) -> None:
-    """Background task: handle customer agent message, deliver via Twilio."""
+def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
+    """Background task: handle customer agent message, deliver via send_fn."""
     try:
         from app.gateway.customer import handle_customer_for_store
         reply = handle_customer_for_store(from_number, body, store_id)
@@ -385,7 +414,7 @@ def _bg_customer(store_id: int, from_number: str, to_number: str, body: str) -> 
         logger.error("bg_customer: store=%d error=%s", store_id, exc)
         reply = None
     if reply:
-        _send_outbound(to=from_number, from_=to_number, body=reply)
+        send_fn(reply)
         logger.info("bg_customer: delivered store=%d", store_id)
 
 
@@ -432,6 +461,16 @@ def health():
         if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN")
         else "error: Twilio credentials not set"
     )
+
+    # OpenWA (optional — only flagged if base URL is set but key is missing)
+    owa_base = os.environ.get("OPENWA_BASE_URL", "")
+    owa_key = os.environ.get("OPENWA_API_KEY", "")
+    if owa_base and not owa_key:
+        checks["openwa"] = "error: OPENWA_BASE_URL set but OPENWA_API_KEY missing"
+    elif owa_base and owa_key:
+        checks["openwa"] = "ok"
+    else:
+        checks["openwa"] = "not_configured"
 
     # Agent imports
     agents = {
@@ -484,6 +523,10 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     store_name = store.name
     logger.info("gateway.webhook: store=%s(%d) from=%s", store_name, store_id, from_number)
 
+    # ── Build Twilio send_fn ───────────────────────────────────────────────────
+    def _twilio_send_fn(reply: str) -> None:
+        _send_outbound(to=from_number, from_=to_number, body=reply)
+
     # ── CSV file upload (staff only) ───────────────────────────────────────────
     if _is_csv_upload(params) and is_store_member(from_number, store_id):
         logger.info("gateway.webhook: csv_upload detected store=%d from=%s", store_id, from_number)
@@ -493,7 +536,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     # ── Check if sender is a whitelisted staff member ──────────────────────────
     if not is_store_member(from_number, store_id):
         # Pure customer — dispatch async so LLM calls don't exceed Twilio's 15s timeout
-        background_tasks.add_task(_bg_customer, store_id, from_number, to_number, body)
+        background_tasks.add_task(_bg_customer, store_id, from_number, _twilio_send_fn, body)
         return _twiml_empty()
 
     # ── Staff flow ─────────────────────────────────────────────────────────────
@@ -562,7 +605,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                         "Scout is already running — your report will arrive in a few minutes. Please wait."
                     )
 
-                # 3. Return cached report if last successful run was recent (< 60 min)
+                # 3. Return cached report if last successful run was recent (< 24h)
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
                 cached_run = _db.query(Run).filter(
                     Run.store_id == store_id,
@@ -572,9 +615,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
             if cached_run:
                 age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
-                age_str = f"{age_min} min ago" if age_min > 0 else "just now"
                 logger.info("gateway.webhook: scout_cache_hit store=%d age_min=%d", store_id, age_min)
-                # Serve the saved report text from DB — no re-scrape, no Apify cost
                 from app.core.db import ScoutReport
                 with SessionLocal() as _db:
                     saved = _db.query(ScoutReport).filter(
@@ -588,7 +629,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 # Report text missing in DB — fall through to fresh scan
 
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
-            background_tasks.add_task(_bg_scout, store_id, from_number, to_number, body)
+            background_tasks.add_task(_bg_scout, store_id, from_number, _twilio_send_fn, body)
             return _twiml(
                 "On it. Scanning competitors across Instagram, Google Maps, and "
                 "their websites. Your report will arrive in 7-10 minutes."
@@ -607,13 +648,213 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         # Dispatch every command as a background task and ack immediately.
         ack = _internal_ack(body)
         logger.info("gateway.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
-        background_tasks.add_task(_bg_internal, store_id, from_number, to_number, body)
+        background_tasks.add_task(_bg_internal, store_id, from_number, _twilio_send_fn, body)
         return _twiml(ack)
 
     # ── Customer app mode ───────────────────────────────────────────────────────
     logger.info("gateway.webhook: store=%d mode=customer from=%s", store_id, from_number)
-    background_tasks.add_task(_bg_customer, store_id, from_number, to_number, body)
+    background_tasks.add_task(_bg_customer, store_id, from_number, _twilio_send_fn, body)
     return _twiml_empty()
+
+
+# ── OpenWA webhook ────────────────────────────────────────────────────────────
+#
+# OpenWA POSTs JSON to this endpoint when a message is received on any of the
+# registered sessions.  Unlike the Twilio webhook there is no synchronous
+# TwiML reply — we return 200 immediately and send all responses via the
+# OpenWA REST API (send_fn wraps openwa_send.send_openwa).
+#
+# Payload shape (OpenWA webhook.service.ts):
+#   {
+#     "event":          "message.received",
+#     "timestamp":      "2026-...",
+#     "sessionId":      "<session-id>",
+#     "idempotencyKey": "...",
+#     "deliveryId":     "...",
+#     "data": {
+#       "from":    "923328085405@c.us",   # sender JID
+#       "to":      "16292595668@c.us",    # session's own JID
+#       "body":    "hello",
+#       "type":    "chat",
+#       "fromMe":  false,
+#       "isGroup": false,
+#       ...
+#     }
+#   }
+#
+# Configure OpenWA to call this endpoint:
+#   POST /api/sessions/{sessionId}/webhooks
+#   { "url": "https://asaanintelligence.up.railway.app/openwa/webhook",
+#     "events": ["message.received"] }
+
+@app.post("/openwa/webhook")
+async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    import json as _json
+
+    raw_bytes = await request.body()
+    try:
+        payload = _json.loads(raw_bytes)
+    except Exception:
+        logger.warning("openwa.webhook: non-JSON body received")
+        return JSONResponse({"status": "bad_request"}, status_code=400)
+
+    logger.info("openwa.webhook: raw=%s", _json.dumps(payload)[:400])
+
+    event = payload.get("event", "")
+    if event != "message.received":
+        return JSONResponse({"status": "ignored", "event": event})
+
+    session_id = payload.get("sessionId", "")
+    data = payload.get("data", {})
+
+    body_text = (data.get("body") or "").strip()
+    from_jid = data.get("from", "")
+    from_me = data.get("fromMe", False)
+    is_group = data.get("isGroup", False)
+    msg_type = data.get("type", "chat")
+
+    # Ignore our own sent messages, group chats, and non-text messages
+    if from_me or is_group or not body_text or msg_type not in ("chat", "text", ""):
+        return JSONResponse({"status": "ignored"})
+
+    from_number = _jid_to_internal(from_jid)
+    logger.info("openwa.webhook: session=%s from=%s body=%r", session_id, from_number, body_text[:80])
+
+    from app.core.db import get_store_by_openwa_session, is_store_member, get_user_session, set_user_session
+
+    store = get_store_by_openwa_session(session_id)
+    if store is None:
+        logger.warning("openwa.webhook: unknown session=%s", session_id)
+        return JSONResponse({"status": "unknown_session"}, status_code=404)
+
+    store_id = store.id
+    store_name = store.name
+    logger.info("openwa.webhook: store=%s(%d) from=%s", store_name, store_id, from_number)
+
+    # Build provider-specific send function
+    from app.core.openwa_send import send_openwa as _openwa_send_fn
+    def _owa_send(reply: str) -> None:
+        _openwa_send_fn(session_id, from_jid, reply)
+
+    # ── Customer path ──────────────────────────────────────────────────────────
+    if not is_store_member(from_number, store_id):
+        background_tasks.add_task(_bg_customer, store_id, from_number, _owa_send, body_text)
+        return JSONResponse({"status": "ok"})
+
+    # ── Staff path ─────────────────────────────────────────────────────────────
+    session = get_user_session(from_number)
+    current_mode = (
+        session.active_agent
+        if session and session.store_id == store_id
+        else None
+    )
+
+    cmd = body_text.lower().strip()
+    first_word = cmd.split()[0] if cmd else ""
+
+    if cmd in _MODE_TRIGGERS:
+        set_user_session(from_number, store_id, active_agent=None)
+        background_tasks.add_task(_owa_send, _mode_menu(store_name))
+        return JSONResponse({"status": "ok"})
+
+    if first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body_text.split()) > 1):
+        logger.info("openwa.webhook: reputation_action=%s store=%d from=%s", first_word, store_id, from_number)
+        def _do_reputation_action() -> None:
+            from app.agents.reputation import process_reputation_owner_reply
+            reply = process_reputation_owner_reply(from_number, body_text, store_id=store_id)
+            _owa_send(reply)
+        background_tasks.add_task(_do_reputation_action)
+        return JSONResponse({"status": "ok"})
+
+    if current_mode is None:
+        if cmd == "1":
+            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
+            background_tasks.add_task(_owa_send, _internal_welcome(store_name))
+        elif cmd == "2":
+            set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
+            background_tasks.add_task(_owa_send, _customer_welcome())
+        else:
+            set_user_session(from_number, store_id, active_agent=None)
+            background_tasks.add_task(_owa_send, _mode_menu(store_name))
+        return JSONResponse({"status": "ok"})
+
+    # ── Internal tools mode ────────────────────────────────────────────────────
+    if current_mode == MODE_INTERNAL:
+        logger.info("openwa.webhook: store=%d mode=internal from=%s", store_id, from_number)
+
+        if _is_scout_message(body_text):
+            from app.core.db import SessionLocal, ScoutRun as Run
+            from datetime import datetime, timedelta
+
+            if not _scout_rate_ok(from_number):
+                background_tasks.add_task(
+                    _owa_send,
+                    "You've sent too many scout requests. Limit is 3 per hour — please wait.",
+                )
+                return JSONResponse({"status": "ok"})
+
+            with SessionLocal() as _db:
+                cutoff_running = datetime.utcnow() - timedelta(minutes=15)
+                in_flight = _db.query(Run).filter(
+                    Run.store_id == store_id,
+                    Run.status == "running",
+                    Run.started_at >= cutoff_running,
+                ).first()
+                if in_flight:
+                    background_tasks.add_task(
+                        _owa_send,
+                        "Scout is already running — your report will arrive in a few minutes.",
+                    )
+                    return JSONResponse({"status": "ok"})
+
+                cutoff_cache = datetime.utcnow() - timedelta(hours=24)
+                cached_run = _db.query(Run).filter(
+                    Run.store_id == store_id,
+                    Run.status.in_(["ok", "partial"]),
+                    Run.finished_at >= cutoff_cache,
+                ).order_by(Run.finished_at.desc()).first()
+
+            if cached_run:
+                age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
+                logger.info("openwa.webhook: scout_cache_hit store=%d age_min=%d", store_id, age_min)
+                from app.core.db import ScoutReport
+                with SessionLocal() as _db:
+                    saved = _db.query(ScoutReport).filter(
+                        ScoutReport.store_id == store_id,
+                        ScoutReport.run_id == cached_run.id,
+                    ).order_by(ScoutReport.id.desc()).first()
+                    cached_text = saved.report_text if saved else None
+                if cached_text:
+                    logger.info("openwa.webhook: scout_cache_serve store=%d", store_id)
+                    background_tasks.add_task(_owa_send, cached_text)
+                    return JSONResponse({"status": "ok"})
+
+            logger.info("openwa.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
+            scout_ack = (
+                "On it. Scanning competitors across Instagram, Google Maps, and "
+                "their websites. Your report will arrive in 7-10 minutes."
+            )
+            background_tasks.add_task(_bg_scout, store_id, from_number, _owa_send, body_text, ack=scout_ack)
+            return JSONResponse({"status": "ok"})
+
+        # Reputation cache check
+        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")):
+            from app.agents.reputation import check_reputation_cache
+            hit, cached_text = check_reputation_cache(store_id, store_name)
+            if hit:
+                logger.info("openwa.webhook: reputation_cache_serve store=%d", store_id)
+                background_tasks.add_task(_owa_send, cached_text)
+                return JSONResponse({"status": "ok"})
+
+        ack = _internal_ack(body_text)
+        logger.info("openwa.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
+        background_tasks.add_task(_bg_internal, store_id, from_number, _owa_send, body_text, ack)
+        return JSONResponse({"status": "ok"})
+
+    # ── Customer app mode ──────────────────────────────────────────────────────
+    logger.info("openwa.webhook: store=%d mode=customer from=%s", store_id, from_number)
+    background_tasks.add_task(_bg_customer, store_id, from_number, _owa_send, body_text)
+    return JSONResponse({"status": "ok"})
 
 
 # ── Integrity PDF report ───────────────────────────────────────────────────────
@@ -828,6 +1069,52 @@ async def set_twilio_number(store_id: int, request: Request) -> JSONResponse:
     return JSONResponse({"status": "set", "store_id": store_id, "whatsapp_number": number}, status_code=201)
 
 
+@app.post("/admin/stores/{store_id}/openwa", status_code=201)
+async def set_openwa_session(store_id: int, request: Request) -> JSONResponse:
+    """Register (or update) an OpenWA session for a store.
+
+    Body: { "session_id": "anatummy-wa", "phone_number": "+923XXXXXXXXX" }
+    session_id  – the session name in the OpenWA dashboard
+    phone_number – the WhatsApp number scanned into that session (E.164)
+    """
+    from app.core.db import SessionLocal, Store, StoreOpenWASession
+    params = await _parse_body(request)
+    session_id = str(params.get("session_id", "")).strip()
+    phone_number = str(params.get("phone_number", "")).strip()
+    if not session_id or not phone_number:
+        return JSONResponse({"error": "session_id and phone_number required"}, status_code=400)
+    if not phone_number.startswith("+"):
+        phone_number = "+" + phone_number
+    with SessionLocal() as db:
+        if not db.query(Store).filter(Store.id == store_id).first():
+            return JSONResponse({"error": "store not found"}, status_code=404)
+        existing = db.query(StoreOpenWASession).filter(StoreOpenWASession.store_id == store_id).first()
+        if existing:
+            existing.session_id = session_id
+            existing.phone_number = phone_number
+        else:
+            db.add(StoreOpenWASession(store_id=store_id, session_id=session_id, phone_number=phone_number))
+        db.commit()
+    return JSONResponse(
+        {"status": "set", "store_id": store_id, "session_id": session_id, "phone_number": phone_number},
+        status_code=201,
+    )
+
+
+@app.delete("/admin/stores/{store_id}/openwa", status_code=200)
+async def remove_openwa_session(store_id: int) -> JSONResponse:
+    """Remove the OpenWA session registration for a store (e.g. after Twilio goes live)."""
+    from app.core.db import SessionLocal, StoreOpenWASession
+    with SessionLocal() as db:
+        deleted = db.query(StoreOpenWASession).filter(
+            StoreOpenWASession.store_id == store_id
+        ).delete(synchronize_session=False)
+        db.commit()
+    if deleted:
+        return JSONResponse({"status": "removed"})
+    return JSONResponse({"status": "not_found"}, status_code=404)
+
+
 @app.post("/admin/stores/{store_id}/customer")
 async def configure_venue(store_id: int, request: Request) -> JSONResponse:
     import json as _json
@@ -966,18 +1253,23 @@ async def get_enroll_link(store_id: int) -> JSONResponse:
 
 @app.get("/admin/stores/{store_id}")
 async def get_store(store_id: int) -> JSONResponse:
-    from app.core.db import SessionLocal, Store, StoreMember, StoreTwilioNumber, POSConnection, RevenueConnection
+    from app.core.db import (
+        SessionLocal, Store, StoreMember, StoreTwilioNumber, POSConnection,
+        RevenueConnection, StoreOpenWASession,
+    )
     with SessionLocal() as db:
         store = db.query(Store).filter(Store.id == store_id).first()
         if not store:
             return JSONResponse({"error": "not found"}, status_code=404)
-        members = db.query(StoreMember).filter(StoreMember.store_id == store_id).all()
-        twilio  = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
-        pos     = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
-        rev     = db.query(RevenueConnection).filter(RevenueConnection.store_id == store_id).first()
+        members  = db.query(StoreMember).filter(StoreMember.store_id == store_id).all()
+        twilio   = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
+        owa      = db.query(StoreOpenWASession).filter(StoreOpenWASession.store_id == store_id).first()
+        pos      = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
+        rev      = db.query(RevenueConnection).filter(RevenueConnection.store_id == store_id).first()
     return JSONResponse({
         "id": store.id, "name": store.name, "chain_id": store.chain_id,
         "whatsapp_number": twilio.whatsapp_number if twilio else None,
+        "openwa_session": {"session_id": owa.session_id, "phone_number": owa.phone_number} if owa else None,
         "members": [{"whatsapp": m.whatsapp, "role": m.role} for m in members],
         "pos_configured": pos is not None,
         "revenue_configured": rev is not None,

@@ -114,6 +114,20 @@ class StoreTwilioNumber(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StoreOpenWASession(Base):
+    """OpenWA session for a store — used while Twilio business verification is pending.
+    One session per store WhatsApp number. session_id matches the ID in the OpenWA
+    instance; phone_number is the E.164 number scanned into that session.
+    """
+    __tablename__ = "store_openwa_sessions"
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, unique=True)
+    session_id = Column(String, nullable=False, unique=True)
+    phone_number = Column(String, nullable=False)   # E.164: "+923XXXXXXXXX"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Scout agent tables
 # ---------------------------------------------------------------------------
@@ -428,6 +442,31 @@ def get_store_by_twilio_number(twilio_number: str) -> Store | None:
         if store:
             db.expunge(store)
         return store
+
+
+def get_store_by_openwa_session(session_id: str) -> Store | None:
+    """Look up a store by its OpenWA session ID."""
+    with SessionLocal() as db:
+        mapping = db.query(StoreOpenWASession).filter(
+            StoreOpenWASession.session_id == session_id
+        ).first()
+        if not mapping:
+            return None
+        store = db.query(Store).filter(Store.id == mapping.store_id).first()
+        if store:
+            db.expunge(store)
+        return store
+
+
+def get_store_openwa_session(store_id: int) -> StoreOpenWASession | None:
+    """Return the OpenWA session row for a store, or None if not configured."""
+    with SessionLocal() as db:
+        row = db.query(StoreOpenWASession).filter(
+            StoreOpenWASession.store_id == store_id
+        ).first()
+        if row:
+            db.expunge(row)
+        return row
 
 
 def get_chain_stores(chain_id: int) -> list[Store]:
