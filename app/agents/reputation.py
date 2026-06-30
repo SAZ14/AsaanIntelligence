@@ -24,8 +24,10 @@ ISSUE_CLASSES = [
     "price", "ambiance", "praise", "other",
 ]
 
-CLASSIFIER_BATCH_SIZE = 15
-HISTORICAL_CUTOFF_DAYS = 7
+CLASSIFIER_BATCH_SIZE = 30
+HISTORICAL_CUTOFF_DAYS = 3
+MAX_REVIEWS_PER_CHECK = 50
+MAX_DRAFT_REPLIES = 5
 
 DAY_KEYWORDS = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -638,6 +640,15 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     if not raw_reviews:
         review_db.update_run(run_id, "ok", [], [], 0)
         return f"[{store_name}] No new reviews found across all platforms."
+
+    # Cap to most recent MAX_REVIEWS_PER_CHECK reviews
+    raw_reviews = sorted(
+        raw_reviews,
+        key=lambda r: r.get("posted_at") or r.get("date") or "",
+        reverse=True,
+    )[:MAX_REVIEWS_PER_CHECK]
+    logger.info("reputation.check: store=%d capped_to=%d", store_id, len(raw_reviews))
+
     client = get_client()
 
     # Load brand voice from per-store config
@@ -662,15 +673,20 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             logger.warning("Skipping review: %s", exc)
 
     classify_reviews_batch([ra for _, ra in analyses], client)
-    draft_replies([ra for _, ra in analyses], client, venue_name=store_name, brand_voice=brand)
+
+    # Only draft replies for negative/mixed reviews, capped to MAX_DRAFT_REPLIES
+    needs_reply = [ra for _, ra in analyses if ra.rating <= 3][:MAX_DRAFT_REPLIES]
+    draft_replies(needs_reply, client, venue_name=store_name, brand_voice=brand)
+    reply_map = {ra.review_id: ra for ra in needs_reply}
 
     new_count = 0
     for raw, ra in analyses:
+        drafted = reply_map.get(ra.review_id)
         ai_summary = {
             "status": "pending",
             "sentiment": ra.sentiment,
             "issue_class": ra.issue_class,
-            "draft_reply": ra.draft_reply,
+            "draft_reply": drafted.draft_reply if drafted else "",
             "correlation": {
                 "estimated_date": ra.correlation.estimated_date,
                 "matched_staff_name": ra.correlation.matched_staff_name,
