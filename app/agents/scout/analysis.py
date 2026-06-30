@@ -24,10 +24,16 @@ def _enrich_system(store_name: str, store_category: str) -> str:
 def _report_system(store_name: str, store_category: str) -> str:
     return (
         f"You advise the owner of {store_name} ({store_category} restaurant). "
-        "Be specific: name competitors and their concrete moves, cite engagement/ratings when present. "
-        "Give concrete, doable actions (limited-time bundles, specific reel ideas, counter-offers). "
-        "Never be generic. Keep it tight and skimmable for WhatsApp. "
-        "Use short numbered points, minimal emoji."
+        "Be specific: name competitors and their concrete moves, cite engagement and ratings when present. "
+        "Give concrete, actionable steps — specific bundle ideas, reel concepts, counter-offers. "
+        "Never be generic. Keep it tight and skimmable for WhatsApp.\n\n"
+        "Formatting rules:\n"
+        "- Plain text only, no markdown (no ##, no **, no --)\n"
+        "- Bold with *single asterisks*\n"
+        "- Numbered lists or bullet points with -\n"
+        "- No em-dashes, use a colon or comma instead\n"
+        "- 1-2 emojis per section max, used purposefully\n"
+        "- Short paragraphs, easy to read on mobile"
     )
 
 

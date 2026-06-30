@@ -508,13 +508,18 @@ def _load_brand_voice(store_id: int, store_name: str) -> BrandVoice:
 def _format_pending(pending: dict) -> str:
     summary = pending["ai_summary"]
     rating = pending.get("rating")
-    rating_str = f"{rating}/5" if rating is not None else "no rating"
+    stars = "⭐" * int(rating) if rating else ""
+    rating_str = f"{stars} {rating}/5" if rating is not None else "no rating"
     excerpt = (pending.get("content_text") or "")[:150]
     draft = summary.get("draft_reply", "")
     return (
-        f"⭐ {rating_str}: \"{excerpt}\"\n\n"
-        f"Suggested reply:\n{draft}\n\n"
-        "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip · *DONE* to exit"
+        f"*{rating_str}*\n"
+        f"_{excerpt}_\n\n"
+        f"*Suggested reply:*\n{draft}\n\n"
+        "*POST* - publish\n"
+        "*EDIT <text>* - revise\n"
+        "*IGNORE* - skip\n"
+        "*DONE* - exit"
     )
 
 
@@ -551,44 +556,46 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
     logger.info("reputation: store=%d cmd=%s from=%s", store_id, cmd, from_phone)
 
     if text_lower.startswith("done") or text_lower.startswith("exit"):
-        return f"[{store_name}] Review session ended. Send *CHECK* anytime to resume."
+        return f"*{store_name}* - Review session ended. Send *CHECK* anytime to resume."
 
     if text_lower.startswith("post"):
         finding = review_db.get_pending_finding(store_id)
         if not finding:
-            return f"[{store_name}] No pending review drafts awaiting confirmation."
+            return f"*{store_name}* - No pending review drafts right now."
         summary = finding["ai_summary"]
         summary["status"] = "posted"
         review_db.update_finding_summary(finding["id"], summary)
         draft = summary.get("draft_reply", "")
-        reply = f"[{store_name}] Published draft response:\n\n{draft}"
+        reply = f"*{store_name}* - Published! ✅\n\n_{draft}_"
         nxt = review_db.get_pending_finding(store_id)
         return reply + ("\n\n" + _format_pending(nxt) if nxt else "\n\nNo more pending reviews. Send *DONE* to exit.")
 
     if text_lower.startswith("edit"):
         new_draft = text[4:].strip()
         if not new_draft:
-            return f"[{store_name}] Reply with *EDIT <your new message>* to revise the draft."
+            return f"*{store_name}* - Send *EDIT <your new message>* to revise the draft."
         finding = review_db.get_pending_finding(store_id)
         if not finding:
-            return f"[{store_name}] No pending review draft found to edit."
+            return f"*{store_name}* - No pending draft found to edit."
         summary = finding["ai_summary"]
         summary["draft_reply"] = new_draft
         review_db.update_finding_summary(finding["id"], summary)
         return (
-            f"[{store_name}] Draft updated to:\n\n{new_draft}\n\n"
-            "Reply *POST* to publish · *IGNORE* to skip · *DONE* to exit."
+            f"*{store_name}* - Draft updated ✏️\n\n_{new_draft}_\n\n"
+            "*POST* - publish\n"
+            "*IGNORE* - skip\n"
+            "*DONE* - exit"
         )
 
     if text_lower.startswith("ignore"):
         finding = review_db.get_pending_finding(store_id)
         if not finding:
-            return f"[{store_name}] No pending review draft to ignore."
+            return f"*{store_name}* - No pending draft to ignore."
         summary = finding["ai_summary"]
         summary["status"] = "ignored"
         review_db.update_finding_summary(finding["id"], summary)
         nxt = review_db.get_pending_finding(store_id)
-        reply = f"[{store_name}] Skipped."
+        reply = f"*{store_name}* - Skipped."
         return reply + ("\n\n" + _format_pending(nxt) if nxt else "\n\nNo more pending reviews. Send *DONE* to exit.")
 
     if any(kw in text_lower for kw in ("check", "scrape", "crawl", "sync")):
@@ -624,11 +631,11 @@ def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
     pending = review_db.get_pending_finding(store_id)
     if pending:
         text = (
-            f"[{store_name}] Reviews cached ({age_str}). Pending reply:\n\n"
+            f"*{store_name}* - Reviews cached ({age_str}). Pending reply:\n\n"
             + _format_pending(pending)
         )
     else:
-        text = f"[{store_name}] Reviews up to date ({age_str}). No pending replies."
+        text = f"*{store_name}* - Reviews up to date ({age_str}). No pending replies."
 
     return True, text
 
@@ -651,7 +658,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             Run.started_at >= cutoff_inflight,
         ).first()
     if in_flight:
-        return f"[{store_name}] Review scrape already in progress — you'll receive the results shortly."
+        return f"*{store_name}* - Review scrape already in progress. Results coming shortly 🔍"
 
     # Cache: if a review check completed within 24h, skip Apify and read from DB
     cutoff = datetime.utcnow() - timedelta(hours=24)
@@ -671,17 +678,11 @@ def _check_reviews(store_id: int, store_name: str) -> str:
         logger.info("reputation.check: store=%d cache_hit age_min=%d", store_id, age_min)
         pending = review_db.get_pending_finding(store_id)
         if pending:
-            summary = pending["ai_summary"]
-            rating = pending.get("rating") or "N/A"
-            excerpt = (pending.get("content_text") or "")[:150]
-            draft = summary.get("draft_reply", "")
             return (
-                f"[{store_name}] Reviews cached ({age_str}). Pending reply:\n\n"
-                f"⭐ {rating}/5: \"{excerpt}\"\n\n"
-                f"Suggested reply:\n{draft}\n\n"
-                "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip"
+                f"*{store_name}* - Reviews cached ({age_str}). Pending reply:\n\n"
+                + _format_pending(pending)
             )
-        return f"[{store_name}] Reviews up to date ({age_str}). No pending replies."
+        return f"*{store_name}* - Reviews up to date ({age_str}). No pending replies."
 
     # Mark run as "running" before Apify so in-flight guard can detect it
     run_id = review_db.save_run(store_id, "whatsapp_check")
@@ -692,12 +693,12 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     except Exception as exc:
         logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
         review_db.update_run(run_id, "error", [], [], 0)
-        return f"[{store_name}] Review check failed: {exc}"
+        return f"*{store_name}* - Review check failed: {exc}"
 
     logger.info("reputation.check: store=%d reviews_found=%d", store_id, len(raw_reviews))
     if not raw_reviews:
         review_db.update_run(run_id, "ok", [], [], 0)
-        return f"[{store_name}] No new reviews found across all platforms."
+        return f"*{store_name}* - No new reviews found across all platforms."
 
     # Cap to most recent MAX_REVIEWS_PER_CHECK reviews
     raw_reviews = sorted(
@@ -758,16 +759,16 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     review_db.update_run(run_id, "ok", ["pipeline"], [], new_count)
 
     if new_count == 0:
-        return f"[{store_name}] No new reviews found. All up to date."
+        return f"*{store_name}* - No new reviews found. All up to date."
 
     pending = review_db.get_pending_finding(store_id)
     if pending:
         return (
-            f"[{store_name}] Processed {new_count} new reviews.\n\n"
-            f"Latest pending:\n" + _format_pending(pending)
+            f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. "
+            f"Latest pending:\n\n" + _format_pending(pending)
         )
 
-    return f"[{store_name}] Processed {new_count} new reviews. No negative reviews to action."
+    return f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. No negative reviews to action."
 
 
 def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
@@ -800,10 +801,11 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
         recent_ctx += "(None — type CHECK to scrape new reviews)\n"
 
     system = (
-        f"You assist the owner of '{store_name}' with review management. "
-        "Be concise — this is WhatsApp.\n"
-        "Commands: POST (publish draft), EDIT <text> (revise draft), "
-        "IGNORE (skip), CHECK (scrape new reviews).\n\n"
+        f"You assist the owner of '{store_name}' with review management on WhatsApp. "
+        "Be brief, direct and conversational.\n"
+        "Commands: *POST* (publish draft), *EDIT <text>* (revise draft), "
+        "*IGNORE* (skip), *CHECK* (scrape new reviews).\n\n"
+        "WhatsApp format: no markdown, no em-dashes, use *word* for bold, short paragraphs.\n\n"
         f"{pending_ctx}\n{recent_ctx}"
     )
 
@@ -821,9 +823,9 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     except Exception as exc:
         logger.error("Reputation chat error: %s", exc)
         return (
-            f"[{store_name}] Commands:\n"
-            "*POST* — publish draft reply\n"
-            "*EDIT <text>* — revise the draft\n"
-            "*IGNORE* — skip this review\n"
-            "*CHECK* — scrape new reviews"
+            f"*{store_name}* - Reviews\n\n"
+            "*POST* - publish draft reply\n"
+            "*EDIT <text>* - revise the draft\n"
+            "*IGNORE* - skip this review\n"
+            "*CHECK* - scrape new reviews"
         )

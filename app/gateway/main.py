@@ -403,13 +403,13 @@ def _internal_ack(body: str) -> str:
     words = set(_re.sub(r"[^\w\s]", "", lower).split())
     first = lower.split()[0] if lower else ""
     if first in {"check", "scrape", "sync", "crawl"} and not _is_scout_message(body):
-        return "Scraping your latest reviews — I'll message you when done (30-90 sec)."
+        return "Checking your reviews now 🔍 I'll message you when done (30-90 sec)."
     if words & _REVIEW_KEYWORDS:
-        return "Checking your reviews — I'll message you in a moment."
+        return "Pulling up your reviews — give me a sec 👀"
     if words & _INTEGRITY_SHORTHAND:
-        return "Running POS audit — report incoming."
+        return "Running your POS audit — report incoming 📊"
     if words & _REVENUE_KEYWORDS:
-        return "Checking sales data — I'll message you back shortly."
+        return "On it — checking your sales data now 📈"
     return "On it — I'll message you back shortly."
 
 
@@ -658,8 +658,8 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
             background_tasks.add_task(_bg_scout, store_id, from_number, _twilio_send_fn, body)
             return _twiml(
-                "On it. Scanning competitors across Instagram, Google Maps, and "
-                "their websites. Your report will arrive in 7-10 minutes."
+                "Scanning competitors across Instagram, Google Maps and their websites 🔍\n"
+                "Your report will arrive in 7-10 minutes."
             )
 
         # Reputation check — serve cache hit via TwiML instantly (same pattern as scout)
@@ -865,8 +865,8 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
 
             logger.info("openwa.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
             scout_ack = (
-                "On it. Scanning competitors across Instagram, Google Maps, and "
-                "their websites. Your report will arrive in 7-10 minutes."
+                "Scanning competitors across Instagram, Google Maps and their websites 🔍\n"
+                "Your report will arrive in 7-10 minutes."
             )
             background_tasks.add_task(_bg_scout, store_id, from_number, _owa_send, body_text, ack=scout_ack)
             return JSONResponse({"status": "ok"})

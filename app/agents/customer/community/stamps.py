@@ -44,17 +44,19 @@ def apply_stamp(
         member.stamps_current = 0
         return StampResult(
             message=(
-                f"Stamp #{event.stamp_number} added! You've earned {config.reward_text}. "
-                "Show this to the cashier to claim it. Your stamps have been reset."
+                f"Stamp collected! 🎉\n\n"
+                f"You've earned *{config.reward_text}*. "
+                "Show this message to the cashier to claim your reward. "
+                "Your stamps have been reset — keep collecting!"
             ),
             reward_issued=True,
         )
     remaining = config.stamp_goal - member.stamps_current
     return StampResult(
         message=(
-            f"Stamp #{event.stamp_number} added! "
-            f"You have {member.stamps_current}/{config.stamp_goal} stamps. "
-            f"{remaining} more to earn {config.reward_text}."
+            f"Stamp added! ✅\n\n"
+            f"You're on *{member.stamps_current}/{config.stamp_goal}* stamps. "
+            f"Just {remaining} more to earn {config.reward_text}. See you next time!"
         )
     )
 
@@ -62,23 +64,25 @@ def apply_stamp(
 def stamp_status_message(member: CommunityMember, config: VenueConfig) -> str:
     remaining = config.stamp_goal - member.stamps_current
     return (
-        f"You have {member.stamps_current}/{config.stamp_goal} stamps "
-        f"({remaining} more for {config.reward_text}). "
-        f"Lifetime stamps: {member.stamps_lifetime}."
+        f"Your stamps: *{member.stamps_current}/{config.stamp_goal}* 🎫\n\n"
+        f"{remaining} more stamp{'s' if remaining != 1 else ''} to earn {config.reward_text}.\n"
+        f"Lifetime stamps collected: {member.stamps_lifetime}"
     )
 
 
 def welcome_message(name: str, config: VenueConfig) -> str:
     return (
-        f"Welcome to {config.venue_name}, {name}! "
-        f"Collect {config.stamp_goal} stamps to earn {config.reward_text}. "
-        "Text a receipt code from the counter to get your first stamp."
+        f"Welcome to {config.venue_name}, {name}! 🎉\n\n"
+        f"You're now part of our loyalty family. Collect *{config.stamp_goal} stamps* "
+        f"and earn {config.reward_text}.\n\n"
+        "Text a receipt code from the counter after your next visit to get your first stamp!"
     )
 
 
 def welcome_back_message(name: str, member: CommunityMember, config: VenueConfig) -> str:
     remaining = config.stamp_goal - member.stamps_current
     return (
-        f"Welcome back, {name}! You have {member.stamps_current}/{config.stamp_goal} stamps "
-        f"({remaining} more for {config.reward_text})."
+        f"Welcome back, {name}! 👋\n\n"
+        f"You're on *{member.stamps_current}/{config.stamp_goal} stamps* — "
+        f"just {remaining} more to earn {config.reward_text}. Keep it up!"
     )

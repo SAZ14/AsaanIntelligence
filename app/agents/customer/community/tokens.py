@@ -47,12 +47,12 @@ def find_code(store_id: int, code: str) -> RedeemCode | None:
 
 def validate_code(entry: RedeemCode, config: VenueConfig) -> str | None:
     if entry.redeemed_at:
-        return "This code was already used."
+        return "This code has already been used."
     issued = datetime.fromisoformat(entry.issued_at)
     if issued.tzinfo is None:
         issued = issued.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) - issued > timedelta(days=config.code_expiry_days):
-        return "This code has expired."
+        return "This code has expired. Get a fresh one at the counter!"
     return None
 
 

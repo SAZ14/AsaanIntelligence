@@ -14,20 +14,20 @@ import logging
 logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
-    "Staff tools — type naturally or use these shortcuts:\n\n"
-    "Integrity (POS audit):\n"
-    "  summary · leakage · profit · staff · daily · weekly · refresh\n\n"
-    "Revenue advisor:\n"
-    "  revenue · sales · pricing · strategy\n\n"
-    "Competitor scout:\n"
-    "  scout  — full competitor intelligence (arrives in 7-10 min)\n\n"
-    "Reputation (reviews):\n"
-    "  check    — scrape new reviews\n"
-    "  post     — publish pending draft reply\n"
-    "  edit <text> — revise draft reply\n"
-    "  ignore   — skip pending review\n\n"
-    "  help  — this message\n"
-    "  menu  — switch mode"
+    "*Staff Tools* 🛠\n\n"
+    "*POS Audit*\n"
+    "summary, leakage, profit, staff, daily, weekly, refresh\n\n"
+    "*Revenue Advisor*\n"
+    "revenue, sales, pricing, strategy\n\n"
+    "*Competitor Scout*\n"
+    "scout - full report in 7-10 min 🔍\n\n"
+    "*Reviews*\n"
+    "check - scrape new reviews\n"
+    "post - publish pending draft\n"
+    "edit <text> - revise draft\n"
+    "ignore - skip current review\n\n"
+    "help - this message\n"
+    "menu - switch mode"
 )
 
 _REPUTATION_EXACT = {"post", "ignore"}
@@ -149,12 +149,13 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "A restaurant manager sent a WhatsApp message. "
-                        "You have the system's raw output. "
+                        "A restaurant manager asked a question on WhatsApp. "
+                        "You have the system output. "
                         "Rewrite it as a direct, conversational answer to their specific question. "
-                        "Keep all numbers and data. "
-                        "WhatsApp format: short paragraphs, no markdown headers or bold. "
-                        "Do not invent information not in the raw output."
+                        "Keep all numbers and data intact. "
+                        "WhatsApp format: short paragraphs, use *word* for bold (single asterisks), "
+                        "no markdown headers, no em-dashes, numbered or bullet lists for multiple items. "
+                        "Never invent information not in the system output."
                     ),
                 },
                 {
@@ -226,7 +227,7 @@ def _integrity(store_id: int, from_number: str, text: str) -> str:
         return get_service().handle_message(store_id, from_number, text)
     except Exception as e:
         logger.warning("internal._integrity: store=%d error=%s", store_id, e)
-        return "Integrity agent unavailable right now. Try again shortly."
+        return "POS audit is unavailable right now. Please try again shortly."
 
 
 def _revenue(store_id: int, from_number: str, text: str) -> str:
@@ -236,15 +237,12 @@ def _revenue(store_id: int, from_number: str, text: str) -> str:
         return reply.text
     except Exception as e:
         logger.warning("internal._revenue: store=%d error=%s", store_id, e)
-        return "Revenue advisor unavailable right now. Try again shortly."
+        return "Revenue advisor is unavailable right now. Please try again shortly."
 
 
 def _scout(store_id: int, from_number: str, text: str) -> str:
     # Sync fallback — async dispatch in gateway should handle this first.
-    return (
-        "Kicking off a competitor scan. "
-        "Your report will arrive in 7-10 minutes."
-    )
+    return "Scanning competitors now 🔍 Your report will arrive in 7-10 minutes."
 
 
 def _reputation(store_id: int, from_number: str, text: str) -> str:
@@ -254,6 +252,6 @@ def _reputation(store_id: int, from_number: str, text: str) -> str:
     except Exception as e:
         logger.warning("internal._reputation: store=%d error=%s", store_id, e)
         return (
-            "Reputation agent unavailable right now.\n"
-            "Commands: post · edit <text> · ignore · check"
+            "Reviews agent is unavailable right now. Please try again shortly.\n\n"
+            "Commands: *post* · *edit <text>* · *ignore* · *check*"
         )

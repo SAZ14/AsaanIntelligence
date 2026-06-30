@@ -56,21 +56,21 @@ class AgentReply:
 def _clean_name(raw: str) -> str:
     name = " ".join(raw.strip().split())
     if len(name) < 2:
-        raise ValueError("Please send your name (at least 2 characters).")
+        raise ValueError("Send us your name (at least 2 characters).")
     if len(name) > 80:
-        raise ValueError("That name is too long — please send a shorter one.")
+        raise ValueError("That name is a bit long. Could you send a shorter one?")
     if is_redeem_code(name):
-        raise ValueError("Please send your name, not a receipt code.")
+        raise ValueError("That looks like a receipt code. What's your name?")
     return name
 
 
 def _help_message(name: str, config: VenueConfig) -> str:
     return (
-        f"Hi {name}! You can:\n"
-        f"* Text a receipt code (e.g. SR-AB12)\n"
-        f"* Say 'my stamps' for your progress\n"
-        f"* Say 'menu' or 'deals'\n"
-        f"* Say 'leaderboard' for this week's top collectors"
+        f"Hi {name}! Here's what you can do 😊\n\n"
+        f"- Text a *receipt code* (e.g. SR-AB12) to earn a stamp\n"
+        f"- Send *my stamps* to check your progress\n"
+        f"- Ask about the *menu* or current *deals*\n"
+        f"- Send *leaderboard* to see this week's top collectors"
     )
 
 
@@ -83,15 +83,22 @@ def _chat_reply(
     if not client:
         return (
             f"Hi {member.name}! Ask me about the menu or deals, "
-            "say 'my stamps', or text a receipt code like SR-AB12."
+            "send *my stamps* to check your progress, or text a receipt code like SR-AB12 😊"
         )
     system_content = (
-        f"You are a friendly employee at the cafe chatting on WhatsApp. "
+        f"You are a friendly team member at {config.venue_name} chatting on WhatsApp. "
         f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences. "
-        f"Be warm and conversational. Naturally steer towards the cafe, menu, deals, or stamps.\n\n"
-        f"Rules: (1) ALWAYS use exact prices from the MENU. "
-        f"(2) For location questions, copy the exact branch names and areas from STORE KNOWLEDGE word-for-word — never say 'Islamabad' alone when specific branches are listed. "
-        f"(3) For hours questions, state the exact open/close times from STORE KNOWLEDGE.\n\n{context}"
+        f"Be warm, natural, and conversational — like a real human, not a robot. "
+        f"Naturally steer towards the menu, deals, or stamps.\n\n"
+        f"WhatsApp formatting rules:\n"
+        f"- Bold with *single asterisks* only, never **double**\n"
+        f"- No markdown headers (no ##)\n"
+        f"- No em-dashes — use a colon or comma instead\n"
+        f"- Short sentences, 1-2 emojis max per reply\n\n"
+        f"Content rules:\n"
+        f"(1) ALWAYS use exact prices from the MENU — never guess or round.\n"
+        f"(2) For location questions, copy branch names word-for-word from STORE KNOWLEDGE.\n"
+        f"(3) For hours questions, state the exact open and close times from STORE KNOWLEDGE.\n\n{context}"
     )
     messages = list(history[-6:])
     messages.append({"role": "user", "content": user_message})
@@ -125,7 +132,7 @@ def handle_customer_message(
     # Onboarding: awaiting name
     if member is None and sessions.get(phone) == ONBOARDING:
         if not text:
-            return AgentReply("What name should we use for your rewards?")
+            return AgentReply("What name should we put on your rewards? 😊")
         try:
             name = _clean_name(text)
         except ValueError as e:
@@ -139,11 +146,11 @@ def handle_customer_message(
     if is_redeem_code(text):
         if member is None:
             return AgentReply(
-                "Please scan the counter QR to join the community first, then send your code."
+                "Scan the QR code at the counter to join our loyalty programme first, then send your code 😊"
             )
         entry = find_code(store_id, text)
         if entry is None:
-            return AgentReply("That code wasn't found. Check the code on your receipt.")
+            return AgentReply("That code wasn't found. Double-check the code on your receipt 🧾")
         err = validate_code(entry, config)
         if err:
             return AgentReply(err)
@@ -157,7 +164,8 @@ def handle_customer_message(
         sessions[phone] = ONBOARDING
         save_onboarding_sessions(store_id, sessions)
         return AgentReply(
-            f"Welcome to {config.venue_name}! What name should we use for your rewards?"
+            f"Hey! Welcome to {config.venue_name} 👋\n\n"
+            "What name should we put on your loyalty rewards?"
         )
 
     # Existing member

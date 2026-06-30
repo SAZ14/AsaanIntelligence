@@ -28,10 +28,12 @@ def format_leaderboard(
     title: str = "This week's top stamp collectors",
 ) -> str:
     if not counts:
-        return "No stamps collected yet this week. Be the first!"
+        return "No stamps collected this week yet. Be the first! 🏆"
     ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))[:limit]
-    lines = [title + ":"]
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"*{title}* 🏆\n"]
     for i, (phone, count) in enumerate(ranked, 1):
         name = members.get(phone, CommunityMember(phone=phone)).name or phone[-4:]
-        lines.append(f"{i}. {name} — {count} stamp{'s' if count != 1 else ''}")
+        prefix = medals[i - 1] if i <= 3 else f"{i}."
+        lines.append(f"{prefix} {name} - {count} stamp{'s' if count != 1 else ''}")
     return "\n".join(lines)
