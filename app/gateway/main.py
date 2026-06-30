@@ -579,6 +579,14 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 "their websites. Your report will arrive in 7-10 minutes."
             )
 
+        # Reputation check — serve cache hit via TwiML instantly (same pattern as scout)
+        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")):
+            from app.agents.reputation import check_reputation_cache
+            hit, cached_text = check_reputation_cache(store_id, store_name)
+            if hit:
+                logger.info("gateway.webhook: reputation_cache_serve store=%d", store_id)
+                return _twiml_chunks(cached_text)
+
         # All internal commands (integrity/revenue/reputation) involve LLM calls
         # (10-30s routing + 10-30s response) that exceed Twilio's 15s timeout.
         # Dispatch every command as a background task and ack immediately.

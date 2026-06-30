@@ -575,6 +575,48 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
     return _chat_about_reviews(store_id, store_name, text)
 
 
+def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
+    """Return (True, text) if a completed check exists within 24h, else (False, '')."""
+    from datetime import datetime, timedelta
+    from app.review_sources import db as review_db
+    from app.core.db import SessionLocal, ScoutRun as Run
+
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    with SessionLocal() as db:
+        cached = db.query(Run).filter(
+            Run.store_id == store_id,
+            Run.command == "whatsapp_check",
+            Run.status == "ok",
+            Run.finished_at >= cutoff,
+        ).order_by(Run.finished_at.desc()).first()
+        if cached:
+            db.expunge(cached)
+
+    if not cached:
+        return False, ""
+
+    age_min = int((datetime.utcnow() - cached.finished_at).total_seconds() / 60)
+    age_str = f"{age_min} min ago" if age_min > 0 else "just now"
+    logger.info("reputation.cache_hit: store=%d age_min=%d", store_id, age_min)
+
+    pending = review_db.get_pending_finding(store_id)
+    if pending:
+        summary = pending["ai_summary"]
+        rating = pending.get("rating") or "N/A"
+        excerpt = (pending.get("content_text") or "")[:150]
+        draft = summary.get("draft_reply", "")
+        text = (
+            f"[{store_name}] Reviews cached ({age_str}). Pending reply:\n\n"
+            f"⭐ {rating}/5: \"{excerpt}\"\n\n"
+            f"Suggested reply:\n{draft}\n\n"
+            "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip"
+        )
+    else:
+        text = f"[{store_name}] Reviews up to date ({age_str}). No pending replies."
+
+    return True, text
+
+
 def _check_reviews(store_id: int, store_name: str) -> str:
     from datetime import datetime, timedelta
     from app.review_sources.pipeline import run_pipeline
