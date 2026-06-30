@@ -685,15 +685,22 @@ async def create_store(request: Request) -> JSONResponse:
 async def add_member(store_id: int, request: Request) -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreMember
     params = await _parse_body(request)
-    whatsapp = str(params.get("whatsapp", "")).strip()
+    raw = str(params.get("whatsapp", "")).strip()
+    whatsapp = raw if raw.startswith("whatsapp:") else f"whatsapp:{raw}"
     role = params.get("role", "owner")
     with SessionLocal() as db:
         if not db.query(Store).filter(Store.id == store_id).first():
             return JSONResponse({"error": "store not found"}, status_code=404)
+        # Remove any un-prefixed duplicate for this number
+        db.query(StoreMember).filter(
+            StoreMember.store_id == store_id,
+            StoreMember.whatsapp == raw,
+        ).delete()
         exists = db.query(StoreMember).filter(
             StoreMember.store_id == store_id, StoreMember.whatsapp == whatsapp,
         ).first()
         if exists:
+            db.commit()
             return JSONResponse({"status": "already_exists"}, status_code=200)
         db.add(StoreMember(store_id=store_id, whatsapp=whatsapp, role=role))
         db.commit()
