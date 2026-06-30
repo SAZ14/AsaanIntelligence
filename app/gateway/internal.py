@@ -63,21 +63,46 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             base_url="https://open.bigmodel.cn/api/paas/v4/",
         )
         system = (
-            "You route WhatsApp messages from restaurant staff to the correct "
-            "internal tool. Reply with exactly: agent/command — nothing else.\n\n"
-            "Agents and commands:\n"
-            "  integrity/summary    overall POS audit executive summary\n"
-            "  integrity/leakage    voids, theft, comp abuse, discount abuse\n"
-            "  integrity/profit     margins, COGS, gross profit, sales totals\n"
-            "  integrity/staff      per-staff anomalies, who had most issues\n"
-            "  integrity/daily      today's sales and performance\n"
-            "  integrity/weekly     7-day trend comparison\n"
-            "  integrity/refresh    re-pull POS data from source\n"
-            "  integrity/free_form  any other POS or financial question\n"
-            "  revenue/general      sales strategy, growth, upsell, campaigns\n"
-            "  reputation/check     fetch / scrape new customer reviews right now\n"
-            "  reputation/chat      anything about online reviews, ratings, complaints, what customers say, Google Maps, Instagram comments, food app feedback — e.g. 'what are people saying', 'any bad reviews', 'how are our ratings'\n"
-            "  scout/scout          competitor intelligence (only if clearly about competitors)\n"
+            "You are a message router for a restaurant management AI.\n"
+            "A staff member sent a WhatsApp message — it may be English, Urdu, or Roman Urdu. Route by meaning.\n"
+            "Reply with EXACTLY one route in the format agent/command — nothing else, no punctuation.\n\n"
+            "ROUTES:\n"
+            "integrity/summary   – executive overview, general performance, 'how did we do', full audit\n"
+            "integrity/leakage   – theft, voids, comps, discount abuse, missing cash, suspicious transactions\n"
+            "integrity/profit    – margins, COGS, cost breakdown, gross profit (NOT growth strategy)\n"
+            "integrity/staff     – per-employee anomalies, cashier/waiter breakdown, who had issues\n"
+            "integrity/daily     – today's sales, today's revenue, today's performance\n"
+            "integrity/weekly    – 7-day trends, this week vs last week, weekly comparison\n"
+            "integrity/refresh   – re-sync/reload POS data, fetch latest numbers, update data\n"
+            "integrity/free_form – any other POS or financial data question not covered above\n"
+            "revenue/general     – growth strategy, upsell tips, campaigns, how to sell more, business advice\n"
+            "reputation/check    – SCRAPE new reviews right now: 'check reviews', 'get latest reviews'\n"
+            "reputation/chat     – questions ABOUT existing reviews: ratings, complaints, what are customers saying, Google/Foodpanda/Instagram\n"
+            "scout/scout         – competitor intelligence, rival restaurants, what competitors are doing\n\n"
+            "DISAMBIGUATION RULES (apply these when in doubt):\n"
+            "• 'how much did we make/sell today/this week' → integrity/daily or integrity/weekly — POS data query, NOT strategy\n"
+            "• 'how to increase sales' / 'grow revenue' / 'new campaign' / 'marketing' → revenue/general\n"
+            "• 'check reviews' / 'get new reviews' / 'review lao' / 'koi naye reviews' → reputation/check\n"
+            "• 'what are customers saying' / 'bad reviews' / 'our rating' / 'log kya bol rahe' → reputation/chat\n"
+            "• mentions competitors / rival restaurants → scout/scout\n"
+            "• 'chor' / 'theft' / 'missing money' / 'suspicious' / 'void' → integrity/leakage\n"
+            "• 'profit' or 'margin' or 'COGS' → integrity/profit\n"
+            "• 'full report' / 'summary' / 'overview' / 'audit' → integrity/summary\n"
+            "• 'refresh' / 'reload' / 'update data' → integrity/refresh\n\n"
+            "EXAMPLES (message → route):\n"
+            "  'aaj kitna hua' → integrity/daily\n"
+            "  'is hafte kaisi rahi' → integrity/weekly\n"
+            "  'koi chor hai kya' → integrity/leakage\n"
+            "  'staff mein koi masla' → integrity/staff\n"
+            "  'reviews check karo' → reputation/check\n"
+            "  'log kya bol rahe hain' → reputation/chat\n"
+            "  'how do we upsell desserts' → revenue/general\n"
+            "  'what are competitors offering' → scout/scout\n"
+            "  'profit margin kya hai' → integrity/profit\n"
+            "  'give me a full summary' → integrity/summary\n"
+            "  'data refresh karo' → integrity/refresh\n"
+            "  'can you check our google reviews' → reputation/check\n"
+            "  'increase karni hai sales' → revenue/general\n"
         )
         resp = client.chat.completions.create(
             model=ZAI_MODEL,
@@ -86,7 +111,7 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
                 {"role": "user", "content": text},
             ],
             temperature=0,
-            max_tokens=15,
+            max_tokens=25,
         )
         result = resp.choices[0].message.content.strip().lower()
         if "/" in result:
