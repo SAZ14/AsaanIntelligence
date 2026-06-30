@@ -28,10 +28,9 @@ def load_pos_from_db(store_id: int) -> tuple[list[Order], dict[str, MenuItem], d
     import csv, io, logging
     from app.core.db import SessionLocal, UploadedFile
     from app.ingest.loader import row_to_menu_item, row_to_staff, rows_to_orders
-    from app.agents.integrity.pos.base import _load_mapping
-
     log = logging.getLogger(__name__)
-    mapping = _load_mapping(None)
+    from app.agents.integrity.pos.base import _load_mapping
+    mapping = _load_mapping("cafe_generic")
 
     with SessionLocal() as db:
         rows = db.query(UploadedFile).filter(UploadedFile.store_id == store_id).all()
