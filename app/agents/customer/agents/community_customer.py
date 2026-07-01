@@ -79,7 +79,7 @@ def _chat_reply(
     history: list[dict], store_id: int, phone: str,
     venue_name: str = "the restaurant",
 ) -> str:
-    from app.core.llm import get_model
+    from app.core.llm import get_customer_model
     client = _get_client()
     if not client:
         return (
@@ -107,7 +107,7 @@ def _chat_reply(
     messages = list(history[-6:])
     messages.append({"role": "user", "content": user_message})
     resp = client.chat.completions.create(
-        model=get_model(),
+        model=get_customer_model(),
         max_tokens=300,
         messages=[{"role": "system", "content": system_content}] + messages,
     )

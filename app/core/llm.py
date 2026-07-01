@@ -26,3 +26,8 @@ def get_client():
 
 def get_model() -> str:
     return os.environ.get("ZAI_MODEL", _DEFAULT_MODEL)
+
+
+def get_customer_model() -> str:
+    """Model used by the customer-facing chat agent — faster/cheaper Flash by default."""
+    return os.environ.get("CUSTOMER_ZAI_MODEL", get_model())
