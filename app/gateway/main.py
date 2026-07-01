@@ -300,10 +300,63 @@ def _scout_rate_ok(phone: str) -> bool:
     now = _time.monotonic()
     hits = [t for t in _scout_rate[phone] if now - t < _SCOUT_RATE_WINDOW]
     if len(hits) >= _SCOUT_RATE_MAX:
-        _scout_rate[phone] = hits   # keep pruned list
+        _scout_rate[phone] = hits
         return False
     hits.append(now)
     _scout_rate[phone] = hits
+    return True
+
+
+# ── Spam / duplicate guards ───────────────────────────────────────────────────
+
+# Guard 1: Idempotency dedup — drop duplicate webhook deliveries within 60 s
+_IDEM_TTL = 60.0
+_seen_idem: dict[str, float] = {}  # key → arrival monotonic time
+
+def _idem_ok(key: str) -> bool:
+    """Return True if unseen; False if this key was processed in the last 60 s."""
+    now = _time.monotonic()
+    expired = [k for k, t in list(_seen_idem.items()) if now - t > _IDEM_TTL]
+    for k in expired:
+        del _seen_idem[k]
+    if key in _seen_idem:
+        return False
+    _seen_idem[key] = now
+    return True
+
+
+# Guard 2 & 3: Customer in-flight lock + per-phone cooldown
+_customer_inflight: set[str] = set()          # phones with an active LLM call
+_CUSTOMER_COOLDOWN = 4.0                       # seconds between dispatches
+_customer_last: dict[str, float] = {}         # phone → last dispatch monotonic time
+
+
+def _customer_dispatch_ok(phone: str) -> tuple[bool, str | None]:
+    """Check whether a customer message should be dispatched.
+
+    Returns (ok, reason) where reason is 'inflight' | 'cooldown' | None.
+    Side-effect: records the dispatch timestamp when ok=True.
+    """
+    if phone in _customer_inflight:
+        return False, "inflight"
+    now = _time.monotonic()
+    if now - _customer_last.get(phone, 0.0) < _CUSTOMER_COOLDOWN:
+        return False, "cooldown"
+    _customer_last[phone] = now
+    return True, None
+
+
+# Guard 4: Staff internal command cooldown
+_STAFF_COOLDOWN = 5.0                          # seconds between staff dispatches
+_staff_last: dict[str, float] = {}            # phone → last dispatch monotonic time
+
+
+def _staff_dispatch_ok(phone: str) -> bool:
+    """Return True and record timestamp if staff command should be dispatched."""
+    now = _time.monotonic()
+    if now - _staff_last.get(phone, 0.0) < _STAFF_COOLDOWN:
+        return False
+    _staff_last[phone] = now
     return True
 
 
@@ -434,12 +487,15 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
 
 def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
     """Background task: handle customer agent message, deliver via send_fn."""
+    _customer_inflight.add(from_number)
     try:
         from app.gateway.customer import handle_customer_for_store
         reply = handle_customer_for_store(from_number, body, store_id)
     except Exception as exc:
         logger.error("bg_customer: store=%d error=%s", store_id, exc)
         reply = None
+    finally:
+        _customer_inflight.discard(from_number)
     if reply:
         send_fn(reply)
         logger.info("bg_customer: delivered store=%d", store_id)
@@ -560,9 +616,21 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         reply = await _handle_csv_upload(store_id, from_number, params)
         return _twiml(reply)
 
+    # ── Twilio idempotency: deduplicate by MessageSid ─────────────────────────
+    msg_sid = params.get("MessageSid", "")
+    if msg_sid and not _idem_ok(f"twilio:{msg_sid}"):
+        logger.info("gateway.webhook: duplicate MessageSid=%s — dropped", msg_sid)
+        return _twiml_empty()
+
     # ── Check if sender is a whitelisted staff member ──────────────────────────
     if not is_store_member(from_number, store_id):
-        # Pure customer — dispatch async so LLM calls don't exceed Twilio's 15s timeout
+        ok, reason = _customer_dispatch_ok(from_number)
+        if not ok:
+            if reason == "inflight":
+                logger.info("gateway.webhook: customer inflight drop from=%s", from_number)
+                return _twiml("Still working on your last message — almost there! 🙏")
+            logger.info("gateway.webhook: customer cooldown drop from=%s", from_number)
+            return _twiml_empty()
         background_tasks.add_task(_bg_customer, store_id, from_number, _twilio_send_fn, body)
         return _twiml_empty()
 
@@ -673,6 +741,9 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         # All internal commands (integrity/revenue/reputation) involve LLM calls
         # (10-30s routing + 10-30s response) that exceed Twilio's 15s timeout.
         # Dispatch every command as a background task and ack immediately.
+        if not _staff_dispatch_ok(from_number):
+            logger.info("gateway.webhook: staff cooldown drop from=%s", from_number)
+            return _twiml_empty()
         ack = _internal_ack(body)
         logger.info("gateway.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
         background_tasks.add_task(_bg_internal, store_id, from_number, _twilio_send_fn, body)
@@ -680,6 +751,13 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
     # ── Customer app mode ───────────────────────────────────────────────────────
     logger.info("gateway.webhook: store=%d mode=customer from=%s", store_id, from_number)
+    ok, reason = _customer_dispatch_ok(from_number)
+    if not ok:
+        if reason == "inflight":
+            logger.info("gateway.webhook: staff-customer inflight drop from=%s", from_number)
+            return _twiml("Still working on your last message — almost there! 🙏")
+        logger.info("gateway.webhook: staff-customer cooldown drop from=%s", from_number)
+        return _twiml_empty()
     background_tasks.add_task(_bg_customer, store_id, from_number, _twilio_send_fn, body)
     return _twiml_empty()
 
@@ -744,6 +822,12 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
     if from_me or is_group or not body_text or msg_type not in ("chat", "text", ""):
         return JSONResponse({"status": "ignored"})
 
+    # Idempotency: drop duplicate deliveries within 60 s
+    idem_key = payload.get("idempotencyKey") or payload.get("deliveryId") or ""
+    if idem_key and not _idem_ok(f"owa:{idem_key}"):
+        logger.info("openwa.webhook: duplicate idempotencyKey=%s — dropped", idem_key)
+        return JSONResponse({"status": "duplicate"})
+
     # WhatsApp multi-device sends @lid (privacy ID) instead of @c.us (phone) for
     # some contacts. Resolve to the real @c.us JID so is_store_member() can match
     # against phone numbers stored in store_members.
@@ -772,6 +856,14 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
 
     # ── Customer path ──────────────────────────────────────────────────────────
     if not is_store_member(from_number, store_id):
+        ok, reason = _customer_dispatch_ok(from_number)
+        if not ok:
+            if reason == "inflight":
+                logger.info("openwa.webhook: customer inflight drop from=%s", from_number)
+                background_tasks.add_task(_owa_send, "Still working on your last message — almost there! 🙏")
+            else:
+                logger.info("openwa.webhook: customer cooldown drop from=%s", from_number)
+            return JSONResponse({"status": "throttled"})
         background_tasks.add_task(_bg_customer, store_id, from_number, _owa_send, body_text)
         return JSONResponse({"status": "ok"})
 
@@ -880,6 +972,9 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
                 background_tasks.add_task(_owa_send, cached_text)
                 return JSONResponse({"status": "ok"})
 
+        if not _staff_dispatch_ok(from_number):
+            logger.info("openwa.webhook: staff cooldown drop from=%s", from_number)
+            return JSONResponse({"status": "throttled"})
         ack = _internal_ack(body_text)
         logger.info("openwa.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
         background_tasks.add_task(_bg_internal, store_id, from_number, _owa_send, body_text, ack)
@@ -887,6 +982,14 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
 
     # ── Customer app mode ──────────────────────────────────────────────────────
     logger.info("openwa.webhook: store=%d mode=customer from=%s", store_id, from_number)
+    ok, reason = _customer_dispatch_ok(from_number)
+    if not ok:
+        if reason == "inflight":
+            logger.info("openwa.webhook: staff-customer inflight drop from=%s", from_number)
+            background_tasks.add_task(_owa_send, "Still working on your last message — almost there! 🙏")
+        else:
+            logger.info("openwa.webhook: staff-customer cooldown drop from=%s", from_number)
+        return JSONResponse({"status": "throttled"})
     background_tasks.add_task(_bg_customer, store_id, from_number, _owa_send, body_text)
     return JSONResponse({"status": "ok"})
 
