@@ -214,8 +214,10 @@ def handle_customer_message(
         docs = search_knowledge_base(store_id, text, top_k=5)
 
         # Intent-based guaranteed injection — always include the right chunk for
-        # hours/location/delivery so the model never has to guess.
+        # menu/hours/location/delivery so the model never has to guess.
         intent_types: list[str] = []
+        if MENU_RE.search(text):
+            intent_types.extend(["menu_beef_burgers", "menu_chicken_burgers", "starters", "fries", "wraps", "drinks"])
         if _HOURS_RE.search(text):
             intent_types.append("hours")
         if _LOCATION_RE.search(text):
@@ -223,7 +225,6 @@ def handle_customer_message(
         if _DELIVERY_RE.search(text):
             intent_types.append("faq")
         if intent_types:
-            extra = search_knowledge_base.__module__ and None  # just a marker
             from sqlalchemy import text as _sql
             from app.core.db import SessionLocal
             with SessionLocal() as _db:
