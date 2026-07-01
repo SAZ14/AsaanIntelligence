@@ -1410,3 +1410,25 @@ async def get_store(store_id: int) -> JSONResponse:
         "pos_configured": pos is not None,
         "revenue_configured": rev is not None,
     })
+
+
+@app.post("/admin/stores/{store_id}/rebuild-embeddings")
+async def rebuild_embeddings(store_id: int) -> JSONResponse:
+    import json as _json
+    from sqlalchemy import text as _sql
+    from app.core.db import SessionLocal
+    from app.agents.customer.community.store import _embedding_model
+    model = _embedding_model()
+    if not model:
+        return JSONResponse({"error": "embedding model unavailable"}, status_code=503)
+    with SessionLocal() as db:
+        rows = db.execute(_sql(
+            "SELECT id, content FROM knowledge_base WHERE store_id = :sid AND embedding IS NULL"
+        ), {"sid": store_id}).fetchall()
+        for row in rows:
+            emb = model.encode(row[1]).tolist()
+            db.execute(_sql(
+                "UPDATE knowledge_base SET embedding = CAST(:e AS vector) WHERE id = :id"
+            ), {"e": _json.dumps(emb), "id": row[0]})
+        db.commit()
+    return JSONResponse({"rebuilt": len(rows), "store_id": store_id})
