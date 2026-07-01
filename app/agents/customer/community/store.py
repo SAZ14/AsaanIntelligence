@@ -75,17 +75,18 @@ def load_venue_config(store_id: int) -> VenueConfig:
                 owner_phones=list(row.owner_phones or []),
                 qr_greeting=row.qr_greeting or "",
             )
-            import dataclasses
-            _cache.set(f"vc:{store_id}", dataclasses.asdict(cfg), ttl=300)
-            return cfg
     except Exception:
         return VenueConfig(venue_name=_store_name_fallback(store_id))
+    try:
+        _cache.set(f"vc:{store_id}", cfg.model_dump(), ttl=300)
+    except Exception:
+        pass
+    return cfg
 
 
 # ── CommunityMember ───────────────────────────────────────────────────────────
 
 def load_members(store_id: int) -> dict[str, CommunityMember]:
-    import dataclasses
     cached = _cache.get(f"mem:{store_id}")
     if cached:
         return {phone: CommunityMember(**data) for phone, data in cached.items()}
@@ -105,14 +106,16 @@ def load_members(store_id: int) -> dict[str, CommunityMember]:
                     winback_sent_at=_fmt_dt(row.winback_sent_at),
                 )
                 members[m.phone] = m
-            _cache.set(f"mem:{store_id}", {p: dataclasses.asdict(m) for p, m in members.items()}, ttl=30)
-            return members
     except Exception:
         return {}
+    try:
+        _cache.set(f"mem:{store_id}", {p: m.model_dump() for p, m in members.items()}, ttl=30)
+    except Exception:
+        pass
+    return members
 
 
 def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
-    import dataclasses
     import logging as _log
     from sqlalchemy import text as _text
     try:
@@ -150,12 +153,16 @@ def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
                     },
                 )
             db.commit()
-        _cache.set(f"mem:{store_id}", {p: dataclasses.asdict(m) for p, m in members.items()}, ttl=30)
     except Exception as exc:
         _log.getLogger(__name__).warning(
             "save_members: DB write failed for store %d: %s", store_id, exc
         )
         # Keep cache intact so the in-session member state survives a DB blip
+        return
+    try:
+        _cache.set(f"mem:{store_id}", {p: m.model_dump() for p, m in members.items()}, ttl=30)
+    except Exception:
+        pass
 
 
 # ── RedeemCode ────────────────────────────────────────────────────────────────
