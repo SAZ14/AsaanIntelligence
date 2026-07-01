@@ -305,11 +305,17 @@ def save_chat_session(store_id: int, phone: str, history: list[dict]) -> None:
 
 # ── Knowledge Base (RAG via pgvector) ────────────────────────────────────────
 
+_EMBEDDING_MODEL = None
+
 def _embedding_model():
-    """Return a SentenceTransformer model, or None if unavailable (e.g. missing libstdc++)."""
+    """Return a cached SentenceTransformer model, or None if unavailable."""
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is not None:
+        return _EMBEDDING_MODEL
     try:
         from sentence_transformers import SentenceTransformer
-        return SentenceTransformer("all-MiniLM-L6-v2")
+        _EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+        return _EMBEDDING_MODEL
     except Exception:
         return None
 
