@@ -346,13 +346,16 @@ def _customer_dispatch_ok(phone: str) -> tuple[bool, str | None]:
     return True, None
 
 
-# Guard 4: Staff internal command cooldown
-_STAFF_COOLDOWN = 5.0                          # seconds between staff dispatches
+# Guard 4: Staff internal command cooldown + in-flight lock
+_STAFF_COOLDOWN = 10.0                         # seconds between staff dispatches
 _staff_last: dict[str, float] = {}            # phone → last dispatch monotonic time
+_staff_inflight: set[str] = set()             # phones with an active internal LLM call
 
 
 def _staff_dispatch_ok(phone: str) -> bool:
     """Return True and record timestamp if staff command should be dispatched."""
+    if phone in _staff_inflight:
+        return False
     now = _time.monotonic()
     if now - _staff_last.get(phone, 0.0) < _STAFF_COOLDOWN:
         return False
@@ -472,6 +475,7 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
     ack – if provided, sent immediately before processing (used by OpenWA path
           where there is no synchronous TwiML response to carry the ack).
     """
+    _staff_inflight.add(from_number)
     if ack:
         send_fn(ack)
     try:
@@ -480,6 +484,8 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
     except Exception as exc:
         logger.error("bg_internal: store=%d error=%s", store_id, exc)
         reply = "Something went wrong. Please try again."
+    finally:
+        _staff_inflight.discard(from_number)
     if reply:
         send_fn(reply)
         logger.info("bg_internal: delivered store=%d", store_id)
