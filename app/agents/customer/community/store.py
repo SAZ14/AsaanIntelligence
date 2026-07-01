@@ -113,28 +113,49 @@ def load_members(store_id: int) -> dict[str, CommunityMember]:
 
 def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
     import dataclasses
+    import logging as _log
+    from sqlalchemy import text as _text
     try:
         with SessionLocal() as db:
             for m in members.values():
-                row = db.query(OrmMember).filter(
-                    OrmMember.store_id == store_id,
-                    OrmMember.phone == m.phone,
-                ).first()
-                if row is None:
-                    row = OrmMember(store_id=store_id, phone=m.phone)
-                    db.add(row)
-                row.name = m.name
-                row.stamps_current = m.stamps_current
-                row.stamps_lifetime = m.stamps_lifetime
-                row.joined_at = _parse_dt(m.joined_at)
-                row.last_activity_at = _parse_dt(m.last_activity_at)
-                row.opted_in = m.opted_in
-                row.winback_sent_at = _parse_dt(m.winback_sent_at)
+                # Use upsert so a pre-existing phone from any store never causes
+                # a silent PK violation (phone is the global primary key).
+                db.execute(
+                    _text(
+                        "INSERT INTO community_members "
+                        "  (store_id, phone, name, stamps_current, stamps_lifetime,"
+                        "   joined_at, last_activity_at, opted_in, winback_sent_at) "
+                        "VALUES"
+                        "  (:store_id, :phone, :name, :stamps_current, :stamps_lifetime,"
+                        "   :joined_at, :last_activity_at, :opted_in, :winback_sent_at) "
+                        "ON CONFLICT (phone) DO UPDATE SET"
+                        "  store_id         = EXCLUDED.store_id,"
+                        "  name             = EXCLUDED.name,"
+                        "  stamps_current   = EXCLUDED.stamps_current,"
+                        "  stamps_lifetime  = EXCLUDED.stamps_lifetime,"
+                        "  last_activity_at = EXCLUDED.last_activity_at,"
+                        "  opted_in         = EXCLUDED.opted_in,"
+                        "  winback_sent_at  = EXCLUDED.winback_sent_at"
+                    ),
+                    {
+                        "store_id": store_id,
+                        "phone": m.phone,
+                        "name": m.name,
+                        "stamps_current": m.stamps_current,
+                        "stamps_lifetime": m.stamps_lifetime,
+                        "joined_at": _parse_dt(m.joined_at),
+                        "last_activity_at": _parse_dt(m.last_activity_at),
+                        "opted_in": m.opted_in,
+                        "winback_sent_at": _parse_dt(m.winback_sent_at),
+                    },
+                )
             db.commit()
-        # Update cache with fresh data after successful DB write
         _cache.set(f"mem:{store_id}", {p: dataclasses.asdict(m) for p, m in members.items()}, ttl=30)
-    except Exception:
-        _cache.delete(f"mem:{store_id}")
+    except Exception as exc:
+        _log.getLogger(__name__).warning(
+            "save_members: DB write failed for store %d: %s", store_id, exc
+        )
+        # Keep cache intact so the in-session member state survives a DB blip
 
 
 # ── RedeemCode ────────────────────────────────────────────────────────────────

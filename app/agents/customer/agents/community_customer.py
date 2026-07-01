@@ -26,6 +26,14 @@ from app.agents.customer.services.messaging import parse_twilio_whatsapp_phone
 
 ONBOARDING = "awaiting_name"
 
+# Single common words that are clearly not names — caught before _clean_name
+_NON_NAME_WORDS = frozenset({
+    "menu", "hi", "hello", "hey", "salam", "aoa", "food", "burger", "burgers",
+    "chicken", "beef", "deliver", "delivery", "order", "price", "prices", "deal",
+    "deals", "yes", "no", "ok", "okay", "sure", "thanks", "thank", "please",
+    "what", "how", "when", "where", "can", "do", "is", "are", "nothing",
+})
+
 GREETING_RE = re.compile(r"^(hi|hello|hey|salam|assalam|aoa)\b", re.I)
 STAMPS_RE = re.compile(r"\b(my stamps|stamp balance|how many stamps|stamps)\b", re.I)
 LEADERBOARD_RE = re.compile(r"\b(leaderboard|top stamps|ranking)\b", re.I)
@@ -64,6 +72,11 @@ def _clean_name(raw: str) -> str:
         raise ValueError("That name is a bit long. Could you send a shorter one?")
     if is_redeem_code(name):
         raise ValueError("That looks like a receipt code. What's your name?")
+    lower = name.lower()
+    if lower in _NON_NAME_WORDS:
+        raise ValueError("Just your first name works great! What should we call you? 😊")
+    if lower.startswith(("my name is ", "i am ", "i'm ", "call me ")):
+        raise ValueError("Just your first name works great! What should we call you? 😊")
     return name
 
 
