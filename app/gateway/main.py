@@ -659,14 +659,16 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         reply = process_reputation_owner_reply(from_number, body, store_id=store_id)
         return _twiml(reply)
 
-    # No mode set — default to internal tools; "2" switches to customer
+    # No mode set — show selection screen; keep showing it until "1" or "2"
     if current_mode is None:
+        if cmd == "1":
+            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
+            return _twiml(_internal_welcome(store_name))
         if cmd == "2":
             set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
             return _twiml(_customer_welcome())
-        # Any message including "hi" / "1" → straight to internal tools
-        set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
-        return _twiml(_internal_welcome(store_name))
+        # Any other input (including "hi", wrong text) → show selection again
+        return _twiml(_mode_menu(store_name))
 
     # ── Internal tools mode ────────────────────────────────────────────────────
     if current_mode == MODE_INTERNAL:
@@ -890,13 +892,15 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
         return JSONResponse({"status": "ok"})
 
     if current_mode is None:
-        if cmd == "2":
+        if cmd == "1":
+            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
+            background_tasks.add_task(_owa_send, _internal_welcome(store_name))
+        elif cmd == "2":
             set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
             background_tasks.add_task(_owa_send, _customer_welcome())
         else:
-            # Any message including "hi" / "1" → straight to internal tools
-            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
-            background_tasks.add_task(_owa_send, _internal_welcome(store_name))
+            # Any other input (including "hi", wrong text) → show selection again
+            background_tasks.add_task(_owa_send, _mode_menu(store_name))
         return JSONResponse({"status": "ok"})
 
     # ── Internal tools mode ────────────────────────────────────────────────────
