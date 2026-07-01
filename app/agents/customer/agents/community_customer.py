@@ -99,7 +99,10 @@ def _chat_reply(
         f"Content rules:\n"
         f"(1) ALWAYS use exact prices from the MENU — never guess or round.\n"
         f"(2) For location questions, copy branch names word-for-word from STORE KNOWLEDGE.\n"
-        f"(3) For hours questions, state the exact open and close times from STORE KNOWLEDGE.\n\n{context}"
+        f"(3) For hours questions, state the exact open and close times from STORE KNOWLEDGE.\n"
+        f"(4) For delivery questions, name the exact platform from STORE KNOWLEDGE — never say 'major delivery apps'.\n"
+        f"(5) When asked about the menu or specific items, LIST the items and prices directly from MENU context — never say 'I'll send a menu link' or suggest a link. There is no link.\n"
+        f"(6) Never invent URLs, links, or information not present in the context below.\n\n{context}"
     )
     messages = list(history[-6:])
     messages.append({"role": "user", "content": user_message})
