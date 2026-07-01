@@ -1,0 +1,62 @@
+# Run on Railway: railway run python - << 'PYEOF'
+# Adds standardised 'category' key to Anatummy (store 5) KB metadata.
+# Category values: 'menu', 'hours', 'location', 'delivery'
+# This enables the generic category-based intent injection in the customer agent.
+
+from app.core.db import SessionLocal
+from sqlalchemy import text
+import json
+
+STORE_ID = 5
+
+TYPE_TO_CATEGORY = {
+    "menu_beef_burgers":     "menu",
+    "menu_chicken_burgers":  "menu",
+    "menu_starters":         "menu",
+    "starters":              "menu",
+    "menu_fries":            "menu",
+    "fries":                 "menu",
+    "menu_wraps":            "menu",
+    "wraps":                 "menu",
+    "menu_drinks":           "menu",
+    "drinks":                "menu",
+    "hours":                 "hours",
+    "location":              "location",
+    "faq":                   "delivery",
+    "about":                 "about",
+}
+
+with SessionLocal() as db:
+    rows = db.execute(
+        text("SELECT id, metadata FROM knowledge_base WHERE store_id = :sid"),
+        {"sid": STORE_ID},
+    ).fetchall()
+
+    updated = 0
+    for row_id, meta in rows:
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        chunk_type = meta.get("type", "")
+        category = TYPE_TO_CATEGORY.get(chunk_type)
+        if category and meta.get("category") != category:
+            meta["category"] = category
+            db.execute(
+                text("UPDATE knowledge_base SET metadata = :m WHERE id = :id"),
+                {"m": json.dumps(meta), "id": row_id},
+            )
+            updated += 1
+            print(f"  {row_id[:8]}... type={chunk_type!r} -> category={category!r}")
+
+    db.commit()
+    print(f"\nDone. Updated {updated} chunks.")
+
+# Verify
+with SessionLocal() as db:
+    rows = db.execute(
+        text("SELECT metadata->>'type', metadata->>'category', COUNT(*) FROM knowledge_base WHERE store_id = :sid GROUP BY 1,2 ORDER BY 1"),
+        {"sid": STORE_ID},
+    ).fetchall()
+    print("\ntype -> category breakdown:")
+    for r in rows:
+        print(f"  {r[0]!r:30s} -> {r[1]!r}")
+PYEOF

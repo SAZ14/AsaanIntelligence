@@ -25,7 +25,7 @@ chunks = [
             "All prices are exclusive of tax. 100% Australian beef is used for all beef burgers. "
             "Burger names are inspired by medical terms for a fun, unique dining experience."
         ),
-        "metadata": {"type": "about", "source": "anatummy_v3"},
+        "metadata": {"type": "about", "category": "about", "source": "anatummy_v3"},
     },
 
     # ── Beef Burgers (ALL in one chunk) ───────────────────────────────────────
@@ -40,7 +40,7 @@ chunks = [
             "- Seizure Smash – Rs. 950 / Rs. 1150 (double): Smashed prime beef patty, cheese, caramelised onions, pickles, special sauce, gourmet bun.\n"
             "- Cardiac Crisis – Rs. 1250: 2x prime beef patties, beef bacon, crispy onion rings, cheese, gourmet bun."
         ),
-        "metadata": {"type": "menu_beef_burgers", "source": "anatummy_v3"},
+        "metadata": {"type": "menu_beef_burgers", "category": "menu", "source": "anatummy_v3"},
     },
 
     # ── Chicken Burgers (ALL in one chunk) ────────────────────────────────────
@@ -54,7 +54,7 @@ chunks = [
             "- McSteamy – Rs. 870: 120g grilled chicken patty, lettuce, tomatoes, cheese, garlic mayo, gourmet bun.\n"
             "- Clucking Cardiac – Rs. 1150: 2x buttermilk chicken thighs, cheese, beef pepperoni, crispy onion rings, ranch and BBQ sauce, gourmet bun."
         ),
-        "metadata": {"type": "menu_chicken_burgers", "source": "anatummy_v3"},
+        "metadata": {"type": "menu_chicken_burgers", "category": "menu", "source": "anatummy_v3"},
     },
 
     # ── Starters ──────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ chunks = [
             "- Fiery Phalanges – Rs. 700: 5 pieces of juicy chicken tenders served with french fries and garlic mayo dip.\n"
             "- Trauma Tacos – Rs. 700: 2 hard-shell tacos filled with spiced chicken, cheese, lettuce, salsa."
         ),
-        "metadata": {"type": "menu_starters", "source": "anatummy_v3"},
+        "metadata": {"type": "menu_starters", "category": "menu", "source": "anatummy_v3"},
     },
 
     # ── Fries ─────────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ chunks = [
             "- Fries In My Veins – Rs. 720: French fries topped with beef mince, cheese and special sauce.\n"
             "- Loaded Dissection – Rs. 820: French fries topped with grilled chicken, sautéed vegetables and cream cheese sauce."
         ),
-        "metadata": {"type": "menu_fries", "source": "anatummy_v3"},
+        "metadata": {"type": "menu_fries", "category": "menu", "source": "anatummy_v3"},
     },
 
     # ── Wraps ─────────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ chunks = [
             "- Coronary Wrap – Rs. 720: Fried chicken, lettuce and fries wrapped in tortilla bread with 2 sauces of choice.\n"
             "Available sauces: Honey Mustard, Chipotle, Garlic Mayo, Smokey BBQ, Atom Bomb (extra spicy)."
         ),
-        "metadata": {"type": "menu_wraps", "source": "anatummy_v3"},
+        "metadata": {"type": "menu_wraps", "category": "menu", "source": "anatummy_v3"},
     },
 
     # ── Drinks & Shakes ───────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ chunks = [
             "Peach Ice Tea – Rs. 250.\n"
             "Soft drinks (Coke, Sprite, Fanta, Diet Coke, Water) – Rs. 140."
         ),
-        "metadata": {"type": "menu_drinks", "source": "anatummy_v3"},
+        "metadata": {"type": "menu_drinks", "category": "menu", "source": "anatummy_v3"},
     },
 
     # ── Location ──────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ chunks = [
             "Walk-ins welcome — no reservation needed.\n"
             "Delivery available on FoodPanda."
         ),
-        "metadata": {"type": "location", "source": "anatummy_v3"},
+        "metadata": {"type": "location", "category": "location", "source": "anatummy_v3"},
     },
 
     # ── Hours ─────────────────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ chunks = [
             "Open 7 days a week including weekends and holidays.\n"
             "Hours: 12pm to 2:30am daily."
         ),
-        "metadata": {"type": "hours", "source": "anatummy_v3"},
+        "metadata": {"type": "hours", "category": "hours", "source": "anatummy_v3"},
     },
 
     # ── FAQs ──────────────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ chunks = [
             "Tax: All menu prices are exclusive of tax.\n"
             "Beef: 100% Australian beef used in all beef burgers."
         ),
-        "metadata": {"type": "faq", "source": "anatummy_v3"},
+        "metadata": {"type": "faq", "category": "delivery", "source": "anatummy_v3"},
     },
 ]
 

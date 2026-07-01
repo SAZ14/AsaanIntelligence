@@ -30,7 +30,7 @@ GREETING_RE = re.compile(r"^(hi|hello|hey|salam|assalam|aoa)\b", re.I)
 STAMPS_RE = re.compile(r"\b(my stamps|stamp balance|how many stamps|stamps)\b", re.I)
 LEADERBOARD_RE = re.compile(r"\b(leaderboard|top stamps|ranking)\b", re.I)
 MENU_RE = re.compile(
-    r"\b(menu|what.?s new|deals?|specials?|prices?|recommend|latte|coffee|cake|croissant|mocha|item|items?|food|eat|burger|chicken|beef)\b",
+    r"\b(menu|what.?s new|deals?|specials?|prices?|recommend|latte|coffee|cake|croissant|mocha|items?|food|eat|burger|chicken|beef)\b",
     re.I,
 )
 _HOURS_RE = re.compile(r"\b(time|open(ing)?|clos(e|ing|ed)|hours?|timing|when|schedule)\b", re.I)
@@ -77,18 +77,39 @@ def _help_message(name: str, config: VenueConfig) -> str:
     )
 
 
-def _chat_reply(
+def _fetch_kb_by_category(store_id: int, category: str) -> list[dict]:
+    """Return all KB chunks for a store matching the given category."""
+    from sqlalchemy import text as _sql
+    from app.core.db import SessionLocal
+    with SessionLocal() as db:
+        rows = db.execute(
+            _sql("SELECT content FROM knowledge_base WHERE store_id = :sid AND metadata->>'category' = :cat ORDER BY id"),
+            {"sid": store_id, "cat": category},
+        ).fetchall()
+    return [{"content": r[0]} for r in rows]
+
+
+def _prices_grounded(response: str, chunks: list[dict]) -> bool:
+    """Return True if every price number in the response exists in the KB chunks."""
+    if not chunks:
+        return True
+    chunk_text = " ".join(c["content"] for c in chunks)
+    # Extract numeric amounts from any price pattern (Rs. 670, PKR 670, 670 PKR, ₨670)
+    price_nums = set(re.findall(r"(?:Rs\.?\s*|PKR\s*|₨\s*)(\d+)", response, re.I))
+    if not price_nums:
+        return True
+    return all(num in chunk_text for num in price_nums)
+
+
+def _llm_generate(
     user_message: str, context: str, member: CommunityMember,
-    history: list[dict], store_id: int, phone: str,
-    venue_name: str = "the restaurant",
+    history: list[dict], venue_name: str = "the restaurant",
 ) -> str:
+    """Pure LLM call — returns response text only, no side effects."""
     from app.core.llm import get_customer_model
     client = _get_client()
     if not client:
-        return (
-            f"Hi {member.name}! Ask me about the menu or deals, "
-            "send *my stamps* to check your progress, or text a receipt code like SR-AB12 😊"
-        )
+        return ""
     system_content = (
         f"You are a friendly team member at {venue_name} chatting on WhatsApp. "
         f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences — "
@@ -108,10 +129,8 @@ def _chat_reply(
         f"(5) When asked about the menu or specific items, LIST the items and prices directly from MENU context — never say 'I'll send a menu link' or suggest a link. There is no link.\n"
         f"(6) Never invent URLs, links, or information not present in the context below.\n\n{context}"
     )
-    # Strip empty-content turns from history — empty assistant messages confuse the model
     clean_history = [m for m in history[-6:] if m.get("content")]
-    messages = list(clean_history)
-    messages.append({"role": "user", "content": user_message})
+    messages = list(clean_history) + [{"role": "user", "content": user_message}]
 
     def _call():
         return client.chat.completions.create(
@@ -124,17 +143,24 @@ def _chat_reply(
     try:
         resp = _call()
     except Exception as exc:
-        # Retry once on rate limit
         if "429" in str(exc) or "rate" in str(exc).lower():
             _time.sleep(8)
             resp = _call()
         else:
             raise
 
-    reply = (resp.choices[0].message.content or "").strip()
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _chat_reply(
+    user_message: str, context: str, member: CommunityMember,
+    history: list[dict], store_id: int, phone: str,
+    venue_name: str = "the restaurant",
+) -> str:
+    """LLM call + history save. Use _llm_generate directly when validation is needed."""
+    reply = _llm_generate(user_message, context, member, history, venue_name)
     if not reply:
         return f"Sorry, I'm having trouble right now — try again in a moment 🙏"
-
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
     save_chat_session(store_id, phone, history[-6:])
@@ -208,41 +234,85 @@ def handle_customer_message(
         counts = weekly_stamp_counts(store_id)
         return AgentReply(format_leaderboard(counts, members))
 
-    if len(text) >= 3 and _get_client():
+    if len(text) >= 3:
         from app.agents.customer.community.menu_context import build_menu_context
-        ctx = build_menu_context(store_id)
+
+        is_menu     = bool(MENU_RE.search(text))
+        is_hours    = bool(_HOURS_RE.search(text))
+        is_location = bool(_LOCATION_RE.search(text))
+        is_delivery = bool(_DELIVERY_RE.search(text))
+
+        # Pure factual queries (location / hours / delivery, no menu) don't
+        # need the LLM — the KB chunk IS the answer.  For everything else,
+        # bail out early if no LLM client is configured so we never touch the DB.
+        only_factual = (is_hours or is_location or is_delivery) and not is_menu
+        if not only_factual and not _get_client():
+            return AgentReply(_help_message(member.name, config))
+
+        # Fetch intent-specific KB chunks by standardised category field.
+        # The 'category' key is set during KB seeding and is restaurant-agnostic.
+        intent_docs: dict[str, list[dict]] = {}
+        if is_menu:
+            intent_docs["menu"] = _fetch_kb_by_category(store_id, "menu")
+        if is_hours:
+            intent_docs["hours"] = _fetch_kb_by_category(store_id, "hours")
+        if is_location:
+            intent_docs["location"] = _fetch_kb_by_category(store_id, "location")
+        if is_delivery:
+            intent_docs["delivery"] = _fetch_kb_by_category(store_id, "delivery")
+
+        # ── Direct format for pure factual intents (no LLM needed) ───────────
+        if only_factual:
+            parts: list[str] = []
+            for cat in ("location", "hours", "delivery"):
+                for doc in intent_docs.get(cat, []):
+                    if doc["content"] not in parts:
+                        parts.append(doc["content"])
+            if parts:
+                reply = "\n\n".join(parts)
+                history = load_chat_session(store_id, phone)
+                history.append({"role": "user", "content": text})
+                history.append({"role": "assistant", "content": reply})
+                save_chat_session(store_id, phone, history[-6:])
+                return AgentReply(reply)
+            # No KB data tagged for this intent yet — fall through to LLM
+
+        # ── LLM path for menu + conversational queries ────────────────────────
+        if not _get_client():
+            return AgentReply(_help_message(member.name, config))
+
+        # Build context: vector search + all intent-specific chunks
         docs = search_knowledge_base(store_id, text, top_k=5)
+        seen_content: set[str] = {d["content"] for d in docs}
+        for cat_docs in intent_docs.values():
+            for d in cat_docs:
+                if d["content"] not in seen_content:
+                    docs.insert(0, d)
+                    seen_content.add(d["content"])
 
-        # Intent-based guaranteed injection — always include the right chunk for
-        # menu/hours/location/delivery so the model never has to guess.
-        intent_types: list[str] = []
-        if MENU_RE.search(text):
-            intent_types.extend(["menu_beef_burgers", "menu_chicken_burgers", "starters", "fries", "wraps", "drinks"])
-        if _HOURS_RE.search(text):
-            intent_types.append("hours")
-        if _LOCATION_RE.search(text):
-            intent_types.append("location")
-        if _DELIVERY_RE.search(text):
-            intent_types.append("faq")
-        if intent_types:
-            from sqlalchemy import text as _sql
-            from app.core.db import SessionLocal
-            with SessionLocal() as _db:
-                for chunk_type in intent_types:
-                    row = _db.execute(
-                        _sql("SELECT content FROM knowledge_base WHERE store_id = :sid AND metadata->>'type' = :t LIMIT 1"),
-                        {"sid": store_id, "t": chunk_type},
-                    ).fetchone()
-                    if row:
-                        guaranteed = {"content": row[0]}
-                        if guaranteed not in docs:
-                            docs.insert(0, guaranteed)
-
+        ctx = build_menu_context(store_id)
         if docs:
             ctx += "\n\nSTORE KNOWLEDGE:\n"
             for i, doc in enumerate(docs, 1):
                 ctx += f"--- {i} ---\n{doc['content']}\n"
+
         history = load_chat_session(store_id, phone)
-        return AgentReply(_chat_reply(text, ctx, member, history, store_id, phone, venue_name=config.venue_name))
+        reply = _llm_generate(text, ctx, member, history, venue_name=config.venue_name)
+
+        if not reply:
+            return AgentReply(_help_message(member.name, config))
+
+        # ── Price validation: every price in the reply must exist in KB ───────
+        if not _prices_grounded(reply, docs):
+            # LLM invented prices — fall back to direct KB content
+            if is_menu and intent_docs.get("menu"):
+                reply = "\n\n".join(d["content"] for d in intent_docs["menu"])
+            else:
+                reply = f"Let me make sure I give you accurate info, {member.name}! Reach out to us directly for details 😊"
+
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": reply})
+        save_chat_session(store_id, phone, history[-6:])
+        return AgentReply(reply)
 
     return AgentReply(_help_message(member.name, config))
