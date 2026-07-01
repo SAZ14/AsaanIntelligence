@@ -1,0 +1,146 @@
+/opt/venv/bin/python - << 'PYEOF'
+from app.agents.customer.community.store import store_knowledge_chunks, clear_knowledge_by_source
+from app.core.db import SessionLocal
+from sqlalchemy import text
+
+STORE_ID = 5
+
+# Clear old chunks
+print("Clearing old chunks...")
+clear_knowledge_by_source(STORE_ID, "anatummy_menu_v2")
+clear_knowledge_by_source(STORE_ID, "anatummy_info_v1")
+
+# Also clear any other sources for this store just in case
+with SessionLocal() as db:
+    result = db.execute(text("DELETE FROM knowledge_base WHERE store_id = :sid"), {"sid": STORE_ID})
+    db.commit()
+    print(f"Deleted all existing KB rows for store 5")
+
+chunks = [
+    # ── About ──────────────────────────────────────────────────────────────────
+    {
+        "content": (
+            "About Anatummy: A medical-themed burger joint serving gourmet chicken and beef burgers, "
+            "loaded fries, wraps, milkshakes, and chilled drinks. "
+            "All prices are exclusive of tax. 100% Australian beef is used for all beef burgers. "
+            "Burger names are inspired by medical terms for a fun, unique dining experience."
+        ),
+        "metadata": {"type": "about", "source": "anatummy_v3"},
+    },
+
+    # ── Beef Burgers (ALL in one chunk) ───────────────────────────────────────
+    {
+        "content": (
+            "BEEF BURGERS (100% Australian Beef) — all prices exclusive of tax:\n"
+            "- Prescription Patty – Rs. 670: Prime beef patty, American cheese, gourmet buns.\n"
+            "- Beefy Bypass – Rs. 720: Prime beef patty, American cheese, lettuce, pickles, tomatoes, onions, gourmet bun.\n"
+            "- Surgeon's Signature – Rs. 950: 2x prime beef patties, cheese, pickles, vegetables, special sauce, gourmet bun.\n"
+            "- Beefy Doppler – Rs. 950 / Rs. 1150 (double): Prime beef patty, beef bacon, crispy onion rings, ranch and BBQ sauce, gourmet bun.\n"
+            "- Pulse Pounder – Rs. 950 / Rs. 1150 (double): Prime beef mince, cheese, special sauce, pickles, long hoagie bun.\n"
+            "- Seizure Smash – Rs. 950 / Rs. 1150 (double): Smashed prime beef patty, cheese, caramelised onions, pickles, special sauce, gourmet bun.\n"
+            "- Cardiac Crisis – Rs. 1250: 2x prime beef patties, beef bacon, crispy onion rings, cheese, gourmet bun."
+        ),
+        "metadata": {"type": "menu_beef_burgers", "source": "anatummy_v3"},
+    },
+
+    # ── Chicken Burgers (ALL in one chunk) ────────────────────────────────────
+    {
+        "content": (
+            "CHICKEN BURGERS — all prices exclusive of tax:\n"
+            "- Crispy Cure – Rs. 700: Buttermilk thigh chicken in buttered gourmet buns with lettuce, cheese and a sauce of choice (Garlic Mayo, Honey Mustard, Chipotle, or BBQ).\n"
+            "- Honey Glazed Specimen – Rs. 820: Buttermilk chicken thigh glazed with special hot sauce, honey mustard buns, pickled cabbage, cheese.\n"
+            "- Crispy Doppler – Rs. 870: Buttermilk chicken thigh with beef pepperoni, crispy fried onion rings, ranch and BBQ sauce combo.\n"
+            "- Crispy Dopamine – Rs. 870: Buttermilk chicken thigh with jalapeños, cream cheese and a spicy sauce.\n"
+            "- McSteamy – Rs. 870: 120g grilled chicken patty, lettuce, tomatoes, cheese, garlic mayo, gourmet bun.\n"
+            "- Clucking Cardiac – Rs. 1150: 2x buttermilk chicken thighs, cheese, beef pepperoni, crispy onion rings, ranch and BBQ sauce, gourmet bun."
+        ),
+        "metadata": {"type": "menu_chicken_burgers", "source": "anatummy_v3"},
+    },
+
+    # ── Starters ──────────────────────────────────────────────────────────────
+    {
+        "content": (
+            "STARTERS — all prices exclusive of tax:\n"
+            "- Burrhole – Rs. 400: 10 pieces of crispy onion rings served with BBQ sauce.\n"
+            "- Lipo Sticks – Rs. 500: 4 pieces of crispy mozzarella sticks served with BBQ sauce.\n"
+            "- Fiery Phalanges – Rs. 700: 5 pieces of juicy chicken tenders served with french fries and garlic mayo dip.\n"
+            "- Trauma Tacos – Rs. 700: 2 hard-shell tacos filled with spiced chicken, cheese, lettuce, salsa."
+        ),
+        "metadata": {"type": "menu_starters", "source": "anatummy_v3"},
+    },
+
+    # ── Fries ─────────────────────────────────────────────────────────────────
+    {
+        "content": (
+            "FRIES — all prices exclusive of tax:\n"
+            "- Flatline Fries – Rs. 300: Classic french fries salted and topped with oregano. Add-on sauces +Rs. 100 each: Garlic Mayo, Honey Mustard, Chipotle, BBQ.\n"
+            "- Adrenaline Loader – Rs. 720: French fries topped with fried chicken, pickles and special sauce.\n"
+            "- Fries In My Veins – Rs. 720: French fries topped with beef mince, cheese and special sauce.\n"
+            "- Loaded Dissection – Rs. 820: French fries topped with grilled chicken, sautéed vegetables and cream cheese sauce."
+        ),
+        "metadata": {"type": "menu_fries", "source": "anatummy_v3"},
+    },
+
+    # ── Wraps ─────────────────────────────────────────────────────────────────
+    {
+        "content": (
+            "WRAPS — all prices exclusive of tax:\n"
+            "- Recovery Wrap – Rs. 720: Grilled chicken, lettuce and fries wrapped in tortilla bread with 2 sauces of choice.\n"
+            "- Coronary Wrap – Rs. 720: Fried chicken, lettuce and fries wrapped in tortilla bread with 2 sauces of choice.\n"
+            "Available sauces: Honey Mustard, Chipotle, Garlic Mayo, Smokey BBQ, Atom Bomb (extra spicy)."
+        ),
+        "metadata": {"type": "menu_wraps", "source": "anatummy_v3"},
+    },
+
+    # ── Drinks & Shakes ───────────────────────────────────────────────────────
+    {
+        "content": (
+            "DRINKS & SHAKES — all prices exclusive of tax:\n"
+            "Milkshakes (Shake Relief) – Rs. 520 each: Nutella, Oreo, Chocolate, Strawberry, Vanilla, Peanut Butter.\n"
+            "Bone Chillers (slushies) – Rs. 380: Mix any two flavours — Lychee, Passion Fruit, Strawberry, Kiwi, Blue Lagoon, Peach.\n"
+            "Peach Ice Tea – Rs. 250.\n"
+            "Soft drinks (Coke, Sprite, Fanta, Diet Coke, Water) – Rs. 140."
+        ),
+        "metadata": {"type": "menu_drinks", "source": "anatummy_v3"},
+    },
+
+    # ── Location & Hours ──────────────────────────────────────────────────────
+    {
+        "content": (
+            "Anatummy location and opening hours:\n"
+            "Branch: Skyline Tower, New Blue Area, Islamabad.\n"
+            "Opening hours: Open every day from 12:00 pm (noon) to 2:30 am.\n"
+            "Walk-ins welcome — no reservation needed.\n"
+            "Delivery available on FoodPanda and Careem Now."
+        ),
+        "metadata": {"type": "location_hours", "source": "anatummy_v3"},
+    },
+
+    # ── FAQs ──────────────────────────────────────────────────────────────────
+    {
+        "content": (
+            "Anatummy FAQs:\n"
+            "Delivery: Yes, order through FoodPanda or Careem Now.\n"
+            "Dine-in: Walk-ins welcome, no reservations needed.\n"
+            "Opening hours: 12:00 pm to 2:30 am, every day.\n"
+            "Catering: Not available currently.\n"
+            "Allergens: Ask the cashier for allergen information.\n"
+            "Tax: All menu prices are exclusive of tax.\n"
+            "Beef: 100% Australian beef used in all beef burgers."
+        ),
+        "metadata": {"type": "faq", "source": "anatummy_v3"},
+    },
+]
+
+print(f"Inserting {len(chunks)} chunks...")
+store_knowledge_chunks(STORE_ID, chunks)
+
+# Verify
+with SessionLocal() as db:
+    count = db.execute(
+        text("SELECT COUNT(*) FROM knowledge_base WHERE store_id = :sid"), {"sid": STORE_ID}
+    ).scalar()
+    print(f"KB now has {count} chunks for store 5")
+
+print("Done!")
+PYEOF

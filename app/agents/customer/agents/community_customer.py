@@ -122,7 +122,7 @@ def _chat_reply(
     except Exception as exc:
         # Retry once on rate limit
         if "429" in str(exc) or "rate" in str(exc).lower():
-            _time.sleep(3)
+            _time.sleep(8)
             resp = _call()
         else:
             raise
@@ -207,7 +207,7 @@ def handle_customer_message(
     if len(text) >= 3 and _get_client():
         from app.agents.customer.community.menu_context import build_menu_context
         ctx = build_menu_context(store_id)
-        docs = search_knowledge_base(store_id, text, top_k=3)
+        docs = search_knowledge_base(store_id, text, top_k=5)
         if docs:
             ctx += "\n\nSTORE KNOWLEDGE:\n"
             for i, doc in enumerate(docs, 1):

@@ -1,0 +1,14 @@
+/opt/venv/bin/python - << 'PYEOF'
+from app.core.db import SessionLocal
+from sqlalchemy import text
+
+with SessionLocal() as db:
+    rows = db.execute(
+        text("SELECT id, content, metadata FROM knowledge_base WHERE store_id = 5 ORDER BY id"),
+    ).fetchall()
+    print(f"Total chunks: {len(rows)}\n")
+    for r in rows:
+        print(f"--- ID {r.id} | meta: {r.metadata} ---")
+        print(r.content[:300])
+        print()
+PYEOF
