@@ -104,14 +104,33 @@ def _chat_reply(
         f"(5) When asked about the menu or specific items, LIST the items and prices directly from MENU context — never say 'I'll send a menu link' or suggest a link. There is no link.\n"
         f"(6) Never invent URLs, links, or information not present in the context below.\n\n{context}"
     )
-    messages = list(history[-6:])
+    # Strip empty-content turns from history — empty assistant messages confuse the model
+    clean_history = [m for m in history[-6:] if m.get("content")]
+    messages = list(clean_history)
     messages.append({"role": "user", "content": user_message})
-    resp = client.chat.completions.create(
-        model=get_customer_model(),
-        max_tokens=300,
-        messages=[{"role": "system", "content": system_content}] + messages,
-    )
-    reply = resp.choices[0].message.content.strip()
+
+    def _call():
+        return client.chat.completions.create(
+            model=get_customer_model(),
+            max_tokens=300,
+            messages=[{"role": "system", "content": system_content}] + messages,
+        )
+
+    import time as _time
+    try:
+        resp = _call()
+    except Exception as exc:
+        # Retry once on rate limit
+        if "429" in str(exc) or "rate" in str(exc).lower():
+            _time.sleep(3)
+            resp = _call()
+        else:
+            raise
+
+    reply = (resp.choices[0].message.content or "").strip()
+    if not reply:
+        return f"Sorry, I'm having trouble right now — try again in a moment 🙏"
+
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
     save_chat_session(store_id, phone, history[-6:])
