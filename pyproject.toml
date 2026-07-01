@@ -37,6 +37,9 @@ dependencies = [
 
     # Scheduling — winback / leaderboard background jobs
     "apscheduler>=3.10",
+
+    # Caching
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]

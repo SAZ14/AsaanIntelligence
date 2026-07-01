@@ -78,7 +78,12 @@ def _help_message(name: str, config: VenueConfig) -> str:
 
 
 def _fetch_kb_by_category(store_id: int, category: str) -> list[dict]:
-    """Return all KB chunks for a store matching the given category."""
+    """Return all KB chunks for a store matching the given category (Redis-cached)."""
+    import app.core.cache as _cache
+    cache_key = f"kb:{store_id}:{category}"
+    cached = _cache.get(cache_key)
+    if cached is not None:
+        return cached
     from sqlalchemy import text as _sql
     from app.core.db import SessionLocal
     with SessionLocal() as db:
@@ -86,7 +91,9 @@ def _fetch_kb_by_category(store_id: int, category: str) -> list[dict]:
             _sql("SELECT content FROM knowledge_base WHERE store_id = :sid AND metadata->>'category' = :cat ORDER BY id"),
             {"sid": store_id, "cat": category},
         ).fetchall()
-    return [{"content": r[0]} for r in rows]
+    docs = [{"content": r[0]} for r in rows]
+    _cache.set(cache_key, docs, ttl=600)
+    return docs
 
 
 def _prices_grounded(response: str, chunks: list[dict]) -> bool:

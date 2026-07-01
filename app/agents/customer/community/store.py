@@ -26,6 +26,7 @@ from app.core.db import (
 from app.agents.customer.community.models import (
     CommunityMember, Deal, RedeemCode, StampEvent, VenueConfig,
 )
+import app.core.cache as _cache
 
 
 def _parse_dt(s) -> datetime | None:
@@ -57,12 +58,15 @@ def _store_name_fallback(store_id: int) -> str:
 
 
 def load_venue_config(store_id: int) -> VenueConfig:
+    cached = _cache.get(f"vc:{store_id}")
+    if cached:
+        return VenueConfig(**cached)
     try:
         with SessionLocal() as db:
             row = db.query(OrmVenueConfig).filter(OrmVenueConfig.store_id == store_id).first()
             if row is None:
                 return VenueConfig(venue_name=_store_name_fallback(store_id))
-            return VenueConfig(
+            cfg = VenueConfig(
                 venue_name=row.venue_name or "Restaurant",
                 stamp_goal=row.stamp_goal or 5,
                 reward_text=row.reward_text or "a free drink or dessert",
@@ -71,6 +75,9 @@ def load_venue_config(store_id: int) -> VenueConfig:
                 owner_phones=list(row.owner_phones or []),
                 qr_greeting=row.qr_greeting or "",
             )
+            import dataclasses
+            _cache.set(f"vc:{store_id}", dataclasses.asdict(cfg), ttl=300)
+            return cfg
     except Exception:
         return VenueConfig(venue_name=_store_name_fallback(store_id))
 
@@ -78,6 +85,10 @@ def load_venue_config(store_id: int) -> VenueConfig:
 # ── CommunityMember ───────────────────────────────────────────────────────────
 
 def load_members(store_id: int) -> dict[str, CommunityMember]:
+    import dataclasses
+    cached = _cache.get(f"mem:{store_id}")
+    if cached:
+        return {phone: CommunityMember(**data) for phone, data in cached.items()}
     try:
         with SessionLocal() as db:
             rows = db.query(OrmMember).filter(OrmMember.store_id == store_id).all()
@@ -94,12 +105,14 @@ def load_members(store_id: int) -> dict[str, CommunityMember]:
                     winback_sent_at=_fmt_dt(row.winback_sent_at),
                 )
                 members[m.phone] = m
+            _cache.set(f"mem:{store_id}", {p: dataclasses.asdict(m) for p, m in members.items()}, ttl=30)
             return members
     except Exception:
         return {}
 
 
 def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
+    import dataclasses
     try:
         with SessionLocal() as db:
             for m in members.values():
@@ -118,8 +131,10 @@ def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
                 row.opted_in = m.opted_in
                 row.winback_sent_at = _parse_dt(m.winback_sent_at)
             db.commit()
+        # Update cache with fresh data after successful DB write
+        _cache.set(f"mem:{store_id}", {p: dataclasses.asdict(m) for p, m in members.items()}, ttl=30)
     except Exception:
-        pass
+        _cache.delete(f"mem:{store_id}")
 
 
 # ── RedeemCode ────────────────────────────────────────────────────────────────
@@ -231,10 +246,15 @@ def load_deals(store_id: int) -> list[Deal]:
 # ── Onboarding Sessions ───────────────────────────────────────────────────────
 
 def load_onboarding_sessions(store_id: int) -> dict[str, str]:
+    cached = _cache.get(f"ob:{store_id}")
+    if cached is not None:
+        return cached
     try:
         with SessionLocal() as db:
             rows = db.query(OrmOnboardingSession).filter(OrmOnboardingSession.store_id == store_id).all()
-            return {r.phone: r.state for r in rows}
+            sessions = {r.phone: r.state for r in rows}
+            _cache.set(f"ob:{store_id}", sessions, ttl=60)
+            return sessions
     except Exception:
         return {}
 
@@ -254,8 +274,9 @@ def save_onboarding_sessions(store_id: int, sessions: dict[str, str]) -> None:
                 else:
                     row.state = state
             db.commit()
+        _cache.delete(f"ob:{store_id}")
     except Exception:
-        pass
+        _cache.delete(f"ob:{store_id}")
 
 
 def clear_onboarding_session(store_id: int, phone: str) -> None:
@@ -266,27 +287,34 @@ def clear_onboarding_session(store_id: int, phone: str) -> None:
                 OrmOnboardingSession.phone == phone,
             ).delete(synchronize_session=False)
             db.commit()
+        _cache.delete(f"ob:{store_id}")
     except Exception:
-        pass
+        _cache.delete(f"ob:{store_id}")
 
 
 # ── Chat Sessions ─────────────────────────────────────────────────────────────
 
 def load_chat_session(store_id: int, phone: str) -> list[dict]:
+    cached = _cache.get(f"chat:{store_id}:{phone}")
+    if cached is not None:
+        return cached
     try:
         with SessionLocal() as db:
             row = db.query(OrmChatSession).filter(
                 OrmChatSession.store_id == store_id,
                 OrmChatSession.phone == phone,
             ).first()
-            if row is None:
-                return []
-            return list(row.history or [])
+            history = list(row.history or []) if row else []
+            _cache.set(f"chat:{store_id}:{phone}", history, ttl=3600)
+            return history
     except Exception:
         return []
 
 
 def save_chat_session(store_id: int, phone: str, history: list[dict]) -> None:
+    # Redis is primary — fast write for the hot path
+    _cache.set(f"chat:{store_id}:{phone}", history, ttl=3600)
+    # DB write for durability (non-blocking from caller's perspective)
     try:
         with SessionLocal() as db:
             row = db.query(OrmChatSession).filter(
