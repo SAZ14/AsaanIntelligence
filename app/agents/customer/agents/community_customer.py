@@ -112,7 +112,7 @@ def _chat_reply(
     def _call():
         return client.chat.completions.create(
             model=get_customer_model(),
-            max_tokens=1500,
+            max_tokens=2500,
             messages=[{"role": "system", "content": system_content}] + messages,
         )
 
