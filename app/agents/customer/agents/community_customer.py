@@ -30,11 +30,11 @@ GREETING_RE = re.compile(r"^(hi|hello|hey|salam|assalam|aoa)\b", re.I)
 STAMPS_RE = re.compile(r"\b(my stamps|stamp balance|how many stamps|stamps)\b", re.I)
 LEADERBOARD_RE = re.compile(r"\b(leaderboard|top stamps|ranking)\b", re.I)
 MENU_RE = re.compile(
-    r"\b(menu|what.?s new|deals|special|price|recommend|latte|coffee|cake|croissant|mocha)\b",
+    r"\b(menu|what.?s new|deals?|specials?|prices?|recommend|latte|coffee|cake|croissant|mocha|item|items?|food|eat|burger|chicken|beef)\b",
     re.I,
 )
-_HOURS_RE = re.compile(r"\b(time|open|close|hour|timing|when|schedule)\b", re.I)
-_LOCATION_RE = re.compile(r"\b(where|location|address|branch|find you|located)\b", re.I)
+_HOURS_RE = re.compile(r"\b(time|open(ing)?|clos(e|ing|ed)|hours?|timing|when|schedule)\b", re.I)
+_LOCATION_RE = re.compile(r"\b(where|location|address|branches?|find you|located|outlet|outlets?)\b", re.I)
 _DELIVERY_RE = re.compile(r"\b(deliver|delivery|order online|app)\b", re.I)
 
 _zai_client = None
