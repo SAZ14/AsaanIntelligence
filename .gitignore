@@ -10,3 +10,4 @@ output/
 data/raw/
 logs/
 *.db
+.agents/
