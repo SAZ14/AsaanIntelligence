@@ -193,6 +193,10 @@ def handle_customer_message(
     if member is None and sessions.get(phone) == ONBOARDING:
         if not text:
             return AgentReply("What name should we put on your rewards? 😊")
+        # If the message looks like a question/statement rather than a name,
+        # re-prompt clearly instead of showing a confusing validation error.
+        if len(text) > 50 or "?" in text:
+            return AgentReply("Just your first name is perfect! 😊 What should we call you?")
         try:
             name = _clean_name(text)
         except ValueError as e:
