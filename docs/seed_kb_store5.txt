@@ -104,23 +104,34 @@ chunks = [
         "metadata": {"type": "menu_drinks", "source": "anatummy_v3"},
     },
 
-    # ── Location & Hours ──────────────────────────────────────────────────────
+    # ── Location ──────────────────────────────────────────────────────────────
     {
         "content": (
-            "Anatummy location and opening hours:\n"
+            "Anatummy location and address:\n"
             "Branch: Skyline Tower, New Blue Area, Islamabad.\n"
-            "Opening hours: Open every day from 12:00 pm (noon) to 2:30 am.\n"
             "Walk-ins welcome — no reservation needed.\n"
-            "Delivery available on FoodPanda and Careem Now."
+            "Delivery available on FoodPanda."
         ),
-        "metadata": {"type": "location_hours", "source": "anatummy_v3"},
+        "metadata": {"type": "location", "source": "anatummy_v3"},
+    },
+
+    # ── Hours ─────────────────────────────────────────────────────────────────
+    {
+        "content": (
+            "Anatummy opening and closing times:\n"
+            "Open: 12:00 pm (noon) every day.\n"
+            "Close: 2:30 am every day.\n"
+            "Open 7 days a week including weekends and holidays.\n"
+            "Hours: 12pm to 2:30am daily."
+        ),
+        "metadata": {"type": "hours", "source": "anatummy_v3"},
     },
 
     # ── FAQs ──────────────────────────────────────────────────────────────────
     {
         "content": (
             "Anatummy FAQs:\n"
-            "Delivery: Yes, order through FoodPanda or Careem Now.\n"
+            "Delivery: Yes, order through FoodPanda.\n"
             "Dine-in: Walk-ins welcome, no reservations needed.\n"
             "Opening hours: 12:00 pm to 2:30 am, every day.\n"
             "Catering: Not available currently.\n"
