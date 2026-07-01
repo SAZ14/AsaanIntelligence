@@ -33,6 +33,9 @@ MENU_RE = re.compile(
     r"\b(menu|what.?s new|deals|special|price|recommend|latte|coffee|cake|croissant|mocha)\b",
     re.I,
 )
+_HOURS_RE = re.compile(r"\b(time|open|close|hour|timing|when|schedule)\b", re.I)
+_LOCATION_RE = re.compile(r"\b(where|location|address|branch|find you|located)\b", re.I)
+_DELIVERY_RE = re.compile(r"\b(deliver|delivery|order online|app)\b", re.I)
 
 _zai_client = None
 
@@ -101,7 +104,7 @@ def _chat_reply(
         f"(1) ALWAYS use exact prices from the MENU — never guess or round.\n"
         f"(2) For location questions, copy branch names word-for-word from STORE KNOWLEDGE.\n"
         f"(3) For hours questions, state the exact open and close times from STORE KNOWLEDGE.\n"
-        f"(4) For delivery questions, name the exact platform from STORE KNOWLEDGE — never say 'major delivery apps'.\n"
+        f"(4) For delivery questions, copy the EXACT platform name(s) from STORE KNOWLEDGE only — do not add any platform not mentioned there.\n"
         f"(5) When asked about the menu or specific items, LIST the items and prices directly from MENU context — never say 'I'll send a menu link' or suggest a link. There is no link.\n"
         f"(6) Never invent URLs, links, or information not present in the context below.\n\n{context}"
     )
@@ -209,6 +212,31 @@ def handle_customer_message(
         from app.agents.customer.community.menu_context import build_menu_context
         ctx = build_menu_context(store_id)
         docs = search_knowledge_base(store_id, text, top_k=5)
+
+        # Intent-based guaranteed injection — always include the right chunk for
+        # hours/location/delivery so the model never has to guess.
+        intent_types: list[str] = []
+        if _HOURS_RE.search(text):
+            intent_types.append("hours")
+        if _LOCATION_RE.search(text):
+            intent_types.append("location")
+        if _DELIVERY_RE.search(text):
+            intent_types.append("faq")
+        if intent_types:
+            extra = search_knowledge_base.__module__ and None  # just a marker
+            from sqlalchemy import text as _sql
+            from app.core.db import SessionLocal
+            with SessionLocal() as _db:
+                for chunk_type in intent_types:
+                    row = _db.execute(
+                        _sql("SELECT content FROM knowledge_base WHERE store_id = :sid AND metadata->>'type' = :t LIMIT 1"),
+                        {"sid": store_id, "t": chunk_type},
+                    ).fetchone()
+                    if row:
+                        guaranteed = {"content": row[0]}
+                        if guaranteed not in docs:
+                            docs.insert(0, guaranteed)
+
         if docs:
             ctx += "\n\nSTORE KNOWLEDGE:\n"
             for i, doc in enumerate(docs, 1):
