@@ -1,7 +1,7 @@
 """Unified SQLAlchemy models for the central server.
 
 All agents share this schema. Tables are partitioned by store_id so a single
-Supabase instance serves every restaurant / chain.
+Postgres instance serves every restaurant / chain.
 
 Chains:  one brand (e.g. "Sugar Rush") can have many stores (locations).
          chain_id groups them; the reputation agent queries across locations.
@@ -29,7 +29,7 @@ _kw = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 engine = create_engine(
     DATABASE_URL,
     connect_args=_kw,
-    pool_pre_ping=True,   # test connection before use; reconnects if Supabase dropped it
+    pool_pre_ping=True,   # test connection before use; reconnects if the DB dropped it
     pool_recycle=300,     # recycle connections every 5 min to avoid SSL EOF on idle
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

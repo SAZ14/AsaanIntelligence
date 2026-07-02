@@ -1,8 +1,8 @@
 """DB-driven tenant registry for the revenue agent.
 
 Replaces the JSON-file TenantRegistry from the original branch.
-Each store's revenue configuration is read from the revenue_connections table
-in Supabase. Agents are cached in-process.
+Each store's revenue configuration is read from the revenue_connections table.
+Agents are cached in-process.
 """
 from __future__ import annotations
 

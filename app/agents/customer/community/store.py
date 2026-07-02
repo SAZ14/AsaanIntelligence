@@ -4,8 +4,7 @@ Every public function takes store_id as the first argument to scope all
 queries to the correct restaurant. Raw data isolation between stores is
 enforced at the query level — no cross-store leakage is possible.
 
-All access goes through the shared DATABASE_URL via SQLAlchemy; the
-supabase-py client is not used anywhere in this module.
+All access goes through the shared DATABASE_URL via SQLAlchemy.
 """
 from __future__ import annotations
 
