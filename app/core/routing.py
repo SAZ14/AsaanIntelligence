@@ -39,7 +39,7 @@ def classify_agent(text: str) -> str | None:
 
 SWITCH_WORDS = {"switch", "change", "swap", "different", "other"}
 
-
+# FIX: Dead code! Not used anywhere...
 def is_switch_intent(text: str) -> bool:
     words = set(re.sub(r"[^\w\s]", "", text.lower()).split())
     return bool(words & SWITCH_WORDS)

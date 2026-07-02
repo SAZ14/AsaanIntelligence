@@ -62,6 +62,8 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             api_key=ZAI_API_KEY,
             base_url="https://open.bigmodel.cn/api/paas/v4/",
         )
+
+        # FIX: hardcoded system prompt for message router -> store in module or config
         system = (
             "You are a message router for a restaurant management AI.\n"
             "A staff member sent a WhatsApp message — it may be English, Urdu, or Roman Urdu. Route by meaning.\n"

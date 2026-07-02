@@ -37,17 +37,8 @@ _NON_NAME_WORDS = frozenset({
 GREETING_RE = re.compile(r"^(hi|hello|hey|salam|assalam|aoa)\b", re.I)
 STAMPS_RE = re.compile(r"\b(my stamps|stamp balance|how many stamps|stamps)\b", re.I)
 LEADERBOARD_RE = re.compile(r"\b(leaderboard|top stamps|ranking)\b", re.I)
-MENU_RE = re.compile(
-    r"\b(menu|what.?s new|deals?|specials?|prices?|recommend|latte|coffee|cake|croissant|mocha|items?|food|eat|burger|chicken|beef)\b",
-    re.I,
-)
-# Generic "what do you have/sell/offer" phrasing doesn't contain any of the
-# MENU_RE keywords above but is still a menu request — catch it separately
-# so real KB menu content gets injected instead of leaving the LLM to guess.
-_MENU_PHRASE_RE = re.compile(
-    r"\bwhat.{0,20}\byou\b.{0,15}\b(have|got|offer|sell|serve)\b|\bwhat.?s\s+available\b",
-    re.I,
-)
+# Menu intent detection lives in app.agents.customer.community.intent
+# (embedding classifier, regex fallback) — see is_menu_intent() below.
 _HOURS_RE = re.compile(r"\b(time|open(ing)?|clos(e|ing|ed)|hours?|timing|when|schedule)\b", re.I)
 _LOCATION_RE = re.compile(r"\b(where|location|address|branches?|find you|located|outlet|outlets?)\b", re.I)
 _DELIVERY_RE = re.compile(r"\b(deliver|delivery|order online|app)\b", re.I)
@@ -336,8 +327,9 @@ def handle_customer_message(
 
     if len(text) >= 3:
         from app.agents.customer.community.menu_context import build_menu_context
+        from app.agents.customer.community.intent import is_menu_intent
 
-        is_menu     = bool(MENU_RE.search(text)) or bool(_MENU_PHRASE_RE.search(text))
+        is_menu     = is_menu_intent(text)
         is_hours    = bool(_HOURS_RE.search(text))
         is_location = bool(_LOCATION_RE.search(text))
         is_delivery = bool(_DELIVERY_RE.search(text))

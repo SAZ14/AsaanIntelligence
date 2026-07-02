@@ -22,3 +22,6 @@ The system needs structured logs, a way to trace one request end-to-end (a reque
 
 ## 7. Schema evolution
 Database schema changes go through versioned, reversible migrations (e.g. Alembic) — never hand-run SQL against a live database.
+
+## 8. Readability & best practices
+Code should be easy for a new engineer to read and safe to change. Red flags: unclear naming, duplicated logic instead of a shared function, dead code, missing error handling for things that can actually fail, functions doing too many unrelated things at once.

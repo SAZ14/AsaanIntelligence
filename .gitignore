@@ -11,3 +11,4 @@ data/raw/
 logs/
 *.db
 .agents/
+.DS_Store
