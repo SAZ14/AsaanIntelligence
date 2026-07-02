@@ -116,18 +116,47 @@ def _fetch_kb_by_category(store_id: int, category: str) -> list[dict]:
     return docs
 
 
+# Matches list-style "ItemName - Rs. NNN" lines the way the LLM is instructed
+# to format menu answers, so an invented item paired with a real (but
+# unrelated) price can be caught even though the bare price number checks out.
+_PRICE_LINE_RE = re.compile(
+    r"^\s*[-*•]?\s*\*?([A-Za-z][\w'&/() ]{1,60}?)\*?\s*[-–—:]\s*(?:Rs\.?\s*|PKR\s*|₨\s*)(\d+)",
+    re.M,
+)
+
+
 def _prices_grounded(response: str, chunks: list[dict]) -> bool:
-    """Return True if every price number in the response exists in the KB chunks."""
-    # Extract numeric amounts from any price pattern (Rs. 670, PKR 670, 670 PKR, ₨670)
+    """Return True only if every price the response cites, and every
+    (item name, price) pair it lists, can be verified against the KB chunks.
+
+    Two checks: (1) every raw price number must appear somewhere in the KB
+    text — catches invented prices; (2) for list-style "Item - Rs. NNN"
+    lines, that exact name and price must co-occur on the same KB line —
+    catches an invented item name paired with a real, coincidentally
+    matching price (check 1 alone would miss this).
+    """
     price_nums = set(re.findall(r"(?:Rs\.?\s*|PKR\s*|₨\s*)(\d+)", response, re.I))
-    if not price_nums:
+    item_price_pairs = _PRICE_LINE_RE.findall(response)
+    if not price_nums and not item_price_pairs:
         return True
     if not chunks:
-        # Response cites prices but we retrieved no KB context to verify them
-        # against — treat as ungrounded rather than trusting the LLM blindly.
+        # Response cites prices/items but we retrieved no KB context to
+        # verify them against — treat as ungrounded rather than trusting
+        # the LLM blindly.
         return False
+
     chunk_text = " ".join(c["content"] for c in chunks)
-    return all(num in chunk_text for num in price_nums)
+    if not all(num in chunk_text for num in price_nums):
+        return False
+
+    kb_lines = [line.lower() for c in chunks for line in c["content"].splitlines()]
+    for name, price in item_price_pairs:
+        name_norm = re.sub(r"[^a-z0-9' ]", "", name.strip().lower())
+        if len(name_norm) < 3:
+            continue
+        if not any(name_norm in line and price in line for line in kb_lines):
+            return False
+    return True
 
 
 def _llm_generate(
