@@ -41,6 +41,13 @@ MENU_RE = re.compile(
     r"\b(menu|what.?s new|deals?|specials?|prices?|recommend|latte|coffee|cake|croissant|mocha|items?|food|eat|burger|chicken|beef)\b",
     re.I,
 )
+# Generic "what do you have/sell/offer" phrasing doesn't contain any of the
+# MENU_RE keywords above but is still a menu request — catch it separately
+# so real KB menu content gets injected instead of leaving the LLM to guess.
+_MENU_PHRASE_RE = re.compile(
+    r"\bwhat.{0,20}\byou\b.{0,15}\b(have|got|offer|sell|serve)\b|\bwhat.?s\s+available\b",
+    re.I,
+)
 _HOURS_RE = re.compile(r"\b(time|open(ing)?|clos(e|ing|ed)|hours?|timing|when|schedule)\b", re.I)
 _LOCATION_RE = re.compile(r"\b(where|location|address|branches?|find you|located|outlet|outlets?)\b", re.I)
 _DELIVERY_RE = re.compile(r"\b(deliver|delivery|order online|app)\b", re.I)
@@ -111,13 +118,15 @@ def _fetch_kb_by_category(store_id: int, category: str) -> list[dict]:
 
 def _prices_grounded(response: str, chunks: list[dict]) -> bool:
     """Return True if every price number in the response exists in the KB chunks."""
-    if not chunks:
-        return True
-    chunk_text = " ".join(c["content"] for c in chunks)
     # Extract numeric amounts from any price pattern (Rs. 670, PKR 670, 670 PKR, ₨670)
     price_nums = set(re.findall(r"(?:Rs\.?\s*|PKR\s*|₨\s*)(\d+)", response, re.I))
     if not price_nums:
         return True
+    if not chunks:
+        # Response cites prices but we retrieved no KB context to verify them
+        # against — treat as ungrounded rather than trusting the LLM blindly.
+        return False
+    chunk_text = " ".join(c["content"] for c in chunks)
     return all(num in chunk_text for num in price_nums)
 
 
@@ -261,7 +270,7 @@ def handle_customer_message(
     if len(text) >= 3:
         from app.agents.customer.community.menu_context import build_menu_context
 
-        is_menu     = bool(MENU_RE.search(text))
+        is_menu     = bool(MENU_RE.search(text)) or bool(_MENU_PHRASE_RE.search(text))
         is_hours    = bool(_HOURS_RE.search(text))
         is_location = bool(_LOCATION_RE.search(text))
         is_delivery = bool(_DELIVERY_RE.search(text))
