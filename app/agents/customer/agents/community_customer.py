@@ -351,9 +351,14 @@ def handle_customer_message(
 
         # Fetch intent-specific KB chunks by standardised category field.
         # The 'category' key is set during KB seeding and is restaurant-agnostic.
-        intent_docs: dict[str, list[dict]] = {}
-        if is_menu:
-            intent_docs["menu"] = _fetch_kb_by_category(store_id, "menu")
+        # Menu content is always fetched (not gated on is_menu) — keyword/phrase
+        # regexes can't catch every phrasing or language ("bhook lagrahi hai
+        # mujhe" == "I'm hungry" in Urdu), so relying on intent-matching alone
+        # to decide whether to ground the LLM in real menu data left vague or
+        # non-English hunger/food questions with zero real context, and the
+        # LLM would invent a full menu (wrong items, wrong currency) rather
+        # than say it doesn't know. Redis-cached, so this is cheap.
+        intent_docs: dict[str, list[dict]] = {"menu": _fetch_kb_by_category(store_id, "menu")}
         if is_hours:
             intent_docs["hours"] = _fetch_kb_by_category(store_id, "hours")
         if is_location:
@@ -405,7 +410,7 @@ def handle_customer_message(
         # ── Price validation: every price in the reply must exist in KB ───────
         if not _prices_grounded(reply, docs):
             # LLM invented prices — fall back to direct KB content
-            if is_menu and intent_docs.get("menu"):
+            if intent_docs.get("menu"):
                 reply = "\n\n".join(d["content"] for d in intent_docs["menu"])
             else:
                 reply = f"Let me make sure I give you accurate info, {member.name}! Reach out to us directly for details 😊"
