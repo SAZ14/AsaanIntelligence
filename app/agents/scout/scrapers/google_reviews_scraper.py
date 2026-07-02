@@ -18,10 +18,12 @@ _TOPIC_KEYWORDS: dict[str, list[str]] = {
     "ambiance": ["ambiance", "atmosphere", "clean", "dirty", "cozy", "noisy", "parking", "seating"],
 }
 
-# Two-pass strategy: perception-shaping reviews + competitor pain points
+# Two-pass strategy: perception-shaping reviews + competitor pain points.
+# reviewsSort accepts: newest | mostRelevant | highestRanking | lowestRanking
+# (per compass/google-maps-reviews-scraper's input schema).
 _REVIEW_STRATEGIES: list[tuple[str, int]] = [
     ("mostRelevant", max(1, APIFY_REVIEWS_PER_COMPETITOR * 2 // 3)),
-    ("lowestRating", max(1, APIFY_REVIEWS_PER_COMPETITOR // 3)),
+    ("lowestRanking", max(1, APIFY_REVIEWS_PER_COMPETITOR // 3)),
 ]
 
 
@@ -75,7 +77,7 @@ def fetch_reviews(competitor: dict) -> list[FindingSchema]:
     """Two-pass Google Maps review fetch via Apify.
 
     Pass 1 (mostRelevant): reviews shaping customer perception.
-    Pass 2 (lowestRating): competitor pain points = Sugar Rush opportunities.
+    Pass 2 (lowestRanking): competitor pain points = Sugar Rush opportunities.
     Results are deduplicated, sentiment-classified (strength/weakness/trend),
     and tagged with topics (price, quality, service, wait, ambiance).
     """
