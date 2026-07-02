@@ -1257,15 +1257,6 @@ async def remove_openwa_session(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "not_found"}, status_code=404)
 
 
-@app.get("/admin/debug/chat-cache/{store_id}/{phone}")
-async def debug_chat_cache(store_id: int, phone: str) -> JSONResponse:
-    """TEMPORARY — read-only peek at the Redis chat cache for one phone.
-    Remove after use; not meant to be a permanent endpoint."""
-    import app.core.cache as _cache
-    data = _cache.get(f"chat:{store_id}:{phone}")
-    return JSONResponse({"cached": data})
-
-
 @app.post("/admin/stores/{store_id}/customer")
 async def configure_venue(store_id: int, request: Request) -> JSONResponse:
     import json as _json
