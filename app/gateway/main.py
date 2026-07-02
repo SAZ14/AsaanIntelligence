@@ -1257,6 +1257,59 @@ async def remove_openwa_session(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "not_found"}, status_code=404)
 
 
+@app.post("/admin/debug/kb-upsert/{store_id}")
+async def debug_kb_upsert(store_id: int, request: Request) -> JSONResponse:
+    """TEMPORARY — insert new / update existing KB chunks with real embeddings.
+    Body: {"chunks": [{"id": "<uuid, optional>", "content": "...", "metadata": {...}}]}
+    id present -> UPDATE that row's content/embedding/metadata.
+    id absent  -> INSERT a new row for store_id.
+    Remove after use; not meant to be a permanent endpoint."""
+    import json as _json
+    from sqlalchemy import text as _sql
+    from app.core.db import SessionLocal
+    from app.agents.customer.community.store import _embedding_model
+    import app.core.cache as _cache
+
+    params = await _parse_body(request)
+    chunks = params.get("chunks", [])
+    model = _embedding_model()
+    if model is None:
+        return JSONResponse({"error": "embedding model unavailable"}, status_code=500)
+
+    results = []
+    with SessionLocal() as db:
+        for c in chunks:
+            embedding = model.encode(c["content"]).tolist()
+            metadata = c.get("metadata", {})
+            if c.get("id"):
+                db.execute(
+                    _sql(
+                        "UPDATE knowledge_base SET content=:content, "
+                        "embedding=CAST(:embedding AS vector), metadata=CAST(:metadata AS jsonb) "
+                        "WHERE id=:id"
+                    ),
+                    {"content": c["content"], "embedding": _json.dumps(embedding),
+                     "metadata": _json.dumps(metadata), "id": c["id"]},
+                )
+                results.append({"id": c["id"], "action": "updated"})
+            else:
+                db.execute(
+                    _sql(
+                        "INSERT INTO knowledge_base (store_id, content, embedding, metadata) "
+                        "VALUES (:store_id, :content, CAST(:embedding AS vector), CAST(:metadata AS jsonb))"
+                    ),
+                    {"store_id": store_id, "content": c["content"],
+                     "embedding": _json.dumps(embedding), "metadata": _json.dumps(metadata)},
+                )
+                results.append({"action": "inserted"})
+        db.commit()
+
+    for cat in ("menu", "hours", "location", "delivery", "about"):
+        _cache.delete(f"kb:{store_id}:{cat}")
+
+    return JSONResponse({"status": "ok", "results": results})
+
+
 @app.post("/admin/stores/{store_id}/customer")
 async def configure_venue(store_id: int, request: Request) -> JSONResponse:
     import json as _json
