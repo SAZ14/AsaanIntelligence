@@ -116,28 +116,60 @@ def _fetch_kb_by_category(store_id: int, category: str) -> list[dict]:
     return docs
 
 
-# Matches list-style "ItemName - Rs. NNN" lines the way the LLM is instructed
-# to format menu answers, so an invented item paired with a real (but
-# unrelated) price can be caught even though the bare price number checks out.
+# Recognises any common currency prefix, not just Rs./PKR — a restaurant's
+# KB may be priced in any currency, and a response quoting a *different*
+# currency than the KB is itself a hallucination signal regardless of the
+# number (this is how the $-menu hallucination slipped past an Rs.-only regex).
+_CURRENCY_ALIASES = {
+    "rs": "pkr", "rs.": "pkr", "pkr": "pkr", "₨": "pkr",
+    "$": "usd", "usd": "usd",
+    "€": "eur", "eur": "eur",
+    "£": "gbp", "gbp": "gbp",
+}
+_PRICE_RE = re.compile(r"(Rs\.?|PKR|₨|\$|USD|€|£)\s*(\d[\d,]*(?:\.\d+)?)", re.I)
+# Matches list-style "ItemName - <currency> NNN" lines the way the LLM is
+# instructed to format menu answers, so an invented item paired with a real
+# (but unrelated) price can be caught even though the bare price checks out.
 _PRICE_LINE_RE = re.compile(
-    r"^\s*[-*•]?\s*\*?([A-Za-z][\w'&/() ]{1,60}?)\*?\s*[-–—:]\s*(?:Rs\.?\s*|PKR\s*|₨\s*)(\d+)",
-    re.M,
+    r"^\s*[-*•]?\s*\*?([A-Za-z][\w'&/() ]{1,60}?)\*?\s*[-–—:]\s*(Rs\.?|PKR|₨|\$|USD|€|£)\s*(\d[\d,]*(?:\.\d+)?)",
+    re.M | re.I,
 )
+
+
+def _norm_currency(symbol: str) -> str:
+    return _CURRENCY_ALIASES.get(symbol.lower().rstrip("."), symbol.lower())
+
+
+def _extract_prices(text: str) -> set[tuple[str, float]]:
+    """Return the set of (currency, value) pairs mentioned in text.
+
+    Exact numeric values, not substrings — "Rs. 12" must never match inside
+    a real "Rs. 1250" just because "12" is a substring of "1250".
+    """
+    out: set[tuple[str, float]] = set()
+    for symbol, num in _PRICE_RE.findall(text):
+        try:
+            value = float(num.replace(",", ""))
+        except ValueError:
+            continue
+        out.add((_norm_currency(symbol), value))
+    return out
 
 
 def _prices_grounded(response: str, chunks: list[dict]) -> bool:
     """Return True only if every price the response cites, and every
     (item name, price) pair it lists, can be verified against the KB chunks.
 
-    Two checks: (1) every raw price number must appear somewhere in the KB
-    text — catches invented prices; (2) for list-style "Item - Rs. NNN"
-    lines, that exact name and price must co-occur on the same KB line —
-    catches an invented item name paired with a real, coincidentally
-    matching price (check 1 alone would miss this).
+    Three checks: (1) every (currency, value) pair in the response must
+    exist somewhere in the KB — catches invented prices AND wrong currency
+    (e.g. LLM quoting $ when the KB only ever quotes Rs.); (2) for
+    list-style "Item - <currency> NNN" lines, that exact name and price
+    must co-occur on the same KB line — catches an invented item name
+    paired with a real, coincidentally matching price.
     """
-    price_nums = set(re.findall(r"(?:Rs\.?\s*|PKR\s*|₨\s*)(\d+)", response, re.I))
-    item_price_pairs = _PRICE_LINE_RE.findall(response)
-    if not price_nums and not item_price_pairs:
+    response_prices = _extract_prices(response)
+    item_price_lines = _PRICE_LINE_RE.findall(response)
+    if not response_prices and not item_price_lines:
         return True
     if not chunks:
         # Response cites prices/items but we retrieved no KB context to
@@ -146,15 +178,21 @@ def _prices_grounded(response: str, chunks: list[dict]) -> bool:
         return False
 
     chunk_text = " ".join(c["content"] for c in chunks)
-    if not all(num in chunk_text for num in price_nums):
+    kb_prices = _extract_prices(chunk_text)
+    if not kb_prices or not response_prices <= kb_prices:
         return False
 
-    kb_lines = [line.lower() for c in chunks for line in c["content"].splitlines()]
-    for name, price in item_price_pairs:
+    kb_lines = [line for c in chunks for line in c["content"].splitlines()]
+    for name, symbol, num in item_price_lines:
         name_norm = re.sub(r"[^a-z0-9' ]", "", name.strip().lower())
         if len(name_norm) < 3:
             continue
-        if not any(name_norm in line and price in line for line in kb_lines):
+        try:
+            value = float(num.replace(",", ""))
+        except ValueError:
+            continue
+        target = (_norm_currency(symbol), value)
+        if not any(name_norm in line.lower() and target in _extract_prices(line) for line in kb_lines):
             return False
     return True
 
