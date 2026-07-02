@@ -188,6 +188,19 @@ def _prices_grounded(response: str, chunks: list[dict]) -> bool:
     return True
 
 
+def _sanitize_whatsapp_formatting(text: str) -> str:
+    """Fix formatting the LLM occasionally emits despite being told not to.
+
+    WhatsApp only renders *single-asterisk* bold — **double** shows up as
+    literal asterisk characters in the chat, and markdown ## headers don't
+    render at all. This is a post-generation safety net, not a substitute
+    for the system prompt rules (which stay in place as the primary fix).
+    """
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
+    return text
+
+
 def _llm_generate(
     user_message: str, context: str, member: CommunityMember,
     history: list[dict], venue_name: str = "the restaurant",
@@ -236,7 +249,8 @@ def _llm_generate(
         else:
             raise
 
-    return (resp.choices[0].message.content or "").strip()
+    text = (resp.choices[0].message.content or "").strip()
+    return _sanitize_whatsapp_formatting(text) if text else text
 
 
 def _chat_reply(
