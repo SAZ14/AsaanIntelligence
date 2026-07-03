@@ -436,6 +436,7 @@ def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | No
         report = scout_run(command, store_id=store_id, user_message=body)
         send_fn(report)
         logger.info("bg_scout: delivered store=%d", store_id)
+        logger.info("bg_scout: reply_text store=%d text=%r", store_id, report)
     except Exception as exc:
         logger.error("bg_scout: store=%d failed error=%s", store_id, exc)
         send_fn("Scout report could not be completed. Please try again.")
@@ -489,6 +490,7 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
     if reply:
         send_fn(reply)
         logger.info("bg_internal: delivered store=%d", store_id)
+        logger.info("bg_internal: reply_text store=%d text=%r", store_id, reply)
 
 
 def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
@@ -505,6 +507,7 @@ def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
     if reply:
         send_fn(reply)
         logger.info("bg_customer: delivered store=%d", store_id)
+        logger.info("bg_customer: reply_text store=%d text=%r", store_id, reply)
 
 
 @asynccontextmanager
