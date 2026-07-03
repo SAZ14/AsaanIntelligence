@@ -255,8 +255,42 @@ def _revenue(store_id: int, from_number: str, text: str) -> str:
 
 
 def _scout(store_id: int, from_number: str, text: str) -> str:
-    # Sync fallback — async dispatch in gateway should handle this first.
-    return "Scanning competitors now 🔍 Your report will arrive in 7-10 minutes."
+    """Fallback for scout-classified messages the upstream keyword-based
+    async dispatch in gateway/main.py didn't catch -- e.g. natural-language
+    queries like "what are other burger places doing" that contain none of
+    _SCOUT_ASYNC_WORDS but still get classified as scout intent by the LLM
+    here. This used to just return a static "report coming in 7-10 min"
+    message with no pipeline ever running -- confirmed via live testing to
+    reliably promise a report that never arrives. Runs the real pipeline
+    directly; safe to block here since this only executes inside the
+    already-backgrounded _bg_internal task, not the webhook response itself.
+
+    Reuses the same rate-limit (3/hour) and in-flight-run guards as the
+    keyword path so this fallback can't be used to bypass them.
+    """
+    from datetime import datetime, timedelta
+    from app.core.db import SessionLocal, ScoutRun as Run
+    from app.gateway.main import _scout_rate_ok
+
+    if not _scout_rate_ok(from_number):
+        return "You've sent too many scout requests. Limit is 3 per hour — please wait before trying again."
+
+    with SessionLocal() as db:
+        cutoff = datetime.utcnow() - timedelta(minutes=15)
+        in_flight = db.query(Run).filter(
+            Run.store_id == store_id,
+            Run.status == "running",
+            Run.started_at >= cutoff,
+        ).first()
+    if in_flight:
+        return "Scout is already running — your report will arrive in a few minutes. Please wait."
+
+    try:
+        from app.agents.scout.pipeline import run as scout_run
+        return scout_run("scout", store_id=store_id, user_message=text)
+    except Exception as e:
+        logger.error("internal._scout: store=%d error=%s", store_id, e)
+        return "Scout report could not be completed. Please try again."
 
 
 def _reputation(store_id: int, from_number: str, text: str) -> str:
