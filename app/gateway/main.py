@@ -444,14 +444,18 @@ def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | No
 
 _INTEGRITY_SHORTHAND = {
     "summary", "audit", "overview", "leakage", "leak", "theft",
-    "profit", "margin", "cogs", "sales", "staff", "daily", "weekly",
+    "profit", "margin", "cogs", "staff", "daily", "weekly",
     "refresh", "pdf", "report",
 }
 _REVIEW_KEYWORDS = {
     "review", "reviews", "rating", "ratings", "feedback",
     "complaint", "complaints", "comment", "comments", "saying", "people",
 }
-_REVENUE_KEYWORDS = {"revenue", "strategy", "upsell", "growth", "pricing", "campaign"}
+# "sales" moved here from _INTEGRITY_SHORTHAND -- it's a documented Revenue
+# Advisor command (see app/gateway/internal.py's _REVENUE_EXACT), not an
+# integrity one; it was giving a "running your POS audit" ack immediately
+# before a revenue-advice reply, which read as a mismatched non-sequitur.
+_REVENUE_KEYWORDS = {"revenue", "sales", "strategy", "upsell", "growth", "pricing", "campaign"}
 
 
 def _internal_ack(body: str) -> str:
@@ -751,7 +755,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         # Dispatch every command as a background task and ack immediately.
         if not _staff_dispatch_ok(from_number):
             logger.info("gateway.webhook: staff cooldown drop from=%s", from_number)
-            return _twiml_empty()
+            return _twiml("Still working on your last request — one moment! 🙏")
         ack = _internal_ack(body)
         logger.info("gateway.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
         background_tasks.add_task(_bg_internal, store_id, from_number, _twilio_send_fn, body)
@@ -982,6 +986,7 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
 
         if not _staff_dispatch_ok(from_number):
             logger.info("openwa.webhook: staff cooldown drop from=%s", from_number)
+            background_tasks.add_task(_owa_send, "Still working on your last request — one moment! 🙏")
             return JSONResponse({"status": "throttled"})
         ack = _internal_ack(body_text)
         logger.info("openwa.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)

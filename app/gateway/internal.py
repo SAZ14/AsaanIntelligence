@@ -32,10 +32,18 @@ HELP_TEXT = (
 
 _REPUTATION_EXACT = {"post", "ignore"}
 
+# Documented Revenue Advisor shorthand commands (see HELP_TEXT). These bypass
+# the LLM classifier entirely -- bare words like "revenue" and "sales" sound
+# financial/POS-related, and the LLM was consistently misrouting them to
+# integrity/summary or integrity/free_form instead of revenue/general,
+# contradicting the help text. Unambiguous documented commands don't need an
+# LLM judgment call, same reasoning as _REPUTATION_EXACT below.
+_REVENUE_EXACT = {"revenue", "sales", "pricing", "strategy"}
+
 _INTEGRITY_CMDS = {
     "summary", "audit", "overview",
     "leakage", "leak", "theft", "fraud",
-    "profit", "margin", "cogs", "revenue", "sales",
+    "profit", "margin", "cogs",
     "staff", "employees", "team",
     "daily", "weekly",
     "refresh", "reload", "update",
@@ -45,7 +53,7 @@ _INTEGRITY_CMDS = {
 
 def _is_shorthand(text: str) -> bool:
     return len(text.split()) == 1 and text.lower().strip() in (
-        _INTEGRITY_CMDS
+        _INTEGRITY_CMDS | _REVENUE_EXACT
         | {"check", "scrape", "scout", "competitors", "intel", "help"}
     )
 
@@ -194,6 +202,10 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     if first == "edit" and len(text.split()) > 1:
         logger.info("internal.routing: store=%d agent=reputation trigger=edit from=%s", store_id, from_number)
         return _reputation(store_id, from_number, text)
+
+    if first in _REVENUE_EXACT and len(text.split()) == 1:
+        logger.info("internal.routing: store=%d agent=revenue trigger=exact from=%s", store_id, from_number)
+        return _revenue(store_id, from_number, text)
 
     # LLM classification
     agent, command = _classify_with_llm(text)
