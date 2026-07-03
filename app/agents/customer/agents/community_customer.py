@@ -174,6 +174,13 @@ def _prices_grounded(response: str, chunks: list[dict]) -> bool:
         return False
 
     kb_lines = [line for c in chunks for line in c["content"].splitlines()]
+    # Normalize KB lines the same way the extracted name is normalized (strip
+    # punctuation like parens) -- otherwise "Milkshakes (Shake Relief)" never
+    # matches its own KB line "Milkshakes (Shake Relief) - Rs. 520...", since
+    # the name loses its parens but the line being searched still has them.
+    kb_lines_norm = [
+        (re.sub(r"[^a-z0-9' ]", "", line.lower()), line) for line in kb_lines
+    ]
     for name, symbol, num in item_price_lines:
         name_norm = re.sub(r"[^a-z0-9' ]", "", name.strip().lower())
         if len(name_norm) < 3:
@@ -183,7 +190,10 @@ def _prices_grounded(response: str, chunks: list[dict]) -> bool:
         except ValueError:
             continue
         target = (_norm_currency(symbol), value)
-        if not any(name_norm in line.lower() and target in _extract_prices(line) for line in kb_lines):
+        if not any(
+            name_norm in line_norm and target in _extract_prices(line)
+            for line_norm, line in kb_lines_norm
+        ):
             return False
     return True
 
