@@ -281,6 +281,14 @@ async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> s
 _SCOUT_ASYNC_WORDS = {
     "scout", "competitor", "competitors", "intel", "intelligence",
     "rivals", "rival", "competition", "landscape",
+    # Documented scout sub-report intents (see app/agents/scout/analysis.py
+    # _VALID_INTENTS) -- these words were missing here entirely, so bare
+    # commands like "alerts" never reached the scout-aware classifier and
+    # got misrouted to other agents instead (confirmed via live testing:
+    # "alerts" -> integrity/free_form, "campaigns" -> revenue/general).
+    # "pricing" is intentionally excluded -- that bare word is already
+    # claimed by the Revenue Advisor's documented shorthand commands.
+    "alerts", "campaigns", "opportunities", "content",
 }
 
 
