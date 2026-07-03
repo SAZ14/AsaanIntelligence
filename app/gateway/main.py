@@ -140,7 +140,7 @@ def _internal_welcome(store_name: str) -> str:
         "  scout — scrape rivals (cached 24h)\n\n"
         "*Reputation* — Review management\n"
         "  check — scrape latest reviews (cached 24h)\n"
-        "  post — publish suggested reply\n"
+        "  post — mark suggested reply as replied (post it yourself first)\n"
         "  ignore — skip current review\n"
         "  edit <text> — rewrite suggested reply\n\n"
         "Type *menu* to switch modes."

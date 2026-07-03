@@ -37,7 +37,7 @@ def format_alert_text(review: dict[str, Any], ai_summary: dict[str, Any]) -> str
         f"*Sentiment:* {sentiment}"
         f"{visit_info}\n\n"
         f"*Suggested reply:*\n{draft}\n\n"
-        "Reply *POST* to publish · *EDIT <text>* to revise · *IGNORE* to skip"
+        "Post this reply yourself on the platform, then reply *POST* here to mark it as handled · *EDIT <text>* to revise · *IGNORE* to skip"
     )
 
 

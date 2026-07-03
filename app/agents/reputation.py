@@ -505,6 +505,19 @@ def _load_brand_voice(store_id: int, store_name: str) -> BrandVoice:
 
 # ── Helpers ──
 
+_PLATFORM_NAMES = {
+    "google_maps": "Google Maps",
+    "foodpanda": "FoodPanda",
+    "instagram": "Instagram",
+}
+
+
+def _platform_label(pending: dict) -> str:
+    platform = _PLATFORM_NAMES.get(pending.get("source_platform"), "the review site")
+    url = pending.get("source_url")
+    return f"{platform} ({url})" if url else platform
+
+
 def _format_pending(pending: dict) -> str:
     summary = pending["ai_summary"]
     rating = pending.get("rating")
@@ -516,7 +529,7 @@ def _format_pending(pending: dict) -> str:
         f"*{rating_str}*\n"
         f"_{excerpt}_\n\n"
         f"*Suggested reply:*\n{draft}\n\n"
-        "*POST* - publish\n"
+        "*POST* - mark as replied (post it on the platform yourself first)\n"
         "*EDIT <text>* - revise\n"
         "*IGNORE* - skip\n"
         "*DONE* - exit"
@@ -566,7 +579,15 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         summary["status"] = "posted"
         review_db.update_finding_summary(finding["id"], summary)
         draft = summary.get("draft_reply", "")
-        reply = f"*{store_name}* - Published! ✅\n\n_{draft}_"
+        # We can't publish this for you -- there's no write access to Google
+        # Maps / FoodPanda / Instagram review replies. This only marks the
+        # draft as handled on our side; the owner still has to paste it on
+        # the actual platform themselves.
+        reply = (
+            f"*{store_name}* - Marked as replied ✅\n\n"
+            f"Copy this and post it on *{_platform_label(finding)}*:\n\n"
+            f"_{draft}_"
+        )
         nxt = review_db.get_pending_finding(store_id)
         return reply + ("\n\n" + _format_pending(nxt) if nxt else "\n\nNo more pending reviews. Send *DONE* to exit.")
 
@@ -582,7 +603,7 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         review_db.update_finding_summary(finding["id"], summary)
         return (
             f"*{store_name}* - Draft updated ✏️\n\n_{new_draft}_\n\n"
-            "*POST* - publish\n"
+            "*POST* - mark as replied (post it on the platform yourself first)\n"
             "*IGNORE* - skip\n"
             "*DONE* - exit"
         )
@@ -803,7 +824,9 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     system = (
         f"You assist the owner of '{store_name}' with review management on WhatsApp. "
         "Be brief, direct and conversational.\n"
-        "Commands: *POST* (publish draft), *EDIT <text>* (revise draft), "
+        "Commands: *POST* (mark draft as replied -- owner still has to post it "
+        "on the actual platform themselves, we can't publish it for them), "
+        "*EDIT <text>* (revise draft), "
         "*IGNORE* (skip), *CHECK* (scrape new reviews).\n\n"
         "WhatsApp format: no markdown, no em-dashes, use *word* for bold, short paragraphs.\n\n"
         f"{pending_ctx}\n{recent_ctx}"
@@ -824,7 +847,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
         logger.error("Reputation chat error: %s", exc)
         return (
             f"*{store_name}* - Reviews\n\n"
-            "*POST* - publish draft reply\n"
+            "*POST* - mark draft as replied (post it on the platform yourself first)\n"
             "*EDIT <text>* - revise the draft\n"
             "*IGNORE* - skip this review\n"
             "*CHECK* - scrape new reviews"

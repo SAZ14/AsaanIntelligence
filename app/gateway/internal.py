@@ -23,7 +23,7 @@ HELP_TEXT = (
     "scout - full report in 7-10 min 🔍\n\n"
     "*Reviews*\n"
     "check - scrape new reviews\n"
-    "post - publish pending draft\n"
+    "post - mark draft as replied (post it on the platform yourself first)\n"
     "edit <text> - revise draft\n"
     "ignore - skip current review\n\n"
     "help - this message\n"
