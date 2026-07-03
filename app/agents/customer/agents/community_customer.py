@@ -42,6 +42,10 @@ LEADERBOARD_RE = re.compile(r"\b(leaderboard|top stamps|ranking)\b", re.I)
 _HOURS_RE = re.compile(r"\b(time|open(ing)?|clos(e|ing|ed)|hours?|timing|when|schedule)\b", re.I)
 _LOCATION_RE = re.compile(r"\b(where|location|address|branches?|find you|located|outlet|outlets?)\b", re.I)
 _DELIVERY_RE = re.compile(r"\b(deliver|delivery|order online|app)\b", re.I)
+# Catches SR-prefixed text that LOOKS like a redeem code attempt but doesn't
+# match the exact valid shape (wrong length, stray characters, etc.) — see
+# the malformed-code check in handle_customer_message for why this matters.
+_CODE_PREFIX_RE = re.compile(r"^SR-[A-Z0-9]*$", re.I)
 
 _zai_client = None
 
@@ -326,6 +330,13 @@ def handle_customer_message(
         result = apply_stamp(member, normalize_code(text), config, store_id)
         save_members(store_id, members)
         return AgentReply(result.message)
+
+    # Malformed code attempt (right prefix, wrong shape) — must be caught
+    # here too, not just exact matches. Otherwise it falls through to the
+    # LLM, which has no way to know a code is invalid and can hallucinate
+    # an order confirmation for a code that was never actually redeemed.
+    if _CODE_PREFIX_RE.match(text.strip()):
+        return AgentReply("That code wasn't found. Double-check the code on your receipt 🧾")
 
     # New visitor: start onboarding
     if member is None:
