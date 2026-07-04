@@ -32,14 +32,45 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
 from typing import Callable
 
-import app.core.cache as _cache
-
 logger = logging.getLogger(__name__)
+
+# The queue needs its own connection: app.core.cache's client uses
+# socket_timeout=2, which kills every BRPOPLPUSH block (up to POP_TIMEOUT
+# seconds) at the socket layer before it can return empty-handed.
+POP_TIMEOUT = 5  # seconds a blocking pop waits for work
+
+_queue_client = None
+_queue_unavailable = False
+
+
+def _get_redis():
+    global _queue_client, _queue_unavailable
+    if _queue_unavailable:
+        return None
+    if _queue_client is not None:
+        return _queue_client
+    try:
+        import redis as _redis
+        r = _redis.Redis(
+            host=os.getenv("REDIS_HOST", "redis.railway.internal"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_PASSWORD") or None,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=POP_TIMEOUT + 5,  # must outlast the blocking pop
+        )
+        r.ping()
+        _queue_client = r
+    except Exception as exc:
+        logger.warning("jobqueue: Redis unavailable (%s)", exc)
+        _queue_unavailable = True
+    return _queue_client
 
 PENDING_KEY = "jobs:pending"
 PROCESSING_PREFIX = "jobs:processing:"
@@ -78,7 +109,7 @@ def _build_send_fn(reply_to: dict) -> Callable[[str], None]:
 def enqueue(kind: str, store_id: int, from_number: str, body: str,
             reply_to: dict, ack: str | None = None) -> bool:
     """Persist a job. False = Redis unavailable, caller must fall back."""
-    r = _cache._get_redis()
+    r = _get_redis()
     if r is None:
         return False
     job = {
@@ -116,7 +147,7 @@ def _execute(raw: str) -> None:
         job["attempts"] = job.get("attempts", 0) + 1
         logger.error("jobqueue: kind=%s job=%s attempt=%d failed: %s",
                      kind, job["id"], job["attempts"], exc)
-        r = _cache._get_redis()
+        r = _get_redis()
         if job["attempts"] < MAX_ATTEMPTS and r is not None:
             try:
                 r.lpush(PENDING_KEY, json.dumps(job))
@@ -132,7 +163,7 @@ def _execute(raw: str) -> None:
 def process_one(timeout: int = 5) -> bool:
     """Pop and run a single job. Returns True if one was processed.
     Separated from the worker loop so tests can drive the queue directly."""
-    r = _cache._get_redis()
+    r = _get_redis()
     if r is None:
         return False
     processing_key = PROCESSING_PREFIX + INSTANCE_ID
@@ -157,7 +188,7 @@ def process_one(timeout: int = 5) -> bool:
 def reap_orphans() -> int:
     """Requeue jobs stuck in processing lists of instances whose heartbeat
     is gone (crashed / redeployed mid-job). Returns number requeued."""
-    r = _cache._get_redis()
+    r = _get_redis()
     if r is None:
         return 0
     requeued = 0
@@ -178,7 +209,7 @@ def reap_orphans() -> int:
 
 
 def _heartbeat() -> None:
-    r = _cache._get_redis()
+    r = _get_redis()
     if r is None:
         return
     try:
@@ -197,7 +228,7 @@ def _worker_loop() -> None:
             reap_orphans()
             last_reap = now
         try:
-            process_one(timeout=5)
+            process_one(timeout=POP_TIMEOUT)
         except Exception as exc:
             logger.error("jobqueue: worker iteration error: %s", exc)
             time.sleep(5)
@@ -209,7 +240,7 @@ def start_worker() -> None:
     global _worker_thread
     if _worker_thread is not None and _worker_thread.is_alive():
         return
-    if _cache._get_redis() is None:
+    if _get_redis() is None:
         logger.info("jobqueue: Redis unavailable — worker not started (BackgroundTasks fallback active)")
         return
     _stop.clear()

@@ -12,18 +12,16 @@ from app.core import jobqueue
 @pytest.fixture
 def fake_redis(monkeypatch):
     fakeredis = pytest.importorskip("fakeredis")
-    import app.core.cache as cache
     r = fakeredis.FakeRedis(decode_responses=True)
-    monkeypatch.setattr(cache, "_client", r)
-    monkeypatch.setattr(cache, "_unavailable", False)
+    monkeypatch.setattr(jobqueue, "_queue_client", r)
+    monkeypatch.setattr(jobqueue, "_queue_unavailable", False)
     return r
 
 
 @pytest.fixture
 def no_redis(monkeypatch):
-    import app.core.cache as cache
-    monkeypatch.setattr(cache, "_client", None)
-    monkeypatch.setattr(cache, "_unavailable", True)
+    monkeypatch.setattr(jobqueue, "_queue_client", None)
+    monkeypatch.setattr(jobqueue, "_queue_unavailable", True)
 
 
 @pytest.fixture(autouse=True)
