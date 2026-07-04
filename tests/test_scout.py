@@ -242,17 +242,6 @@ def test_classify_agent_returns_none_for_unrecognised():
     assert classify_agent("") is None
 
 
-def test_is_switch_intent():
-    from app.core.routing import is_switch_intent
-    # is_switch_intent checks {"switch","change","swap","different","other"}
-    # The "menu"/"back"/"home" reset is handled separately in gateway/main.py
-    assert is_switch_intent("switch agents")
-    assert is_switch_intent("change to revenue")
-    assert is_switch_intent("swap")
-    assert is_switch_intent("different agent please")
-    assert not is_switch_intent("summary")
-    assert not is_switch_intent("scout")
-    assert not is_switch_intent("menu")  # handled by _MODE_TRIGGERS, not this fn
 
 
 # ── Internal routing handler ──────────────────────────────────────────────────

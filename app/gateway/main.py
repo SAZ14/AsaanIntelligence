@@ -1298,16 +1298,23 @@ async def debug_kb_upsert(store_id: int, request: Request) -> JSONResponse:
             embedding = model.encode(c["content"]).tolist()
             metadata = c.get("metadata", {})
             if c.get("id"):
-                db.execute(
+                # store_id must be in the WHERE clause -- without it, a caller
+                # for one store could update another store's KB row just by
+                # guessing/enumerating an id, silently overwriting content
+                # served to a different restaurant's real customers.
+                updated = db.execute(
                     _sql(
                         "UPDATE knowledge_base SET content=:content, "
                         "embedding=CAST(:embedding AS vector), metadata=CAST(:metadata AS jsonb) "
-                        "WHERE id=:id"
+                        "WHERE id=:id AND store_id=:store_id"
                     ),
                     {"content": c["content"], "embedding": _json.dumps(embedding),
-                     "metadata": _json.dumps(metadata), "id": c["id"]},
+                     "metadata": _json.dumps(metadata), "id": c["id"], "store_id": store_id},
                 )
-                results.append({"id": c["id"], "action": "updated"})
+                if updated.rowcount == 0:
+                    results.append({"id": c["id"], "action": "not_found_for_store"})
+                else:
+                    results.append({"id": c["id"], "action": "updated"})
             else:
                 db.execute(
                     _sql(

@@ -61,15 +61,8 @@ def _is_shorthand(text: str) -> bool:
 def _classify_with_llm(text: str) -> tuple[str, str]:
     """Return (agent, command) via ZAI. Falls back to keyword routing."""
     try:
-        from app.agents.scout.config import ZAI_API_KEY, ZAI_MODEL
-        if not ZAI_API_KEY:
-            raise RuntimeError("ZAI_API_KEY not set")
-
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=ZAI_API_KEY,
-            base_url="https://open.bigmodel.cn/api/paas/v4/",
-        )
+        from app.core.llm import get_client, get_model
+        client = get_client()
 
         # FIX: hardcoded system prompt for message router -> store in module or config
         system = (
@@ -115,7 +108,7 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             "  'increase karni hai sales' → revenue/general\n"
         )
         resp = client.chat.completions.create(
-            model=ZAI_MODEL,
+            model=get_model(),
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": text},
@@ -144,17 +137,13 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
 def _adapt_response(original_query: str, raw_response: str) -> str:
     """Reframe the raw agent output as a direct conversational answer."""
     try:
-        from app.agents.scout.config import ZAI_API_KEY, ZAI_MODEL
-        if not ZAI_API_KEY:
+        from app.core.llm import get_client, get_model
+        try:
+            client = get_client()
+        except RuntimeError:
             return raw_response
-
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=ZAI_API_KEY,
-            base_url="https://open.bigmodel.cn/api/paas/v4/",
-        )
         resp = client.chat.completions.create(
-            model=ZAI_MODEL,
+            model=get_model(),
             messages=[
                 {
                     "role": "system",

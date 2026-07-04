@@ -112,10 +112,13 @@ def _intent_system(store_name: str, store_category: str) -> str:
 
 
 def _get_client():
-    if not _cfg.ZAI_API_KEY:
-        raise RuntimeError("ZAI_API_KEY not set")
-    from openai import OpenAI
-    return OpenAI(api_key=_cfg.ZAI_API_KEY, base_url="https://open.bigmodel.cn/api/paas/v4/")
+    from app.core.llm import get_client
+    return get_client()
+
+
+def _get_model() -> str:
+    from app.core.llm import get_model
+    return get_model()
 
 
 def _extract_json(text: str) -> list:
@@ -138,7 +141,7 @@ def _extract_json(text: str) -> list:
 def _chat(system: str, user: str) -> str:
     client = _get_client()
     resp = client.chat.completions.create(
-        model=_cfg.ZAI_MODEL,
+        model=_get_model(),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -221,7 +224,7 @@ def classify_intent(
     try:
         client = _get_client()
         resp = client.chat.completions.create(
-            model=_cfg.ZAI_MODEL,
+            model=_get_model(),
             messages=[
                 {"role": "system", "content": _intent_system(store_name, store_category)},
                 {"role": "user", "content": message},
