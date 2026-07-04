@@ -435,11 +435,6 @@ def handle_customer_message(
             return AgentReply(_help_message(member.name, config))
 
         # ── Price validation: every price in the reply must exist in KB ───────
-        import logging as _logging
-        _logging.getLogger(__name__).info(
-            "customer.grounding_check: store=%d grounded=%s raw_llm_reply=%r",
-            store_id, _prices_grounded(reply, docs), reply,
-        )
         if not _prices_grounded(reply, docs):
             # LLM invented prices — fall back to direct KB content
             if intent_docs.get("menu"):
