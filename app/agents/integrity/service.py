@@ -130,7 +130,14 @@ class IntegrityService:
             answer = answer_question(report, text)
             return answer or HELP_TEXT
 
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            # Two distinct situations land here and staff need to know which:
+            # no POS connection at all (admin problem) vs. connection exists
+            # but no CSV data uploaded yet (staff can fix it themselves by
+            # sending the file). The connector's message says which.
+            detail = str(exc)
+            if "uploaded" in detail.lower():
+                return detail
             return "POS not configured. Ask admin: POST /admin/stores/{id}/pos"
         except Exception as exc:
             logger.exception("Integrity agent error store=%d: %s", store_id, exc)
