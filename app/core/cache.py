@@ -81,3 +81,73 @@ def delete_pattern(pattern: str) -> None:
             r.delete(*keys)
     except Exception:
         pass
+
+
+# ── Cross-instance locks / rate limits ───────────────────────────────────────
+#
+# These back the gateway's rate-limit / idempotency / cooldown / in-flight
+# guards. They used to be plain in-process dicts (app/gateway/main.py), which
+# only work correctly on a single instance -- a second Railway instance (or
+# a restart mid-window) would start with empty state and silently bypass
+# the guarantees those guards exist to enforce (duplicate sends, two scout
+# runs racing for the same store, etc). Same fail-open philosophy as the
+# rest of this module: if Redis is down, guards become permissive rather
+# than blocking real traffic.
+
+def available() -> bool:
+    """True if Redis is reachable. Callers with a single-instance in-process
+    fallback can use this to decide which guard to trust."""
+    return _get_redis() is not None
+
+
+def try_lock(key: str, ttl_seconds: int) -> bool:
+    """Atomically acquire a lock. True = acquired (caller should proceed),
+    False = already held by someone else. Fails open (returns True) if
+    Redis is unavailable."""
+    r = _get_redis()
+    if not r:
+        return True
+    try:
+        return bool(r.set(key, "1", nx=True, ex=ttl_seconds))
+    except Exception:
+        return True
+
+
+def is_locked(key: str) -> bool:
+    """Check-only (does not acquire). Fails open (returns False, i.e. 'not
+    locked') if Redis is unavailable."""
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        return bool(r.exists(key))
+    except Exception:
+        return False
+
+
+def release_lock(key: str) -> None:
+    delete(key)
+
+
+def rate_limit_ok(key: str, max_count: int, window_seconds: int) -> bool:
+    """Sliding-window rate limit via a Redis sorted set (score = arrival
+    time). Returns True (and records a hit) if the caller is still under
+    the limit. Fails open if Redis is unavailable."""
+    r = _get_redis()
+    if not r:
+        return True
+    try:
+        import time as _time
+        import uuid as _uuid
+        now = _time.time()
+        pipe = r.pipeline()
+        pipe.zremrangebyscore(key, 0, now - window_seconds)
+        pipe.zcard(key)
+        _, count = pipe.execute()
+        if count >= max_count:
+            return False
+        r.zadd(key, {f"{now}:{_uuid.uuid4().hex[:8]}": now})
+        r.expire(key, window_seconds)
+        return True
+    except Exception:
+        return True

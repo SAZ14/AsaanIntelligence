@@ -58,6 +58,26 @@ def _clean_tables(_create_schema):
         conn.commit()
 
 
+@pytest.fixture(autouse=True)
+def _reset_gateway_guards():
+    """Clear the gateway's module-level rate-limit/cooldown/in-flight state.
+
+    Without this, a test that dispatches a message puts its phone number on
+    a 4-10s cooldown that silently drops dispatches in the NEXT test using
+    the same number. Lazy: only touches the module if a test imported it.
+    """
+    import sys
+    yield
+    m = sys.modules.get("app.gateway.main")
+    if m is not None:
+        m._seen_idem.clear()
+        m._customer_last.clear()
+        m._customer_inflight.clear()
+        m._staff_last.clear()
+        m._staff_inflight.clear()
+        m._scout_rate.clear()
+
+
 # ── Convenience helpers ────────────────────────────────────────────────────────
 
 def seed_chain(name="Test Chain"):

@@ -297,7 +297,16 @@ def _is_scout_message(body: str) -> bool:
     return bool(words & _SCOUT_ASYNC_WORDS)
 
 
-# Per-user rate limit: max 3 scout dispatches per 60-minute window (in-memory).
+# ── Rate-limit / spam / duplicate guards ─────────────────────────────────────
+#
+# Redis (app.core.cache) is the source of truth for all of these so they hold
+# across multiple instances and restarts. The in-process dicts below are kept
+# only as a single-instance fallback for when Redis is unreachable (local dev,
+# tests, Redis outage) — cache's lock helpers fail open, so without this
+# fallback an outage would silently disable every guard.
+import app.core.cache as _guard_cache
+
+# Per-user rate limit: max 3 scout dispatches per 60-minute window.
 _SCOUT_RATE_WINDOW = 3600   # seconds
 _SCOUT_RATE_MAX   = 3
 _scout_rate: dict[str, list[float]] = defaultdict(list)  # phone → [timestamps]
@@ -305,6 +314,10 @@ _scout_rate: dict[str, list[float]] = defaultdict(list)  # phone → [timestamps
 
 def _scout_rate_ok(phone: str) -> bool:
     """Return True (and record the hit) if this user is within the rate limit."""
+    if _guard_cache.available():
+        return _guard_cache.rate_limit_ok(
+            f"guard:scout_rate:{phone}", _SCOUT_RATE_MAX, _SCOUT_RATE_WINDOW
+        )
     now = _time.monotonic()
     hits = [t for t in _scout_rate[phone] if now - t < _SCOUT_RATE_WINDOW]
     if len(hits) >= _SCOUT_RATE_MAX:
@@ -315,14 +328,14 @@ def _scout_rate_ok(phone: str) -> bool:
     return True
 
 
-# ── Spam / duplicate guards ───────────────────────────────────────────────────
-
 # Guard 1: Idempotency dedup — drop duplicate webhook deliveries within 60 s
 _IDEM_TTL = 60.0
 _seen_idem: dict[str, float] = {}  # key → arrival monotonic time
 
 def _idem_ok(key: str) -> bool:
     """Return True if unseen; False if this key was processed in the last 60 s."""
+    if _guard_cache.available():
+        return _guard_cache.try_lock(f"guard:idem:{key}", int(_IDEM_TTL))
     now = _time.monotonic()
     expired = [k for k, t in list(_seen_idem.items()) if now - t > _IDEM_TTL]
     for k in expired:
@@ -333,10 +346,29 @@ def _idem_ok(key: str) -> bool:
     return True
 
 
-# Guard 2 & 3: Customer in-flight lock + per-phone cooldown
+# Guards 2-4: in-flight locks + per-phone cooldowns (customer and staff).
+# In-flight locks carry a TTL safety valve so a crashed background task can't
+# wedge a phone number forever.
+_INFLIGHT_TTL = 300  # seconds
+
 _customer_inflight: set[str] = set()          # phones with an active LLM call
 _CUSTOMER_COOLDOWN = 4.0                       # seconds between dispatches
 _customer_last: dict[str, float] = {}         # phone → last dispatch monotonic time
+
+_STAFF_COOLDOWN = 10.0                         # seconds between staff dispatches
+_staff_last: dict[str, float] = {}            # phone → last dispatch monotonic time
+_staff_inflight: set[str] = set()             # phones with an active internal LLM call
+
+
+def _mark_inflight(kind: str, phone: str) -> None:
+    """kind: 'customer' | 'staff'."""
+    _guard_cache.try_lock(f"guard:{kind}_inflight:{phone}", _INFLIGHT_TTL)
+    (_customer_inflight if kind == "customer" else _staff_inflight).add(phone)
+
+
+def _clear_inflight(kind: str, phone: str) -> None:
+    _guard_cache.release_lock(f"guard:{kind}_inflight:{phone}")
+    (_customer_inflight if kind == "customer" else _staff_inflight).discard(phone)
 
 
 def _customer_dispatch_ok(phone: str) -> tuple[bool, str | None]:
@@ -345,6 +377,14 @@ def _customer_dispatch_ok(phone: str) -> tuple[bool, str | None]:
     Returns (ok, reason) where reason is 'inflight' | 'cooldown' | None.
     Side-effect: records the dispatch timestamp when ok=True.
     """
+    if _guard_cache.available():
+        if _guard_cache.is_locked(f"guard:customer_inflight:{phone}"):
+            return False, "inflight"
+        if not _guard_cache.try_lock(
+            f"guard:customer_cooldown:{phone}", int(_CUSTOMER_COOLDOWN)
+        ):
+            return False, "cooldown"
+        return True, None
     if phone in _customer_inflight:
         return False, "inflight"
     now = _time.monotonic()
@@ -354,14 +394,14 @@ def _customer_dispatch_ok(phone: str) -> tuple[bool, str | None]:
     return True, None
 
 
-# Guard 4: Staff internal command cooldown + in-flight lock
-_STAFF_COOLDOWN = 10.0                         # seconds between staff dispatches
-_staff_last: dict[str, float] = {}            # phone → last dispatch monotonic time
-_staff_inflight: set[str] = set()             # phones with an active internal LLM call
-
-
 def _staff_dispatch_ok(phone: str) -> bool:
     """Return True and record timestamp if staff command should be dispatched."""
+    if _guard_cache.available():
+        if _guard_cache.is_locked(f"guard:staff_inflight:{phone}"):
+            return False
+        return _guard_cache.try_lock(
+            f"guard:staff_cooldown:{phone}", int(_STAFF_COOLDOWN)
+        )
     if phone in _staff_inflight:
         return False
     now = _time.monotonic()
@@ -488,7 +528,7 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
     ack – if provided, sent immediately before processing (used by OpenWA path
           where there is no synchronous TwiML response to carry the ack).
     """
-    _staff_inflight.add(from_number)
+    _mark_inflight("staff", from_number)
     if ack:
         send_fn(ack)
     try:
@@ -498,7 +538,7 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
         logger.error("bg_internal: store=%d error=%s", store_id, exc)
         reply = "Something went wrong. Please try again."
     finally:
-        _staff_inflight.discard(from_number)
+        _clear_inflight("staff", from_number)
     if reply:
         send_fn(reply)
         logger.info("bg_internal: delivered store=%d", store_id)
@@ -507,7 +547,7 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
 
 def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
     """Background task: handle customer agent message, deliver via send_fn."""
-    _customer_inflight.add(from_number)
+    _mark_inflight("customer", from_number)
     try:
         from app.gateway.customer import handle_customer_for_store
         reply = handle_customer_for_store(from_number, body, store_id)
@@ -515,7 +555,7 @@ def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
         logger.error("bg_customer: store=%d error=%s", store_id, exc)
         reply = None
     finally:
-        _customer_inflight.discard(from_number)
+        _clear_inflight("customer", from_number)
     if reply:
         send_fn(reply)
         logger.info("bg_customer: delivered store=%d", store_id)
