@@ -308,7 +308,12 @@ class VenueConfig(Base):
     reward_text = Column(String, nullable=False, default="a free drink or dessert")
     winback_days = Column(Integer, nullable=False, default=5)
     code_expiry_days = Column(Integer, nullable=False, default=30)
-    owner_phones = Column(ARRAY(String), nullable=False, default=list)
+    # ARRAY on Postgres (prod schema unchanged); JSON variant so the SQLite
+    # test DB can compile this table -- without it create_all() fails and
+    # every DB-touching test in the suite errors out.
+    owner_phones = Column(
+        ARRAY(String).with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
     qr_greeting = Column(String, nullable=False, default="")
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 

@@ -91,10 +91,13 @@ def test_onboarding_short_name_rejected():
     assert "2 character" in reply.body or "at least" in reply.body.lower()
 
 
-def test_onboarding_name_too_long_rejected():
+def test_onboarding_name_too_long_reprompts():
+    # Overlong input (likely a question/statement, not a name) gets a friendly
+    # re-prompt asking for a first name, not a validation-error message.
     long_name = "A" * 81
     reply = _call(long_name, sessions={PHONE: "awaiting_name"})
-    assert "long" in reply.body.lower() or "shorter" in reply.body.lower()
+    assert "first name" in reply.body.lower()
+    assert "call you" in reply.body.lower()
 
 
 def test_onboarding_receipt_code_as_name_rejected():

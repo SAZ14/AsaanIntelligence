@@ -4,9 +4,20 @@ The real embedding model is never loaded here — _embedding_model is mocked
 so these tests run without sentence-transformers doing real inference,
 matching how test_customer_agent.py mocks the store layer.
 """
+import importlib.util
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from app.agents.customer.community.intent import is_menu_intent
+
+# Patching "sentence_transformers.util.cos_sim" requires the package to be
+# importable, even though the model itself is mocked. Prod/CI has it; a slim
+# local venv may not — skip the embedding-path tests there instead of erroring.
+requires_st = pytest.mark.skipif(
+    importlib.util.find_spec("sentence_transformers") is None,
+    reason="sentence-transformers not installed",
+)
 
 
 def _sim_result(value: float) -> list[MagicMock]:
@@ -35,6 +46,7 @@ def test_fallback_misses_vague_phrasing_same_as_before():
 
 # ── Embedding path ───────────────────────────────────────────────────────────
 
+@requires_st
 def test_embedding_path_used_when_model_available():
     fake_model = MagicMock()
     fake_model.encode.return_value = "query-embedding"
@@ -51,6 +63,7 @@ def test_embedding_path_used_when_model_available():
     assert mock_cos_sim.call_count == 2
 
 
+@requires_st
 def test_embedding_path_below_threshold_returns_false():
     fake_model = MagicMock()
     fake_model.encode.return_value = "query-embedding"
@@ -66,6 +79,7 @@ def test_embedding_path_below_threshold_returns_false():
     assert result is False
 
 
+@requires_st
 def test_embedding_path_loses_to_not_menu_even_above_threshold():
     """Margin rule: clearing the menu threshold isn't enough if a non-menu
     example matches even more closely (e.g. "what's up" vs "what's good here")."""
@@ -83,6 +97,7 @@ def test_embedding_path_loses_to_not_menu_even_above_threshold():
     assert result is False
 
 
+@requires_st
 def test_threshold_is_configurable_per_call():
     fake_model = MagicMock()
     fake_model.encode.return_value = "query-embedding"

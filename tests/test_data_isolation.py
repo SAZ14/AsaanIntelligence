@@ -229,10 +229,10 @@ def test_scout_findings_scoped_to_store(two_stores):
         run_b_id = run_b.id
 
     with TestSession() as db:
-        db.add(Finding(store_id=store_a, run_id=run_a_id,
-                       competitor_name="Rival A", content_text="Store A intel"))
-        db.add(Finding(store_id=store_b, run_id=run_b_id,
-                       competitor_name="Rival B", content_text="Store B intel"))
+        db.add(Finding(store_id=store_a, run_id=run_a_id, source_platform="instagram", update_type="post",
+                       competitor_name="Rival A", content_text="Store A intel", content_hash="hash-a"))
+        db.add(Finding(store_id=store_b, run_id=run_b_id, source_platform="instagram", update_type="post",
+                       competitor_name="Rival B", content_text="Store B intel", content_hash="hash-b"))
         db.commit()
 
     with TestSession() as db:

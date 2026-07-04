@@ -121,7 +121,7 @@ def test_store_context_uses_last_comma_token_as_city():
 
 def test_store_context_unknown_store_returns_defaults():
     city, brand = _store_context(999999)
-    assert city == "city"
+    assert city == "Islamabad"
     assert brand == "this restaurant"
 
 

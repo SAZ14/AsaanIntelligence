@@ -66,15 +66,26 @@ def test_unknown_twilio_number_returns_empty_response(client, db_state):
 # ── Customer flow (not a staff member) ───────────────────────────────────────
 
 def test_customer_gets_customer_agent(client, db_state):
-    with patch("app.gateway.customer.handle_customer_for_store", return_value="Hi there!") as mock:
+    # Customer replies are dispatched async: the webhook ack is empty TwiML
+    # and the real reply goes out via the Twilio outbound API.
+    with (
+        patch("app.gateway.customer.handle_customer_for_store", return_value="Hi there!") as mock,
+        patch("app.gateway.main._send_outbound") as mock_send,
+    ):
         r = _post(client, CUSTOMER_PHONE, STORE_NUMBER_A, "hello")
     assert r.status_code == 200
-    assert "Hi there!" in r.text
+    assert "<Response></Response>" in r.text
     mock.assert_called_once_with(CUSTOMER_PHONE, "hello", db_state["store_a"])
+    mock_send.assert_called_once_with(
+        to=CUSTOMER_PHONE, from_=STORE_NUMBER_A, body="Hi there!"
+    )
 
 
 def test_customer_routed_to_correct_store(client, db_state):
-    with patch("app.gateway.customer.handle_customer_for_store", return_value="Store B reply") as mock:
+    with (
+        patch("app.gateway.customer.handle_customer_for_store", return_value="Store B reply") as mock,
+        patch("app.gateway.main._send_outbound"),
+    ):
         r = _post(client, CUSTOMER_PHONE, STORE_NUMBER_B, "hi")
     mock.assert_called_once_with(CUSTOMER_PHONE, "hi", db_state["store_b"])
 
@@ -107,22 +118,33 @@ def test_staff_selects_1_enters_internal_mode(client, db_state):
     r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")
     body = _body(r)
     assert "Staff tools" in body or "Integrity" in body
-    # Session now in internal mode — next message should route to internal handler
-    with patch("app.gateway.internal.handle_internal_for_store", return_value="audit result") as mock:
-        r2 = _post(client, STAFF_PHONE, STORE_NUMBER_A, "summary")
+    # Session now in internal mode — next message is ack'd synchronously and
+    # the real reply is delivered async via the Twilio outbound API.
+    with (
+        patch("app.gateway.internal.handle_internal_for_store", return_value="audit result") as mock,
+        patch("app.gateway.main._send_outbound") as mock_send,
+    ):
+        _post(client, STAFF_PHONE, STORE_NUMBER_A, "summary")
     mock.assert_called_once()
-    assert "audit result" in r2.text
+    mock_send.assert_called_once_with(
+        to=STAFF_PHONE, from_=STORE_NUMBER_A, body="audit result"
+    )
 
 
 def test_staff_selects_2_enters_customer_mode(client, db_state):
     r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "2")
     body = _body(r)
     assert "customer" in body.lower() or "stamp" in body.lower() or "switched" in body.lower()
-    # Next message routes to customer agent
-    with patch("app.gateway.customer.handle_customer_for_store", return_value="loyalty reply") as mock:
-        r2 = _post(client, STAFF_PHONE, STORE_NUMBER_A, "my stamps")
+    # Next message routes to customer agent (async dispatch, outbound delivery)
+    with (
+        patch("app.gateway.customer.handle_customer_for_store", return_value="loyalty reply") as mock,
+        patch("app.gateway.main._send_outbound") as mock_send,
+    ):
+        _post(client, STAFF_PHONE, STORE_NUMBER_A, "my stamps")
     mock.assert_called_once()
-    assert "loyalty reply" in r2.text
+    mock_send.assert_called_once_with(
+        to=STAFF_PHONE, from_=STORE_NUMBER_A, body="loyalty reply"
+    )
 
 
 def test_staff_invalid_mode_selection_stays_on_menu(client, db_state):
@@ -135,10 +157,15 @@ def test_staff_invalid_mode_selection_stays_on_menu(client, db_state):
 
 def test_staff_internal_integrity_message_routed(client, db_state):
     _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")  # enter internal mode
-    with patch("app.gateway.internal.handle_internal_for_store", return_value="leakage PKR 5000") as mock:
-        r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "leakage")
+    with (
+        patch("app.gateway.internal.handle_internal_for_store", return_value="leakage PKR 5000") as mock,
+        patch("app.gateway.main._send_outbound") as mock_send,
+    ):
+        _post(client, STAFF_PHONE, STORE_NUMBER_A, "leakage")
     mock.assert_called_once_with(STAFF_PHONE, "leakage", db_state["store_a"])
-    assert "leakage PKR 5000" in r.text
+    mock_send.assert_called_once_with(
+        to=STAFF_PHONE, from_=STORE_NUMBER_A, body="leakage PKR 5000"
+    )
 
 
 def test_staff_internal_scout_message_routed(client, db_state):
@@ -159,7 +186,10 @@ def test_staff_internal_scout_message_routed(client, db_state):
 
 def test_staff_internal_revenue_message_routed(client, db_state):
     _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")
-    with patch("app.gateway.internal.handle_internal_for_store", return_value="Revenue forecast") as mock:
+    with (
+        patch("app.gateway.internal.handle_internal_for_store", return_value="Revenue forecast") as mock,
+        patch("app.gateway.main._send_outbound"),
+    ):
         _post(client, STAFF_PHONE, STORE_NUMBER_A, "revenue")
     mock.assert_called_once_with(STAFF_PHONE, "revenue", db_state["store_a"])
 
