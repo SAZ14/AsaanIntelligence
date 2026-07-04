@@ -461,10 +461,13 @@ def _resolve_lid(session_id: str, lid_jid: str) -> str | None:
     return None
 
 
-def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None) -> None:
+def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None,
+              _reraise: bool = False) -> None:
     """Background task: run scout pipeline, deliver result via provider send_fn.
 
-    ack – if provided, sent immediately before the pipeline runs (OpenWA path).
+    ack      – if provided, sent immediately before the pipeline runs (OpenWA path).
+    _reraise – propagate failures instead of apologising; the durable job
+               queue uses this so failed jobs get retried before giving up.
     """
     if ack:
         send_fn(ack)
@@ -487,6 +490,8 @@ def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | No
         logger.info("bg_scout: reply_text store=%d text=%r", store_id, report)
     except Exception as exc:
         logger.error("bg_scout: store=%d failed error=%s", store_id, exc)
+        if _reraise:
+            raise
         send_fn("Scout report could not be completed. Please try again.")
 
 
@@ -522,11 +527,14 @@ def _internal_ack(body: str) -> str:
     return "On it — I'll message you back shortly."
 
 
-def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None) -> None:
+def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None,
+                 _reraise: bool = False) -> None:
     """Background task: handle any internal staff command, deliver via send_fn.
 
-    ack – if provided, sent immediately before processing (used by OpenWA path
-          where there is no synchronous TwiML response to carry the ack).
+    ack      – if provided, sent immediately before processing (used by OpenWA path
+               where there is no synchronous TwiML response to carry the ack).
+    _reraise – propagate failures instead of apologising; the durable job
+               queue uses this so failed jobs get retried before giving up.
     """
     _mark_inflight("staff", from_number)
     if ack:
@@ -536,6 +544,8 @@ def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str |
         reply = handle_internal_for_store(from_number, body, store_id)
     except Exception as exc:
         logger.error("bg_internal: store=%d error=%s", store_id, exc)
+        if _reraise:
+            raise
         reply = "Something went wrong. Please try again."
     finally:
         _clear_inflight("staff", from_number)
@@ -562,6 +572,42 @@ def _bg_customer(store_id: int, from_number: str, send_fn, body: str) -> None:
         logger.info("bg_customer: reply_text store=%d text=%r", store_id, reply)
 
 
+# ── Durable job queue wiring ──────────────────────────────────────────────────
+#
+# Scout and internal staff jobs go through the Redis-backed queue
+# (app.core.jobqueue) so they survive restarts/redeploys — a scout run takes
+# 7-10 minutes and the user has already been promised a report. When Redis is
+# unavailable, _dispatch_durable falls back to FastAPI BackgroundTasks
+# (the previous behavior).
+from app.core import jobqueue as _jobq
+
+
+def _job_scout(job: dict, send_fn) -> None:
+    _bg_scout(job["store_id"], job["from_number"], send_fn, job["body"],
+              ack=job.get("ack"), _reraise=True)
+
+
+def _job_internal(job: dict, send_fn) -> None:
+    _bg_internal(job["store_id"], job["from_number"], send_fn, job["body"],
+                 ack=job.get("ack"), _reraise=True)
+
+
+_jobq.register_handler("scout", _job_scout)
+_jobq.register_handler("internal", _job_internal)
+
+
+def _dispatch_durable(background_tasks: BackgroundTasks, kind: str, store_id: int,
+                      from_number: str, body: str, reply_to: dict,
+                      fallback_fn, fallback_send_fn, ack: str | None = None) -> None:
+    """Enqueue on the durable queue; fall back to BackgroundTasks without Redis."""
+    if _jobq.enqueue(kind, store_id, from_number, body, reply_to, ack=ack):
+        return
+    if ack is not None:
+        background_tasks.add_task(fallback_fn, store_id, from_number, fallback_send_fn, body, ack)
+    else:
+        background_tasks.add_task(fallback_fn, store_id, from_number, fallback_send_fn, body)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.db import init_db
@@ -570,8 +616,10 @@ async def lifespan(app: FastAPI):
         level=logging.INFO,
         format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
     )
+    _jobq.start_worker()  # no-op if Redis is unavailable
     logger.info("Central server started")
     yield
+    _jobq.stop_worker()
 
 
 app = FastAPI(title="AsaanPay Central Agent Server", lifespan=lifespan)
@@ -784,7 +832,11 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 # Report text missing in DB — fall through to fresh scan
 
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
-            background_tasks.add_task(_bg_scout, store_id, from_number, _twilio_send_fn, body)
+            _dispatch_durable(
+                background_tasks, "scout", store_id, from_number, body,
+                {"provider": "twilio", "to": from_number, "from_": to_number},
+                _bg_scout, _twilio_send_fn,
+            )
             return _twiml(
                 "Scanning competitors across Instagram, Google Maps and their websites 🔍\n"
                 "Your report will arrive in 7-10 minutes."
@@ -806,7 +858,11 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
             return _twiml("Still working on your last request — one moment! 🙏")
         ack = _internal_ack(body)
         logger.info("gateway.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
-        background_tasks.add_task(_bg_internal, store_id, from_number, _twilio_send_fn, body)
+        _dispatch_durable(
+            background_tasks, "internal", store_id, from_number, body,
+            {"provider": "twilio", "to": from_number, "from_": to_number},
+            _bg_internal, _twilio_send_fn,
+        )
         return _twiml(ack)
 
     # ── Customer app mode ───────────────────────────────────────────────────────
@@ -1020,7 +1076,11 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
                 "Scanning competitors across Instagram, Google Maps and their websites 🔍\n"
                 "Your report will arrive in 7-10 minutes."
             )
-            background_tasks.add_task(_bg_scout, store_id, from_number, _owa_send, body_text, ack=scout_ack)
+            _dispatch_durable(
+                background_tasks, "scout", store_id, from_number, body_text,
+                {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
+                _bg_scout, _owa_send, ack=scout_ack,
+            )
             return JSONResponse({"status": "ok"})
 
         # Reputation cache check
@@ -1038,7 +1098,11 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
             return JSONResponse({"status": "throttled"})
         ack = _internal_ack(body_text)
         logger.info("openwa.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
-        background_tasks.add_task(_bg_internal, store_id, from_number, _owa_send, body_text, ack)
+        _dispatch_durable(
+            background_tasks, "internal", store_id, from_number, body_text,
+            {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
+            _bg_internal, _owa_send, ack=ack,
+        )
         return JSONResponse({"status": "ok"})
 
     # ── Customer app mode ──────────────────────────────────────────────────────
