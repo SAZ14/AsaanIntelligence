@@ -114,7 +114,17 @@ def load_members(store_id: int) -> dict[str, CommunityMember]:
     return members
 
 
+def save_member(store_id: int, member: CommunityMember) -> None:
+    """Upsert ONE member. Prefer this in request handlers: saving the whole
+    load_members() snapshot re-writes every member with possibly-stale values,
+    and two concurrent requests clobber each other's changes (proven live —
+    concurrent onboardings lost registrations)."""
+    save_members(store_id, {member.phone: member})
+
+
 def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
+    """Upsert the given members (a subset is fine — rows not included are
+    never touched or deleted)."""
     import logging as _log
     from sqlalchemy import text as _text
     try:
@@ -156,12 +166,21 @@ def save_members(store_id: int, members: dict[str, CommunityMember]) -> None:
         _log.getLogger(__name__).warning(
             "save_members: DB write failed for store %d: %s", store_id, exc
         )
-        # Keep cache intact so the in-session member state survives a DB blip
+        # DB blip: patch the saved members into the cached snapshot (never
+        # replace the whole snapshot — that erases members added by
+        # concurrent requests) so in-session state survives until retry.
+        try:
+            cached = _cache.get(f"mem:{store_id}") or {}
+            cached.update({p: m.model_dump() for p, m in members.items()})
+            _cache.set(f"mem:{store_id}", cached, ttl=30)
+        except Exception:
+            pass
         return
-    try:
-        _cache.set(f"mem:{store_id}", {p: m.model_dump() for p, m in members.items()}, ttl=30)
-    except Exception:
-        pass
+    # Invalidate rather than overwrite: writing this caller's snapshot back
+    # would erase members registered by concurrent requests for up to the
+    # cache TTL (the exact race the 5-user stress test exposed). The next
+    # load repopulates from the DB, which is the source of truth.
+    _cache.delete(f"mem:{store_id}")
 
 
 # ── RedeemCode ────────────────────────────────────────────────────────────────

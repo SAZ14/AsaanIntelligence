@@ -38,7 +38,7 @@ def run_winback_for_store(store_id: int) -> None:
     members = load_members(store_id)
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=config.winback_days)
-    changed = False
+    changed: dict = {}
     for phone, m in members.items():
         if not m.opted_in:
             continue
@@ -58,12 +58,14 @@ def run_winback_for_store(store_id: int) -> None:
         try:
             _send_winback(send_fn, phone, m.name, config.venue_name)
             m.winback_sent_at = now.isoformat()
-            changed = True
+            changed[phone] = m
             logger.info("Winback sent store=%d phone=%s", store_id, phone[-4:])
         except Exception as e:
             logger.warning("Winback failed store=%d phone=%s: %s", store_id, phone[-4:], e)
     if changed:
-        save_members(store_id, members)
+        # Save only the members this job touched -- re-writing the whole
+        # loaded snapshot would clobber concurrent updates with stale rows.
+        save_members(store_id, changed)
 
 
 def run_winback_all() -> None:

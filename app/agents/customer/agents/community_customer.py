@@ -12,7 +12,7 @@ from app.agents.customer.community.models import CommunityMember, VenueConfig
 from app.agents.customer.community.store import (
     append_stamp_event, clear_onboarding_session,
     load_chat_session, load_members, load_onboarding_sessions,
-    load_venue_config, save_chat_session, save_members,
+    load_venue_config, save_chat_session, save_member, save_members,
     save_onboarding_sessions, search_knowledge_base,
 )
 from app.agents.customer.community.stamps import (
@@ -304,14 +304,18 @@ def handle_customer_message(
             return AgentReply("What name should we put on your rewards? 😊")
         # If the message looks like a question/statement rather than a name,
         # re-prompt clearly instead of showing a confusing validation error.
-        if len(text) > 50 or "?" in text:
+        words = text.split()
+        if (
+            len(text) > 50 or "?" in text or len(words) > 4
+            or any(w.lower().strip(".,!") in _NON_NAME_WORDS for w in words)
+        ):
             return AgentReply("Just your first name is perfect! 😊 What should we call you?")
         try:
             name = _clean_name(text)
         except ValueError as e:
             return AgentReply(str(e))
         register_member(phone, name, members)
-        save_members(store_id, members)
+        save_member(store_id, members[phone])
         clear_onboarding_session(store_id, phone)
         return AgentReply(welcome_message(name, config))
 
@@ -329,7 +333,7 @@ def handle_customer_message(
             return AgentReply(err)
         mark_redeemed(store_id, entry, phone)
         result = apply_stamp(member, normalize_code(text), config, store_id)
-        save_members(store_id, members)
+        save_member(store_id, member)
         return AgentReply(result.message)
 
     # Malformed code attempt (right prefix, wrong shape) — must be caught
