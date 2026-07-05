@@ -13,14 +13,20 @@ _client = None
 
 
 def get_client():
-    """Return a cached Z.AI OpenAI-compatible client. Raises if key is missing."""
+    """Return a cached Z.AI OpenAI-compatible client. Raises if key is missing.
+
+    Default timeout caps tail latency: the Z.AI API normally answers in
+    under 2s but has been observed to stall for 30-120s. Latency-critical
+    call sites pass tighter per-request `timeout=` overrides and rely on
+    their non-LLM fallbacks; genuinely long generations (scout reports)
+    override upward."""
     global _client
     if _client is None:
         from openai import OpenAI
         key = os.environ.get("ZAI_API_KEY", "")
         if not key:
             raise RuntimeError("ZAI_API_KEY not set")
-        _client = OpenAI(api_key=key, base_url=ZAI_BASE_URL)
+        _client = OpenAI(api_key=key, base_url=ZAI_BASE_URL, timeout=30.0, max_retries=1)
     return _client
 
 

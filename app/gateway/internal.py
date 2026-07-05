@@ -109,7 +109,9 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
         )
         # Routing is a 25-token classification — the fast non-reasoning model
         # answers in <1s vs ~10s of thinking on glm-4.7 (verified 10/10 on an
-        # English/Urdu routing eval before switching).
+        # English/Urdu routing eval before switching). Tight timeout: if the
+        # API stalls, the keyword fallback below routes instead of making
+        # staff wait out an API hiccup.
         resp = client.chat.completions.create(
             model=get_fast_model(),
             messages=[
@@ -118,6 +120,7 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             ],
             temperature=0,
             max_tokens=25,
+            timeout=8.0,
         )
         result = resp.choices[0].message.content.strip().lower()
         if "/" in result:
@@ -147,7 +150,10 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
             return raw_response
         # Pure rewrite task — no reasoning needed, and the fast model keeps
         # numbers intact just as reliably (1.5s vs 17.7s measured live).
+        # Timeout: the raw agent reply is already a complete answer, so a
+        # stalled rewrite is never worth waiting for.
         resp = client.chat.completions.create(
+            timeout=12.0,
             model=get_fast_model(),
             messages=[
                 {

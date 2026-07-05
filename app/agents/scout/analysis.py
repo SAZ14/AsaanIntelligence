@@ -140,6 +140,8 @@ def _extract_json(text: str) -> list:
 
 def _chat(system: str, user: str) -> str:
     client = _get_client()
+    # Report generation with thinking runs long by design -- this overrides
+    # the shared client's 30s interactive default.
     resp = client.chat.completions.create(
         model=_get_model(),
         messages=[
@@ -227,6 +229,7 @@ def classify_intent(
         # 10-token classification — fast non-reasoning model, not the
         # thinking model used for report generation in _chat().
         resp = client.chat.completions.create(
+            timeout=8.0,
             model=get_fast_model(),
             messages=[
                 {"role": "system", "content": _intent_system(store_name, store_category)},

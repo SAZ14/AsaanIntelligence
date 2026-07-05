@@ -190,6 +190,7 @@ def _generate_summary(client, report: IntegrityAgentReport) -> str | None:
     )
     try:
         resp = client.chat.completions.create(
+            timeout=30.0,
             model=get_model(),
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
@@ -211,6 +212,7 @@ def _recommend_action(client, finding: Finding, venue_name: str) -> str | None:
     )
     try:
         resp = client.chat.completions.create(
+            timeout=10.0,
             model=get_model(),
             max_tokens=80,
             messages=[{"role": "user", "content": prompt}],
@@ -279,6 +281,7 @@ def answer_question(report: IntegrityAgentReport, question: str, client=None) ->
     )
     try:
         resp = llm.chat.completions.create(
+            timeout=25.0,
             model=get_model(),
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],

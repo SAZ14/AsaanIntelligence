@@ -66,6 +66,7 @@ Message: "{text}"
 JSON:"""
     try:
         resp = client.chat.completions.create(
+            timeout=10.0,
             model=get_model(),
             max_tokens=120,
             messages=[{"role": "user", "content": prompt}],

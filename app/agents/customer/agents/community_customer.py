@@ -251,6 +251,7 @@ def _llm_generate(
             model=get_customer_model(),
             max_tokens=1000,
             messages=[{"role": "system", "content": system_content}] + messages,
+            timeout=20.0,
         )
 
     import time as _time
@@ -429,7 +430,20 @@ def handle_customer_message(
                 ctx += f"--- {i} ---\n{doc['content']}\n"
 
         history = load_chat_session(store_id, phone)
-        reply = _llm_generate(text, ctx, member, history, venue_name=config.venue_name)
+        try:
+            reply = _llm_generate(text, ctx, member, history, venue_name=config.venue_name)
+        except Exception as exc:
+            # LLM timed out or errored — answer from the KB directly rather
+            # than leaving the customer with no reply at all.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "customer.llm_generate failed store=%d: %s — serving KB fallback", store_id, exc
+            )
+            if docs:
+                reply = "\n\n".join(d["content"] for d in docs[:2])
+            else:
+                reply = f"Sorry {member.name}, I'm having trouble right now — please try again in a moment 🙏"
+            return AgentReply(reply)
 
         if not reply:
             return AgentReply(_help_message(member.name, config))

@@ -122,6 +122,7 @@ def handle_merchant_message(
             context += f"--- {i} ---\n{doc['content']}\n"
 
     resp = client.chat.completions.create(
+        timeout=20.0,
         model=get_model(),
         max_tokens=300,
         messages=[

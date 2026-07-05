@@ -290,6 +290,7 @@ def classify_reviews_batch(
         )
         try:
             resp = client.chat.completions.create(
+                timeout=60.0,
                 model=get_model(),
                 max_tokens=CLASSIFIER_BATCH_SIZE * 12,
                 messages=[{"role": "user", "content": prompt}],
@@ -417,6 +418,7 @@ def draft_replies(
 
         try:
             resp = client.chat.completions.create(
+                timeout=20.0,
                 model=get_model(),
                 max_tokens=150,
                 messages=[
@@ -837,6 +839,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     try:
         client = get_client()
         resp = client.chat.completions.create(
+            timeout=20.0,
             model=get_model(),
             max_tokens=500,
             messages=[
