@@ -15,23 +15,13 @@ def _active_store_ids() -> list[int]:
         return [s.id for s in db.query(Store).all()]
 
 
-def _get_store_twilio_number(store_id: int) -> str | None:
-    from app.core.db import SessionLocal, StoreTwilioNumber
-    with SessionLocal() as db:
-        row = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
-        return row.whatsapp_number if row else None
-
-
-def _send(to_phone: str, body: str, from_number: str) -> None:
-    from app.core.twilio_send import send_whatsapp
-    send_whatsapp(to=to_phone, body=body, from_=from_number)
-
-
 def broadcast_for_store(store_id: int) -> int:
-    from_number = _get_store_twilio_number(store_id)
-    if not from_number:
-        logger.warning("No Twilio number for store %d, skipping broadcast", store_id)
+    from app.core.outbound import resolve_store_sender
+    resolved = resolve_store_sender(store_id)
+    if resolved is None:
+        logger.warning("No messaging provider for store %d, skipping broadcast", store_id)
         return 0
+    _provider, send_fn = resolved
     members = load_members(store_id)
     counts = weekly_stamp_counts(store_id)
     config = load_venue_config(store_id)
@@ -44,7 +34,7 @@ def broadcast_for_store(store_id: int) -> int:
         if not member.opted_in:
             continue
         try:
-            _send(member.phone, message, from_number)
+            send_fn(member.phone, message)
             sent += 1
         except Exception as e:
             logger.warning("Broadcast failed store=%d phone=...%s: %s", store_id, member.phone[-4:], e)

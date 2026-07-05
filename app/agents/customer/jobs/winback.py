@@ -19,28 +19,22 @@ def _active_store_ids() -> list[int]:
         return [s.id for s in db.query(Store).all()]
 
 
-def _send_winback(phone: str, name: str, venue_name: str, from_number: str) -> None:
-    from app.core.twilio_send import send_whatsapp
+def _send_winback(send_fn, phone: str, name: str, venue_name: str) -> None:
     body = (
         f"Hi {name or 'there'}! We miss you at {venue_name}. "
         "Come visit us and text your next receipt code to earn stamps."
     )
-    send_whatsapp(to=phone, body=body, from_=from_number)
-
-
-def _get_store_twilio_number(store_id: int) -> str | None:
-    from app.core.db import SessionLocal, StoreTwilioNumber
-    with SessionLocal() as db:
-        row = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
-        return row.whatsapp_number if row else None
+    send_fn(phone, body)
 
 
 def run_winback_for_store(store_id: int) -> None:
+    from app.core.outbound import resolve_store_sender
     config = load_venue_config(store_id)
-    from_number = _get_store_twilio_number(store_id)
-    if not from_number:
-        logger.warning("No Twilio number for store %d, skipping winback", store_id)
+    resolved = resolve_store_sender(store_id)
+    if resolved is None:
+        logger.warning("No messaging provider for store %d, skipping winback", store_id)
         return
+    _provider, send_fn = resolved
     members = load_members(store_id)
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=config.winback_days)
@@ -62,7 +56,7 @@ def run_winback_for_store(store_id: int) -> None:
             if sent >= cutoff:
                 continue
         try:
-            _send_winback(phone, m.name, config.venue_name, from_number)
+            _send_winback(send_fn, phone, m.name, config.venue_name)
             m.winback_sent_at = now.isoformat()
             changed = True
             logger.info("Winback sent store=%d phone=%s", store_id, phone[-4:])
