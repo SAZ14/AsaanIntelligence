@@ -226,6 +226,23 @@ async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> s
             "  'staff'  for staff/employee data"
         )
 
+    # Normalize ANY export format to the canonical schema before storing, so
+    # downstream consumers (integrity connector, revenue datasource) always
+    # parse one fixed format. Column mappings are learned on first sight and
+    # reused; caption containing 'remap' forces re-detection.
+    from app.ingest.normalize import normalize_csv, describe_mapping_for_staff
+    norm = normalize_csv(
+        store_id, file_type, content,
+        force_remap="remap" in caption.lower(),
+    )
+    if not norm.ok:
+        logger.warning(
+            "gateway.csv_upload: store=%d type=%s normalize_failed: %s",
+            store_id, file_type, norm.error,
+        )
+        return f"Couldn't process the file: {norm.error}"
+    content = norm.canonical_csv
+
     from app.core.db import SessionLocal, UploadedFile, POSConnection
     from app.agents.integrity.service import get_service
 
@@ -267,13 +284,12 @@ async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> s
     svc._cache.pop(store_id, None)
     svc._data_cache.pop(store_id, None)
 
-    row_count = max(0, len(content.strip().splitlines()) - 1)
     type_label = {"pos_sales": "sales", "pos_menu": "menu", "pos_staff": "staff"}[file_type]
     logger.info(
-        "gateway.csv_upload: store=%d type=%s rows=%d from=%s",
-        store_id, file_type, row_count, from_number,
+        "gateway.csv_upload: store=%d type=%s rows_in=%d rows_out=%d mapping=%s from=%s",
+        store_id, file_type, norm.rows_in, norm.rows_out, norm.mapping_source, from_number,
     )
-    return f"Saved {type_label} data ({row_count} rows). Type 'summary' to run a POS audit."
+    return describe_mapping_for_staff(norm, type_label)
 
 
 # ── Async scout dispatch ───────────────────────────────────────────────────────

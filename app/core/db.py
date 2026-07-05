@@ -212,6 +212,27 @@ class POSConnection(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class POSColumnMapping(Base):
+    """Learned column mapping for a POS export format.
+
+    When staff upload a CSV whose headers don't match the canonical schema,
+    the mapping is inferred once (LLM-assisted), validated against the actual
+    file, and stored here keyed by a fingerprint of the header row. Every
+    later upload with the same headers is translated deterministically —
+    no LLM involved. One store can accumulate multiple formats (POS change,
+    different report screens)."""
+    __tablename__ = "pos_column_mappings"
+    __table_args__ = (UniqueConstraint("store_id", "file_type", "header_fingerprint"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    file_type = Column(String, nullable=False)          # "pos_sales" | "pos_menu" | "pos_staff"
+    header_fingerprint = Column(String, nullable=False)  # sha1 of normalized headers
+    column_map = Column(JSON, nullable=False)            # canonical field -> source column (or [date_col, time_col])
+    source = Column(String, nullable=False, default="llm")  # "llm" | "identity" | "manual"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class UploadedFile(Base):
     """CSV files uploaded via WhatsApp by whitelisted staff.
     One row per (store, file_type). Re-uploading the same type replaces it.
