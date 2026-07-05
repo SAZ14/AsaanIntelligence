@@ -103,6 +103,11 @@ def _build_send_fn(reply_to: dict) -> Callable[[str], None]:
             from app.core.openwa_send import send_openwa
             send_openwa(reply_to["session_id"], reply_to["jid"], body)
         return _send
+    if provider == "meta":
+        def _send(body: str) -> None:
+            from app.core.meta_send import send_meta
+            send_meta(reply_to["phone_number_id"], reply_to["to"], body)
+        return _send
     raise ValueError(f"unknown reply_to provider: {provider!r}")
 
 

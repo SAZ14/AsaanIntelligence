@@ -128,6 +128,25 @@ class StoreOpenWASession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StoreMetaNumber(Base):
+    """WhatsApp Business Platform (Meta Cloud API) number for a store.
+
+    Populated when a restaurant onboards their WhatsApp Business number to
+    our Meta app via embedded signup: the flow yields a WABA id, a phone
+    number id, and a business access token scoped to that WABA. Inbound
+    webhooks are matched to the store by phone_number_id; outbound sends
+    use that store's own access token."""
+    __tablename__ = "store_meta_numbers"
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, unique=True)
+    phone_number_id = Column(String, nullable=False, unique=True)
+    waba_id = Column(String, nullable=False, default="")
+    access_token = Column(Text, nullable=False)
+    display_number = Column(String, nullable=False, default="")  # E.164 for humans
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Scout agent tables
 # ---------------------------------------------------------------------------
@@ -483,6 +502,29 @@ def get_store_by_openwa_session(session_id: str) -> Store | None:
         if store:
             db.expunge(store)
         return store
+
+
+def get_store_by_meta_phone_number_id(phone_number_id: str) -> Store | None:
+    """Look up a store by its Meta Cloud API phone number id."""
+    with SessionLocal() as db:
+        mapping = db.query(StoreMetaNumber).filter(
+            StoreMetaNumber.phone_number_id == phone_number_id
+        ).first()
+        if not mapping:
+            return None
+        store = db.query(Store).filter(Store.id == mapping.store_id).first()
+        if store:
+            db.expunge(store)
+        return store
+
+
+def get_meta_access_token(phone_number_id: str) -> str | None:
+    """Access token for sending from a Meta phone number (per-store token)."""
+    with SessionLocal() as db:
+        mapping = db.query(StoreMetaNumber).filter(
+            StoreMetaNumber.phone_number_id == phone_number_id
+        ).first()
+        return mapping.access_token if mapping else None
 
 
 def get_store_openwa_session(store_id: int) -> StoreOpenWASession | None:

@@ -191,13 +191,11 @@ def _detect_file_type_from_headers(content: str) -> str | None:
 
 
 async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> str:
+    """Twilio-path CSV upload: download the media, then run the shared ingest."""
     import httpx
-    from datetime import datetime as _dt
 
     media_url = params.get("MediaUrl0", "")
     caption = (params.get("Body", "") or "").strip()
-
-    file_type = _detect_file_type_from_caption(caption)
 
     twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     twilio_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -215,6 +213,16 @@ async def _handle_csv_upload(store_id: int, from_number: str, params: dict) -> s
         logger.error("gateway.csv_upload: store=%d download_failed error=%s", store_id, exc)
         return "Could not download the file. Please try again."
 
+    return _ingest_csv_content(store_id, from_number, caption, content)
+
+
+def _ingest_csv_content(store_id: int, from_number: str, caption: str, content: str) -> str:
+    """Transport-agnostic CSV ingestion — shared by the Twilio, OpenWA and
+    Meta webhook paths. Normalizes any POS export format to the canonical
+    schema, stores it, and returns the staff-facing confirmation text."""
+    from datetime import datetime as _dt
+
+    file_type = _detect_file_type_from_caption(caption)
     if file_type is None:
         file_type = _detect_file_type_from_headers(content)
 
@@ -947,6 +955,176 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 #   { "url": "https://asaanintelligence.up.railway.app/openwa/webhook",
 #     "events": ["message.received"] }
 
+def _process_async_message(store, from_number: str, body_text: str, send_fn,
+                           background_tasks: BackgroundTasks, reply_to: dict,
+                           log_prefix: str) -> str:
+    """Shared staff/customer routing for async-reply providers (OpenWA, Meta).
+
+    Everything after "we know the store, the sender, and how to reply" lives
+    here exactly once — the OpenWA and Meta webhooks only differ in payload
+    parsing, media handling, and how a reply is delivered (send_fn/reply_to).
+    The Twilio handler stays separate because it answers synchronously via
+    TwiML. Returns "ok" or "throttled" for the webhook's HTTP response.
+    """
+    from app.core.db import is_store_member, get_user_session, set_user_session
+
+    store_id = store.id
+    store_name = store.name
+
+    # ── Customer path ──────────────────────────────────────────────────────────
+    if not is_store_member(from_number, store_id):
+        ok, reason = _customer_dispatch_ok(from_number)
+        if not ok:
+            if reason == "inflight":
+                logger.info("%s: customer inflight drop from=%s", log_prefix, from_number)
+                background_tasks.add_task(send_fn, "Still working on your last message — almost there! 🙏")
+            else:
+                logger.info("%s: customer cooldown drop from=%s", log_prefix, from_number)
+            return "throttled"
+        background_tasks.add_task(_bg_customer, store_id, from_number, send_fn, body_text)
+        return "ok"
+
+    # ── Staff path ─────────────────────────────────────────────────────────────
+    session = get_user_session(from_number)
+    current_mode = (
+        session.active_agent
+        if session and session.store_id == store_id
+        else None
+    )
+
+    cmd = body_text.lower().strip()
+    first_word = cmd.split()[0] if cmd else ""
+
+    if cmd in _MODE_TRIGGERS:
+        set_user_session(from_number, store_id, active_agent=None)
+        background_tasks.add_task(send_fn, _mode_menu(store_name))
+        return "ok"
+
+    if first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body_text.split()) > 1):
+        logger.info("%s: reputation_action=%s store=%d from=%s", log_prefix, first_word, store_id, from_number)
+        def _do_reputation_action() -> None:
+            from app.agents.reputation import process_reputation_owner_reply
+            reply = process_reputation_owner_reply(from_number, body_text, store_id=store_id)
+            send_fn(reply)
+        background_tasks.add_task(_do_reputation_action)
+        return "ok"
+
+    if current_mode is None:
+        if cmd == "1":
+            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
+            background_tasks.add_task(send_fn, _internal_welcome(store_name))
+        elif cmd == "2":
+            set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
+            background_tasks.add_task(send_fn, _customer_welcome())
+        else:
+            # Any other input (including "hi", wrong text) → show selection again
+            background_tasks.add_task(send_fn, _mode_menu(store_name))
+        return "ok"
+
+    # ── Internal tools mode ────────────────────────────────────────────────────
+    if current_mode == MODE_INTERNAL:
+        logger.info("%s: store=%d mode=internal from=%s", log_prefix, store_id, from_number)
+
+        if _is_scout_message(body_text):
+            from app.core.db import SessionLocal, ScoutRun as Run
+            from datetime import datetime, timedelta
+
+            if not _scout_rate_ok(from_number):
+                background_tasks.add_task(
+                    send_fn,
+                    "You've sent too many scout requests. Limit is 3 per hour — please wait.",
+                )
+                return "ok"
+
+            with SessionLocal() as _db:
+                cutoff_running = datetime.utcnow() - timedelta(minutes=15)
+                in_flight = _db.query(Run).filter(
+                    Run.store_id == store_id,
+                    Run.status == "running",
+                    Run.started_at >= cutoff_running,
+                ).first()
+                if in_flight:
+                    background_tasks.add_task(
+                        send_fn,
+                        "Scout is already running — your report will arrive in a few minutes.",
+                    )
+                    return "ok"
+
+                cutoff_cache = datetime.utcnow() - timedelta(hours=24)
+                cached_run = _db.query(Run).filter(
+                    Run.store_id == store_id,
+                    Run.status.in_(["ok", "partial"]),
+                    Run.finished_at >= cutoff_cache,
+                ).order_by(Run.finished_at.desc()).first()
+
+            if cached_run:
+                age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
+                logger.info("%s: scout_cache_hit store=%d age_min=%d", log_prefix, store_id, age_min)
+                from app.core.db import ScoutReport
+                with SessionLocal() as _db:
+                    saved = _db.query(ScoutReport).filter(
+                        ScoutReport.store_id == store_id,
+                        ScoutReport.run_id == cached_run.id,
+                    ).order_by(ScoutReport.id.desc()).first()
+                    cached_text = saved.report_text if saved else None
+                if cached_text:
+                    logger.info("%s: scout_cache_serve store=%d", log_prefix, store_id)
+                    background_tasks.add_task(send_fn, cached_text)
+                    return "ok"
+
+            logger.info("%s: scout_async_dispatch store=%d from=%s", log_prefix, store_id, from_number)
+            scout_ack = (
+                "Scanning competitors across Instagram, Google Maps and their websites 🔍\n"
+                "Your report will arrive in 7-10 minutes."
+            )
+            _dispatch_durable(
+                background_tasks, "scout", store_id, from_number, body_text,
+                reply_to, _bg_scout, send_fn, ack=scout_ack,
+            )
+            return "ok"
+
+        # Reputation cache check
+        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")):
+            from app.agents.reputation import check_reputation_cache
+            hit, cached_text = check_reputation_cache(store_id, store_name)
+            if hit:
+                logger.info("%s: reputation_cache_serve store=%d", log_prefix, store_id)
+                background_tasks.add_task(send_fn, cached_text)
+                return "ok"
+
+        if not _staff_dispatch_ok(from_number):
+            logger.info("%s: staff cooldown drop from=%s", log_prefix, from_number)
+            background_tasks.add_task(send_fn, "Still working on your last request — one moment! 🙏")
+            return "throttled"
+        ack = _internal_ack(body_text)
+        logger.info("%s: internal_async store=%d from=%s ack=%r", log_prefix, store_id, from_number, ack)
+        _dispatch_durable(
+            background_tasks, "internal", store_id, from_number, body_text,
+            reply_to, _bg_internal, send_fn, ack=ack,
+        )
+        return "ok"
+
+    # ── Customer app mode ──────────────────────────────────────────────────────
+    logger.info("%s: store=%d mode=customer from=%s", log_prefix, store_id, from_number)
+    ok, reason = _customer_dispatch_ok(from_number)
+    if not ok:
+        if reason == "inflight":
+            logger.info("%s: staff-customer inflight drop from=%s", log_prefix, from_number)
+            background_tasks.add_task(send_fn, "Still working on your last message — almost there! 🙏")
+        else:
+            logger.info("%s: staff-customer cooldown drop from=%s", log_prefix, from_number)
+        return "throttled"
+    background_tasks.add_task(_bg_customer, store_id, from_number, send_fn, body_text)
+    return "ok"
+
+
+_DOC_MSG_TYPES = ("document", "file")
+
+
+def _looks_like_csv(mimetype: str, filename: str) -> bool:
+    return mimetype in _CSV_CONTENT_TYPES or filename.lower().endswith((".csv", ".tsv", ".txt"))
+
+
 @app.post("/openwa/webhook")
 async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     import json as _json
@@ -972,9 +1150,11 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
     from_me = data.get("fromMe", False)
     is_group = data.get("isGroup", False)
     msg_type = data.get("type", "chat")
+    is_document = msg_type in _DOC_MSG_TYPES
 
-    # Ignore our own sent messages, group chats, and non-text messages
-    if from_me or is_group or not body_text or msg_type not in ("chat", "text", ""):
+    # Ignore our own sent messages, group chats, and unsupported types.
+    # Documents pass through (body may be empty — it carries the caption).
+    if from_me or is_group or (not is_document and (not body_text or msg_type not in ("chat", "text", ""))):
         return JSONResponse({"status": "ignored"})
 
     # Idempotency: drop duplicate deliveries within 60 s
@@ -993,7 +1173,7 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
     from_number = _jid_to_internal(resolved_jid)
     logger.info("openwa.webhook: session=%s from=%s (raw_jid=%s) body=%r", session_id, from_number, from_jid, body_text[:80])
 
-    from app.core.db import get_store_by_openwa_session, is_store_member, get_user_session, set_user_session
+    from app.core.db import get_store_by_openwa_session, is_store_member
 
     store = get_store_by_openwa_session(session_id)
     if store is None:
@@ -1001,160 +1181,197 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
         return JSONResponse({"status": "unknown_session"}, status_code=404)
 
     store_id = store.id
-    store_name = store.name
-    logger.info("openwa.webhook: store=%s(%d) from=%s", store_name, store_id, from_number)
+    logger.info("openwa.webhook: store=%s(%d) from=%s", store.name, store_id, from_number)
 
     # Build provider-specific send function — reply to resolved @c.us JID, not LID
     from app.core.openwa_send import send_openwa as _openwa_send_fn
     def _owa_send(reply: str) -> None:
         _openwa_send_fn(session_id, resolved_jid, reply)
 
-    # ── Customer path ──────────────────────────────────────────────────────────
-    if not is_store_member(from_number, store_id):
-        ok, reason = _customer_dispatch_ok(from_number)
-        if not ok:
-            if reason == "inflight":
-                logger.info("openwa.webhook: customer inflight drop from=%s", from_number)
-                background_tasks.add_task(_owa_send, "Still working on your last message — almost there! 🙏")
-            else:
-                logger.info("openwa.webhook: customer cooldown drop from=%s", from_number)
-            return JSONResponse({"status": "throttled"})
-        background_tasks.add_task(_bg_customer, store_id, from_number, _owa_send, body_text)
-        return JSONResponse({"status": "ok"})
-
-    # ── Staff path ─────────────────────────────────────────────────────────────
-    session = get_user_session(from_number)
-    current_mode = (
-        session.active_agent
-        if session and session.store_id == store_id
-        else None
-    )
-
-    cmd = body_text.lower().strip()
-    first_word = cmd.split()[0] if cmd else ""
-
-    if cmd in _MODE_TRIGGERS:
-        set_user_session(from_number, store_id, active_agent=None)
-        background_tasks.add_task(_owa_send, _mode_menu(store_name))
-        return JSONResponse({"status": "ok"})
-
-    if first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body_text.split()) > 1):
-        logger.info("openwa.webhook: reputation_action=%s store=%d from=%s", first_word, store_id, from_number)
-        def _do_reputation_action() -> None:
-            from app.agents.reputation import process_reputation_owner_reply
-            reply = process_reputation_owner_reply(from_number, body_text, store_id=store_id)
-            _owa_send(reply)
-        background_tasks.add_task(_do_reputation_action)
-        return JSONResponse({"status": "ok"})
-
-    if current_mode is None:
-        if cmd == "1":
-            set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
-            background_tasks.add_task(_owa_send, _internal_welcome(store_name))
-        elif cmd == "2":
-            set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
-            background_tasks.add_task(_owa_send, _customer_welcome())
-        else:
-            # Any other input (including "hi", wrong text) → show selection again
-            background_tasks.add_task(_owa_send, _mode_menu(store_name))
-        return JSONResponse({"status": "ok"})
-
-    # ── Internal tools mode ────────────────────────────────────────────────────
-    if current_mode == MODE_INTERNAL:
-        logger.info("openwa.webhook: store=%d mode=internal from=%s", store_id, from_number)
-
-        if _is_scout_message(body_text):
-            from app.core.db import SessionLocal, ScoutRun as Run
-            from datetime import datetime, timedelta
-
-            if not _scout_rate_ok(from_number):
-                background_tasks.add_task(
-                    _owa_send,
-                    "You've sent too many scout requests. Limit is 3 per hour — please wait.",
-                )
-                return JSONResponse({"status": "ok"})
-
-            with SessionLocal() as _db:
-                cutoff_running = datetime.utcnow() - timedelta(minutes=15)
-                in_flight = _db.query(Run).filter(
-                    Run.store_id == store_id,
-                    Run.status == "running",
-                    Run.started_at >= cutoff_running,
-                ).first()
-                if in_flight:
-                    background_tasks.add_task(
-                        _owa_send,
-                        "Scout is already running — your report will arrive in a few minutes.",
-                    )
-                    return JSONResponse({"status": "ok"})
-
-                cutoff_cache = datetime.utcnow() - timedelta(hours=24)
-                cached_run = _db.query(Run).filter(
-                    Run.store_id == store_id,
-                    Run.status.in_(["ok", "partial"]),
-                    Run.finished_at >= cutoff_cache,
-                ).order_by(Run.finished_at.desc()).first()
-
-            if cached_run:
-                age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
-                logger.info("openwa.webhook: scout_cache_hit store=%d age_min=%d", store_id, age_min)
-                from app.core.db import ScoutReport
-                with SessionLocal() as _db:
-                    saved = _db.query(ScoutReport).filter(
-                        ScoutReport.store_id == store_id,
-                        ScoutReport.run_id == cached_run.id,
-                    ).order_by(ScoutReport.id.desc()).first()
-                    cached_text = saved.report_text if saved else None
-                if cached_text:
-                    logger.info("openwa.webhook: scout_cache_serve store=%d", store_id)
-                    background_tasks.add_task(_owa_send, cached_text)
-                    return JSONResponse({"status": "ok"})
-
-            logger.info("openwa.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
-            scout_ack = (
-                "Scanning competitors across Instagram, Google Maps and their websites 🔍\n"
-                "Your report will arrive in 7-10 minutes."
-            )
-            _dispatch_durable(
-                background_tasks, "scout", store_id, from_number, body_text,
-                {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
-                _bg_scout, _owa_send, ack=scout_ack,
+    # ── Document upload (staff CSV path) ───────────────────────────────────────
+    if is_document:
+        if not is_store_member(from_number, store_id):
+            return JSONResponse({"status": "ignored"})
+        media = data.get("media") or (data.get("metadata") or {}).get("media") or {}
+        mimetype = (media.get("mimetype") or "").split(";")[0].strip().lower()
+        filename = media.get("filename") or media.get("fileName") or ""
+        b64 = media.get("data") or ""
+        if not _looks_like_csv(mimetype, filename):
+            background_tasks.add_task(
+                _owa_send,
+                "I can only read CSV files. Export your POS report as CSV and resend it "
+                "with a caption: 'sales', 'menu', or 'staff'.",
             )
             return JSONResponse({"status": "ok"})
+        if not b64:
+            logger.warning("openwa.webhook: document without media data store=%d keys=%s",
+                           store_id, sorted(data.keys()))
+            background_tasks.add_task(_owa_send, "Couldn't read the attached file — please resend it.")
+            return JSONResponse({"status": "ok"})
+        import base64 as _b64
+        try:
+            content = _b64.b64decode(b64).decode("utf-8-sig", errors="replace")
+        except Exception as exc:
+            logger.error("openwa.webhook: media decode failed store=%d: %s", store_id, exc)
+            background_tasks.add_task(_owa_send, "Couldn't read the attached file — please resend it as CSV.")
+            return JSONResponse({"status": "ok"})
+        logger.info("openwa.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
 
-        # Reputation cache check
-        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")):
-            from app.agents.reputation import check_reputation_cache
-            hit, cached_text = check_reputation_cache(store_id, store_name)
-            if hit:
-                logger.info("openwa.webhook: reputation_cache_serve store=%d", store_id)
-                background_tasks.add_task(_owa_send, cached_text)
-                return JSONResponse({"status": "ok"})
-
-        if not _staff_dispatch_ok(from_number):
-            logger.info("openwa.webhook: staff cooldown drop from=%s", from_number)
-            background_tasks.add_task(_owa_send, "Still working on your last request — one moment! 🙏")
-            return JSONResponse({"status": "throttled"})
-        ack = _internal_ack(body_text)
-        logger.info("openwa.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
-        _dispatch_durable(
-            background_tasks, "internal", store_id, from_number, body_text,
-            {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
-            _bg_internal, _owa_send, ack=ack,
-        )
+        def _do_ingest() -> None:
+            reply = _ingest_csv_content(store_id, from_number, body_text, content)
+            _owa_send(reply)
+        background_tasks.add_task(_do_ingest)
         return JSONResponse({"status": "ok"})
 
-    # ── Customer app mode ──────────────────────────────────────────────────────
-    logger.info("openwa.webhook: store=%d mode=customer from=%s", store_id, from_number)
-    ok, reason = _customer_dispatch_ok(from_number)
-    if not ok:
-        if reason == "inflight":
-            logger.info("openwa.webhook: staff-customer inflight drop from=%s", from_number)
-            background_tasks.add_task(_owa_send, "Still working on your last message — almost there! 🙏")
-        else:
-            logger.info("openwa.webhook: staff-customer cooldown drop from=%s", from_number)
-        return JSONResponse({"status": "throttled"})
-    background_tasks.add_task(_bg_customer, store_id, from_number, _owa_send, body_text)
+    status = _process_async_message(
+        store, from_number, body_text, _owa_send, background_tasks,
+        {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
+        "openwa.webhook",
+    )
+    return JSONResponse({"status": status})
+
+
+# ── Meta Cloud API webhook (WhatsApp Business Platform) ───────────────────────
+#
+# Restaurants onboard their WhatsApp Business numbers to our Meta app via
+# embedded signup; Meta then delivers their inbound messages here. Store
+# resolution is by metadata.phone_number_id (store_meta_numbers table);
+# replies go out via app.core.meta_send using that store's own access token.
+#
+# GET  /meta/webhook — Meta's one-time verification handshake.
+# POST /meta/webhook — message events, authenticated by X-Hub-Signature-256
+#                      (HMAC-SHA256 of the raw body with META_APP_SECRET).
+
+
+@app.get("/meta/webhook")
+async def meta_webhook_verify(request: Request) -> Response:
+    params = request.query_params
+    verify_token = os.environ.get("META_VERIFY_TOKEN", "")
+    if (
+        params.get("hub.mode") == "subscribe"
+        and verify_token
+        and params.get("hub.verify_token") == verify_token
+    ):
+        return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
+    logger.warning("meta.webhook: verification failed mode=%s", params.get("hub.mode"))
+    return Response(status_code=403)
+
+
+@app.post("/meta/webhook")
+async def meta_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    import hashlib
+    import hmac as _hmac
+    import json as _json
+
+    raw_bytes = await request.body()
+
+    app_secret = os.environ.get("META_APP_SECRET", "")
+    if app_secret:
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + _hmac.new(app_secret.encode(), raw_bytes, hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(signature, expected):
+            logger.warning("meta.webhook: invalid signature — rejected")
+            return JSONResponse({"status": "forbidden"}, status_code=403)
+    else:
+        logger.warning("meta.webhook: META_APP_SECRET not set — accepting unsigned webhook")
+
+    try:
+        payload = _json.loads(raw_bytes)
+    except Exception:
+        logger.warning("meta.webhook: non-JSON body received")
+        return JSONResponse({"status": "bad_request"}, status_code=400)
+
+    logger.info("meta.webhook: raw=%s", _json.dumps(payload)[:2000])
+
+    if payload.get("object") != "whatsapp_business_account":
+        return JSONResponse({"status": "ignored"})
+
+    from app.core.db import get_store_by_meta_phone_number_id, is_store_member
+    from app.core.meta_send import send_meta as _meta_send_fn, download_media as _meta_download
+
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            if change.get("field") != "messages":
+                continue
+            value = change.get("value", {})
+            phone_number_id = (value.get("metadata") or {}).get("phone_number_id", "")
+            if not phone_number_id:
+                continue
+            # Delivery/read receipts arrive on the same field — no messages array.
+            messages = value.get("messages") or []
+            if not messages:
+                continue
+
+            store = get_store_by_meta_phone_number_id(phone_number_id)
+            if store is None:
+                logger.warning("meta.webhook: unknown phone_number_id=%s", phone_number_id)
+                continue
+            store_id = store.id
+
+            for msg in messages:
+                msg_id = msg.get("id", "")
+                if msg_id and not _idem_ok(f"meta:{msg_id}"):
+                    logger.info("meta.webhook: duplicate message id=%s — dropped", msg_id)
+                    continue
+
+                wa_id = msg.get("from", "")
+                if not wa_id:
+                    continue
+                from_number = f"whatsapp:+{wa_id}"
+
+                def _send(reply: str, _pnid=phone_number_id, _to=wa_id) -> None:
+                    _meta_send_fn(_pnid, _to, reply)
+
+                msg_type = msg.get("type", "")
+                logger.info(
+                    "meta.webhook: store=%s(%d) from=%s type=%s",
+                    store.name, store_id, from_number, msg_type,
+                )
+
+                # ── Document upload (staff CSV path) ──────────────────────────
+                if msg_type == "document":
+                    if not is_store_member(from_number, store_id):
+                        continue
+                    doc = msg.get("document", {})
+                    mimetype = (doc.get("mime_type") or "").split(";")[0].strip().lower()
+                    filename = doc.get("filename", "") or ""
+                    caption = (doc.get("caption") or "").strip()
+                    if not _looks_like_csv(mimetype, filename):
+                        background_tasks.add_task(
+                            _send,
+                            "I can only read CSV files. Export your POS report as CSV and "
+                            "resend it with a caption: 'sales', 'menu', or 'staff'.",
+                        )
+                        continue
+                    media_id = doc.get("id", "")
+                    logger.info("meta.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
+
+                    def _do_ingest(_mid=media_id, _pnid=phone_number_id, _cap=caption,
+                                   _from=from_number, _sid=store_id, _sendfn=_send) -> None:
+                        got = _meta_download(_mid, _pnid)
+                        if got is None:
+                            _sendfn("Could not download the file. Please try again.")
+                            return
+                        blob, _mt, _fn = got
+                        content = blob.decode("utf-8-sig", errors="replace")
+                        _sendfn(_ingest_csv_content(_sid, _from, _cap, content))
+                    background_tasks.add_task(_do_ingest)
+                    continue
+
+                # ── Text ──────────────────────────────────────────────────────
+                if msg_type != "text":
+                    continue
+                body_text = ((msg.get("text") or {}).get("body") or "").strip()
+                if not body_text:
+                    continue
+
+                _process_async_message(
+                    store, from_number, body_text, _send, background_tasks,
+                    {"provider": "meta", "phone_number_id": phone_number_id, "to": wa_id},
+                    "meta.webhook",
+                )
+
+    # Always 200: Meta retries and eventually disables webhooks that error.
     return JSONResponse({"status": "ok"})
 
 
@@ -1416,6 +1633,61 @@ async def remove_openwa_session(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "not_found"}, status_code=404)
 
 
+@app.post("/admin/stores/{store_id}/meta", status_code=201)
+async def set_meta_number(store_id: int, request: Request) -> JSONResponse:
+    """Register (or update) a Meta Cloud API WhatsApp number for a store.
+
+    Body: { "phone_number_id": "...", "access_token": "...",
+            "waba_id": "...", "display_number": "+923XXXXXXXXX" }
+    These come out of the embedded-signup flow: the restaurant grants our
+    Meta app access to their WABA, we exchange the resulting code for a
+    business token and register their number here.
+    """
+    from app.core.db import SessionLocal, Store, StoreMetaNumber
+    params = await _parse_body(request)
+    phone_number_id = str(params.get("phone_number_id", "")).strip()
+    access_token = str(params.get("access_token", "")).strip()
+    waba_id = str(params.get("waba_id", "")).strip()
+    display_number = str(params.get("display_number", "")).strip()
+    if not phone_number_id or not access_token:
+        return JSONResponse({"error": "phone_number_id and access_token required"}, status_code=400)
+    with SessionLocal() as db:
+        if not db.query(Store).filter(Store.id == store_id).first():
+            return JSONResponse({"error": "store not found"}, status_code=404)
+        existing = db.query(StoreMetaNumber).filter(StoreMetaNumber.store_id == store_id).first()
+        if existing:
+            existing.phone_number_id = phone_number_id
+            existing.access_token = access_token
+            existing.waba_id = waba_id
+            existing.display_number = display_number
+        else:
+            db.add(StoreMetaNumber(
+                store_id=store_id, phone_number_id=phone_number_id,
+                access_token=access_token, waba_id=waba_id,
+                display_number=display_number,
+            ))
+        db.commit()
+    return JSONResponse(
+        {"status": "set", "store_id": store_id, "phone_number_id": phone_number_id,
+         "waba_id": waba_id, "display_number": display_number},
+        status_code=201,
+    )
+
+
+@app.delete("/admin/stores/{store_id}/meta", status_code=200)
+async def remove_meta_number(store_id: int) -> JSONResponse:
+    """Remove the Meta Cloud API number registration for a store."""
+    from app.core.db import SessionLocal, StoreMetaNumber
+    with SessionLocal() as db:
+        deleted = db.query(StoreMetaNumber).filter(
+            StoreMetaNumber.store_id == store_id
+        ).delete(synchronize_session=False)
+        db.commit()
+    if deleted:
+        return JSONResponse({"status": "removed"})
+    return JSONResponse({"status": "not_found"}, status_code=404)
+
+
 @app.post("/admin/debug/kb-upsert/{store_id}")
 async def debug_kb_upsert(store_id: int, request: Request) -> JSONResponse:
     """TEMPORARY — insert new / update existing KB chunks with real embeddings.
@@ -1616,7 +1888,7 @@ async def get_enroll_link(store_id: int) -> JSONResponse:
 async def get_store(store_id: int) -> JSONResponse:
     from app.core.db import (
         SessionLocal, Store, StoreMember, StoreTwilioNumber, POSConnection,
-        RevenueConnection, StoreOpenWASession,
+        RevenueConnection, StoreOpenWASession, StoreMetaNumber,
     )
     with SessionLocal() as db:
         store = db.query(Store).filter(Store.id == store_id).first()
@@ -1625,12 +1897,16 @@ async def get_store(store_id: int) -> JSONResponse:
         members  = db.query(StoreMember).filter(StoreMember.store_id == store_id).all()
         twilio   = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
         owa      = db.query(StoreOpenWASession).filter(StoreOpenWASession.store_id == store_id).first()
+        meta     = db.query(StoreMetaNumber).filter(StoreMetaNumber.store_id == store_id).first()
         pos      = db.query(POSConnection).filter(POSConnection.store_id == store_id).first()
         rev      = db.query(RevenueConnection).filter(RevenueConnection.store_id == store_id).first()
     return JSONResponse({
         "id": store.id, "name": store.name, "chain_id": store.chain_id,
         "whatsapp_number": twilio.whatsapp_number if twilio else None,
         "openwa_session": {"session_id": owa.session_id, "phone_number": owa.phone_number} if owa else None,
+        # access_token intentionally omitted from the response
+        "meta_number": {"phone_number_id": meta.phone_number_id, "waba_id": meta.waba_id,
+                        "display_number": meta.display_number} if meta else None,
         "members": [{"whatsapp": m.whatsapp, "role": m.role} for m in members],
         "pos_configured": pos is not None,
         "revenue_configured": rev is not None,
