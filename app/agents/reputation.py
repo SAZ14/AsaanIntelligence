@@ -246,7 +246,7 @@ def classify_reviews_batch(
     client,
     cutoff_days: int = HISTORICAL_CUTOFF_DAYS,
 ) -> list[ReviewAnalysis]:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
 
     now = datetime.utcnow()
     historical: list[ReviewAnalysis] = []
@@ -293,6 +293,7 @@ def classify_reviews_batch(
                 model=get_model(),
                 max_tokens=CLASSIFIER_BATCH_SIZE * 12,
                 messages=[{"role": "user", "content": prompt}],
+                **nothink_kwargs(get_model()),
             )
             output = resp.choices[0].message.content.strip()
             for line in output.split("\n"):
@@ -361,7 +362,7 @@ def draft_replies(
     venue_name: str | None = None,
     brand_voice: str | BrandVoice | None = None,
 ) -> list[ReviewAnalysis]:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
 
     if isinstance(brand_voice, BrandVoice):
         effective_venue = venue_name or brand_voice.name or DEFAULT_VENUE_NAME
@@ -422,6 +423,7 @@ def draft_replies(
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
+                **nothink_kwargs(get_model()),
             )
             ra.draft_reply = resp.choices[0].message.content.strip()
         except Exception as e:
@@ -794,7 +796,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
 def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     from app.review_sources import db as review_db
-    from app.core.llm import get_client, get_model
+    from app.core.llm import get_client, get_model, nothink_kwargs
 
     pending = review_db.get_pending_finding(store_id)
     recent_reviews = review_db.get_recent_reviews(store_id, limit=10)
@@ -841,6 +843,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
                 {"role": "system", "content": system},
                 {"role": "user", "content": text},
             ],
+            **nothink_kwargs(get_model()),
         )
         return resp.choices[0].message.content.strip()
     except Exception as exc:

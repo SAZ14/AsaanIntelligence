@@ -45,7 +45,7 @@ def parse_query(text: str, client=None) -> ParsedQuery:
 
 
 def _parse_with_llm(text: str, client) -> ParsedQuery | None:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
     prompt = f"""You are the NLU for a cafe owner's revenue-advisor WhatsApp line.
 Map the message to JSON only (no prose).
 
@@ -69,6 +69,7 @@ JSON:"""
             model=get_model(),
             max_tokens=120,
             messages=[{"role": "user", "content": prompt}],
+            **nothink_kwargs(get_model()),
         )
         body = resp.choices[0].message.content.strip()
         if body.startswith("```"):

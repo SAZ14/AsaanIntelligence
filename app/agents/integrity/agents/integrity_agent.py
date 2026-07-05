@@ -181,7 +181,7 @@ def _fallback_summary(report: IntegrityAgentReport) -> str:
 
 
 def _generate_summary(client, report: IntegrityAgentReport) -> str | None:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
     prompt = (
         "You are a restaurant loss-prevention analyst. Write a concise, owner-facing "
         "executive summary (3-5 sentences) of this POS integrity audit. Use the exact "
@@ -193,6 +193,7 @@ def _generate_summary(client, report: IntegrityAgentReport) -> str | None:
             model=get_model(),
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
+            **nothink_kwargs(get_model()),
         )
         return resp.choices[0].message.content.strip()
     except Exception:
@@ -200,7 +201,7 @@ def _generate_summary(client, report: IntegrityAgentReport) -> str | None:
 
 
 def _recommend_action(client, finding: Finding, venue_name: str) -> str | None:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
     prompt = (
         f"Restaurant: {venue_name}. A POS integrity audit produced this finding:\n"
         f"Category: {finding.category}\nSubject: {finding.subject}\n"
@@ -213,6 +214,7 @@ def _recommend_action(client, finding: Finding, venue_name: str) -> str | None:
             model=get_model(),
             max_tokens=80,
             messages=[{"role": "user", "content": prompt}],
+            **nothink_kwargs(get_model()),
         )
         return resp.choices[0].message.content.strip()
     except Exception:
@@ -266,7 +268,7 @@ def run_integrity_agent(
 
 
 def answer_question(report: IntegrityAgentReport, question: str, client=None) -> str:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
     llm = _make_client(client)
     if llm is None:
         return "LLM unavailable — set ZAI_API_KEY to enable Q&A about the audit."
@@ -280,6 +282,7 @@ def answer_question(report: IntegrityAgentReport, question: str, client=None) ->
             model=get_model(),
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
+            **nothink_kwargs(get_model()),
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:

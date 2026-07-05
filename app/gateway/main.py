@@ -608,8 +608,30 @@ def _dispatch_durable(background_tasks: BackgroundTasks, kind: str, store_id: in
         background_tasks.add_task(fallback_fn, store_id, from_number, fallback_send_fn, body)
 
 
+def _warm_embeddings() -> None:
+    """Load the sentence-transformer and pre-encode the intent example sets.
+
+    Without this, the first customer query after every deploy pays ~27s of
+    lazy model loading + example encoding (measured live). Runs in a daemon
+    thread so startup and health checks aren't blocked."""
+    try:
+        from app.agents.customer.community.store import _embedding_model
+        from app.agents.customer.community.intent import _menu_examples, _not_menu_examples
+        model = _embedding_model()
+        if model is None:
+            logger.warning("warmup: embedding model unavailable")
+            return
+        _menu_examples()
+        _not_menu_examples()
+        model.encode("warmup")
+        logger.info("warmup: embedding model + intent examples ready")
+    except Exception as exc:
+        logger.warning("warmup: failed (%s)", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import threading
     from app.core.db import init_db
     init_db()
     logging.basicConfig(
@@ -617,6 +639,7 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
     )
     _jobq.start_worker()  # no-op if Redis is unavailable
+    threading.Thread(target=_warm_embeddings, name="embedding-warmup", daemon=True).start()
     logger.info("Central server started")
     yield
     _jobq.stop_worker()

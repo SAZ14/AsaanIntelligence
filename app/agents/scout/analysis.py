@@ -222,9 +222,12 @@ def classify_intent(
     if not _cfg.ZAI_API_KEY:
         return "scout"
     try:
+        from app.core.llm import get_fast_model
         client = _get_client()
+        # 10-token classification — fast non-reasoning model, not the
+        # thinking model used for report generation in _chat().
         resp = client.chat.completions.create(
-            model=_get_model(),
+            model=get_fast_model(),
             messages=[
                 {"role": "system", "content": _intent_system(store_name, store_category)},
                 {"role": "user", "content": message},

@@ -80,7 +80,7 @@ def handle_merchant_message(
     body: str,
     store_id: int,
 ) -> AgentReply:
-    from app.core.llm import get_model
+    from app.core.llm import get_model, nothink_kwargs
     phone = parse_twilio_whatsapp_phone(from_phone)
     if not _is_owner(phone, store_id):
         return AgentReply("This line is for restaurant owners only.")
@@ -131,6 +131,7 @@ def handle_merchant_message(
             )},
             {"role": "user", "content": text},
         ],
+        **nothink_kwargs(get_model()),
     )
     reply = resp.choices[0].message.content.strip()
     return AgentReply(reply if reply else "I couldn't process that command.")

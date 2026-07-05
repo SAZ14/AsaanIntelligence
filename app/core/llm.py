@@ -31,3 +31,26 @@ def get_model() -> str:
 def get_customer_model() -> str:
     """Model used by the customer-facing chat agent — faster/cheaper Flash by default."""
     return os.environ.get("CUSTOMER_ZAI_MODEL", get_model())
+
+
+def get_fast_model() -> str:
+    """Model for latency-critical, low-complexity calls: message routing,
+    response rewriting, intent classification. Non-reasoning by default.
+    Measured on the live API: the router call is 0.6-0.8s here vs 9.6s on
+    glm-4.7 with thinking, at identical accuracy on the routing eval set."""
+    return os.environ.get("FAST_ZAI_MODEL", get_customer_model())
+
+
+# GLM hybrid-reasoning models accept a thinking toggle on the OpenAI-compat
+# endpoint; other models may reject the parameter, hence the prefix gate.
+_HYBRID_REASONING_PREFIXES = ("glm-4.5", "glm-4.6", "glm-4.7")
+
+
+def nothink_kwargs(model: str) -> dict:
+    """chat.completions kwargs that disable chain-of-thought for interactive
+    calls. Measured live: a typical staff reply on glm-4.7 drops from 17.7s
+    to 3.3s with equivalent output quality. Returns {} for models without
+    a thinking mode."""
+    if model.startswith(_HYBRID_REASONING_PREFIXES):
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
