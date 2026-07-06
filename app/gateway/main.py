@@ -1853,6 +1853,24 @@ async def seed_competitors(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "seeded", "store_id": store_id, "added": added})
 
 
+@app.get("/admin/debug/guards")
+async def debug_guards_inspect(phone: str) -> JSONResponse:
+    """TEMPORARY — inspect a phone's rate-limit/cooldown/inflight guard
+    state directly. phone should be full whatsapp:+... form. Remove after use."""
+    import app.core.cache as _cache
+    r = _cache._get_redis()
+    if r is None:
+        return JSONResponse({"error": "redis unavailable"}, status_code=503)
+    scout_key = f"guard:scout_rate:{phone}"
+    return JSONResponse({
+        "scout_rate_hits": r.zcard(scout_key),
+        "scout_rate_members": r.zrange(scout_key, 0, -1, withscores=True),
+        "scout_rate_ttl": r.ttl(scout_key),
+        "staff_inflight": r.exists(f"guard:staff_inflight:{phone}"),
+        "staff_cooldown_ttl": r.ttl(f"guard:staff_cooldown:{phone}"),
+    })
+
+
 @app.get("/admin/debug/jobqueue")
 async def debug_jobqueue_inspect() -> JSONResponse:
     """TEMPORARY — inspect the durable job queue's Redis state directly.
