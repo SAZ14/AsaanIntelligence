@@ -44,9 +44,21 @@ def _start_scheduler() -> BackgroundScheduler:
 if __name__ == "__main__":
     scheduler = _start_scheduler()
     logger.info("Scheduler started")
+    dev_mode = os.environ.get("DEV", "false").lower() == "true"
+    # Every DB/Redis call in the request path is synchronous (SQLAlchemy sync
+    # engine, redis-py sync client) executed inline inside `async def` webhook
+    # handlers -- on a single worker that means one process's single event
+    # loop serializes ALL of it. A 50-concurrent-request live test confirmed
+    # this: webhook ack times climbed to 4+ seconds and Railway's proxy 502'd
+    # the tail of the burst. Multiple worker processes give real OS-level
+    # parallelism for that blocking work. Safe to run >1 worker now that
+    # cross-instance state (rate limits/cooldowns/idempotency, the job queue)
+    # is Redis-backed rather than in-process dicts.
+    workers = int(os.environ.get("WEB_CONCURRENCY", "4"))
     uvicorn.run(
         "app.gateway.main:app",
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 8000)),
-        reload=os.environ.get("DEV", "false").lower() == "true",
+        reload=dev_mode,
+        workers=1 if dev_mode else workers,
     )
