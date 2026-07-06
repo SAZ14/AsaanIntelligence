@@ -2,6 +2,8 @@
 and the BackgroundTasks fallback contract when Redis is unavailable.
 """
 import json
+import threading
+import time
 
 import pytest
 from unittest.mock import patch
@@ -127,6 +129,52 @@ def test_gateway_dispatch_falls_back_to_background_tasks(no_redis):
                       TWILIO_REPLY_TO, _bg_scout, sent.append)
     assert len(bt.tasks) == 1
     assert bt.tasks[0].func is _bg_scout
+
+
+def test_long_running_job_does_not_get_wrongly_orphaned(fake_redis, monkeypatch):
+    """Reproduces the live incident: a job that runs longer than
+    HEARTBEAT_TTL must NOT have its instance declared dead and its job
+    resurrected by another instance's reaper mid-execution.
+
+    Old bug: _heartbeat() only ran between process_one() calls, so a single
+    slow job blocked the refresh for its whole duration. Fix: heartbeat runs
+    on its own thread, independent of job execution.
+    """
+    monkeypatch.setattr(jobqueue, "HEARTBEAT_TTL", 1)  # shrink for a fast test
+    started = threading.Event()
+    finish = threading.Event()
+    calls = []
+
+    def slow_handler(job, send_fn):
+        calls.append(job["id"])
+        started.set()
+        finish.wait(timeout=5)  # blocks process_one() well past HEARTBEAT_TTL
+
+    jobqueue.register_handler("scout", slow_handler)
+    jobqueue.enqueue("scout", 5, "+92300", "scout", TWILIO_REPLY_TO)
+
+    worker = threading.Thread(target=jobqueue.process_one, kwargs={"timeout": 2}, daemon=True)
+    worker.start()
+    assert started.wait(timeout=2), "handler never started"
+
+    # Heartbeat thread keeps the instance's liveness key fresh WHILE the
+    # handler is still blocking process_one() -- this is the exact window
+    # where the old code let the key expire.
+    hb = threading.Thread(target=jobqueue._heartbeat_loop, daemon=True)
+    hb_stop_backup = jobqueue._stop
+    jobqueue._stop.clear()
+    monkeypatch.setattr(jobqueue, "HEARTBEAT_INTERVAL", 0.2)
+    hb.start()
+    time.sleep(1.5)  # well past the 1s TTL if nothing were refreshing it
+
+    assert jobqueue.reap_orphans() == 0, "job was wrongly resurrected while its instance was still alive"
+
+    finish.set()
+    worker.join(timeout=5)
+    jobqueue._stop.set()
+    hb.join(timeout=2)
+    jobqueue._stop = hb_stop_backup
+    assert calls == [calls[0]], "handler ran more than once for a single job"
 
 
 def test_gateway_dispatch_enqueues_with_redis(fake_redis):

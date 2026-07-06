@@ -223,15 +223,49 @@ def _heartbeat() -> None:
         pass
 
 
-def _worker_loop() -> None:
-    logger.info("jobqueue: worker started instance=%s", INSTANCE_ID)
-    last_reap = 0.0
+# Heartbeat interval must stay well under HEARTBEAT_TTL so a slow tick or two
+# never lets the key expire while the instance is genuinely alive.
+HEARTBEAT_INTERVAL = 20  # seconds
+
+
+def _heartbeat_loop() -> None:
+    """Runs on its OWN thread, independent of job processing.
+
+    A single scout job blocks process_one() for minutes at a time (real
+    Apify scrapes + LLM analysis). The heartbeat used to be refreshed from
+    inside that same loop, so once a job ran longer than HEARTBEAT_TTL, this
+    instance's heartbeat key expired while it was still very much alive and
+    working — another instance's reaper would then see the expired key,
+    conclude this instance had crashed, and requeue the job it was still
+    actively processing. A second (or third, or fourth...) instance would
+    pick up the "orphan" and run the exact same job again, sending a
+    duplicate ack and duplicate final report each time, indefinitely, since
+    this path has no attempt cap (confirmed live: one scout request produced
+    4 full duplicate runs before intervention). Decoupling the heartbeat
+    from job execution is what actually fixes that — this thread ticks
+    every HEARTBEAT_INTERVAL regardless of how long the worker thread is
+    stuck inside a single job.
+    """
     while not _stop.is_set():
         _heartbeat()
-        now = time.monotonic()
-        if now - last_reap > REAP_INTERVAL:
+        _stop.wait(HEARTBEAT_INTERVAL)
+
+
+def _reaper_loop() -> None:
+    """Also independent of job processing, for the same reason as above --
+    an instance stuck on a long job should still be ABLE to reap other
+    instances' orphans in the meantime."""
+    while not _stop.is_set():
+        try:
             reap_orphans()
-            last_reap = now
+        except Exception as exc:
+            logger.error("jobqueue: reaper iteration error: %s", exc)
+        _stop.wait(REAP_INTERVAL)
+
+
+def _worker_loop() -> None:
+    logger.info("jobqueue: worker started instance=%s", INSTANCE_ID)
+    while not _stop.is_set():
         try:
             process_one(timeout=POP_TIMEOUT)
         except Exception as exc:
@@ -239,16 +273,26 @@ def _worker_loop() -> None:
             time.sleep(5)
 
 
+_heartbeat_thread: threading.Thread | None = None
+_reaper_thread: threading.Thread | None = None
+
+
 def start_worker() -> None:
-    """Start the background worker thread (idempotent). No-op without Redis —
-    the gateway falls back to BackgroundTasks in that case anyway."""
-    global _worker_thread
+    """Start the background worker, heartbeat, and reaper threads (idempotent).
+    No-op without Redis — the gateway falls back to BackgroundTasks in that
+    case anyway."""
+    global _worker_thread, _heartbeat_thread, _reaper_thread
     if _worker_thread is not None and _worker_thread.is_alive():
         return
     if _get_redis() is None:
         logger.info("jobqueue: Redis unavailable — worker not started (BackgroundTasks fallback active)")
         return
     _stop.clear()
+    _heartbeat()  # set the key immediately so a startup-time reap doesn't self-orphan
+    _heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="jobqueue-heartbeat", daemon=True)
+    _heartbeat_thread.start()
+    _reaper_thread = threading.Thread(target=_reaper_loop, name="jobqueue-reaper", daemon=True)
+    _reaper_thread.start()
     _worker_thread = threading.Thread(target=_worker_loop, name="jobqueue-worker", daemon=True)
     _worker_thread.start()
 
