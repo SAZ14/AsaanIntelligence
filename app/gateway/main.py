@@ -1853,6 +1853,43 @@ async def seed_competitors(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "seeded", "store_id": store_id, "added": added})
 
 
+@app.get("/admin/debug/jobqueue")
+async def debug_jobqueue_inspect() -> JSONResponse:
+    """TEMPORARY — inspect the durable job queue's Redis state directly.
+    No public Redis proxy exists, so this is the only way to see it live.
+    Remove after use."""
+    from app.core.jobqueue import _get_redis, PENDING_KEY, PROCESSING_PREFIX, ALIVE_PREFIX
+    r = _get_redis()
+    if r is None:
+        return JSONResponse({"error": "redis unavailable"}, status_code=503)
+    processing = {k: r.llen(k) for k in r.keys(PROCESSING_PREFIX + "*")}
+    alive = {k: r.ttl(k) for k in r.keys(ALIVE_PREFIX + "*")}
+    pending_raw = r.lrange(PENDING_KEY, 0, -1)
+    return JSONResponse({
+        "pending_len": r.llen(PENDING_KEY),
+        "pending": [str(p)[:300] for p in pending_raw],
+        "processing": processing,
+        "alive_instances_ttl": alive,
+    })
+
+
+@app.post("/admin/debug/jobqueue/clear")
+async def debug_jobqueue_clear() -> JSONResponse:
+    """TEMPORARY — delete jobs:pending and every jobs:processing:* list.
+    Stops the orphan reaper from ever resurrecting anything currently
+    queued/tracked; does NOT stop a job already executing in a worker's
+    Python process (no way to interrupt that without restarting the
+    service). Remove after use."""
+    from app.core.jobqueue import _get_redis, PENDING_KEY, PROCESSING_PREFIX
+    r = _get_redis()
+    if r is None:
+        return JSONResponse({"error": "redis unavailable"}, status_code=503)
+    deleted = {"pending": r.delete(PENDING_KEY)}
+    for k in r.keys(PROCESSING_PREFIX + "*"):
+        deleted[k] = r.delete(k)
+    return JSONResponse({"status": "cleared", "deleted": deleted})
+
+
 @app.get("/admin/stores")
 async def list_stores() -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreTwilioNumber
