@@ -77,10 +77,25 @@ def _dump_raw(run_id: int, source: str, data: object) -> None:
 
 
 def _get_latest_run(store_id: int) -> tuple[Run | None, list[DBFinding]]:
+    """The "runs" table is shared with the reputation agent (its own review
+    checks write command="whatsapp_check" rows to the exact same table).
+    Without excluding that here, whenever a reputation check completes more
+    recently than any scout run, this would pick up the reputation run as
+    scout's own "latest run" and load ITS findings (the store's own
+    reviews, tagged competitor_name=<store name>, update_type='review')
+    into a scout report as if they were competitor intelligence -- a real
+    data-integrity bug, confirmed live: a "competitors" query fed
+    Anatummy's own 5-star reviews to the report LLM, which correctly (if
+    confusingly) noted "these aren't competitor findings, they're internal
+    reviews" rather than reporting on any actual competitor."""
     with SessionLocal() as db:
         run = (
             db.query(Run)
-            .filter(Run.store_id == store_id, Run.status.in_(["ok", "partial"]))
+            .filter(
+                Run.store_id == store_id,
+                Run.status.in_(["ok", "partial"]),
+                Run.command != "whatsapp_check",
+            )
             .order_by(Run.finished_at.desc())
             .first()
         )

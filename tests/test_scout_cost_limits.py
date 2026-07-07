@@ -311,3 +311,86 @@ def test_chat_disables_thinking_mode():
     assert kwargs.get("extra_body") == {"thinking": {"type": "disabled"}}
     assert kwargs["timeout"] == 90
     assert kwargs["max_tokens"] == 2000
+
+
+# ── _get_latest_run must never pick up a reputation ("whatsapp_check") run ───
+#
+# Confirmed live: the "runs" table is shared between scout and reputation
+# (reputation's own review checks write command="whatsapp_check" rows to
+# the exact same table). Without excluding that here, whenever a
+# reputation check completed more recently than any scout run,
+# _get_latest_run() picked up the reputation run as scout's own cache and
+# fed its findings (the store's own reviews, tagged
+# competitor_name=<store name>) into a scout report as if they were
+# competitor intelligence. A real "competitors" query about a real
+# competitor came back saying "there is zero information regarding a
+# competitor... the findings only contain internal reviews for Anatummy."
+
+def _seed_reputation_run(store_id, finding_count=50):
+    from app.core.db import ScoutRun
+    with TestSession() as db:
+        run = ScoutRun(store_id=store_id, command="whatsapp_check", status="ok",
+                       finding_count=finding_count)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run.id
+
+
+def _add_finding_with_type(store_id, competitor_name, run_id, update_type="post"):
+    from app.core.db import Finding
+    with TestSession() as db:
+        db.add(Finding(
+            store_id=store_id, run_id=run_id, competitor_name=competitor_name,
+            source_platform="google_maps", update_type=update_type,
+            content_text="x", content_hash=f"{competitor_name}-{run_id}-{update_type}",
+        ))
+        db.commit()
+
+
+class TestGetLatestRunExcludesReputationRuns:
+    def test_reputation_run_is_never_returned_as_scout_cache(self, store_id):
+        from app.agents.scout.pipeline import _get_latest_run
+        # Reputation ran more recently than any scout run for this store --
+        # the exact live scenario.
+        rep_run_id = _seed_reputation_run(store_id)
+        _add_finding_with_type(store_id, "Anatummy", rep_run_id, update_type="review")
+
+        run, findings = _get_latest_run(store_id)
+        assert run is None
+        assert findings == []
+
+    def test_a_real_scout_run_is_still_found_even_when_older_than_a_reputation_run(self, store_id):
+        from app.agents.scout.pipeline import _get_latest_run
+        from app.core.db import ScoutRun
+        from datetime import datetime, timedelta
+
+        with TestSession() as db:
+            scout_run = ScoutRun(
+                store_id=store_id, command="scout", status="ok",
+                finished_at=datetime.utcnow() - timedelta(hours=2),
+            )
+            db.add(scout_run)
+            db.commit()
+            db.refresh(scout_run)
+            scout_run_id = scout_run.id
+        _add_finding_with_type(store_id, "Burger Lab", scout_run_id, update_type="post")
+
+        # Reputation ran AFTER the scout run, more recently -- must still
+        # not shadow the real scout run.
+        rep_run_id = _seed_reputation_run(store_id)
+        _add_finding_with_type(store_id, "Anatummy", rep_run_id, update_type="review")
+
+        run, findings = _get_latest_run(store_id)
+        assert run is not None
+        assert run.id == scout_run_id
+        assert all(f.competitor_name == "Burger Lab" for f in findings)
+
+    def test_scout_run_is_found_normally_when_no_reputation_run_exists(self, store_id):
+        from app.agents.scout.pipeline import _get_latest_run
+        scout_run_id = _seed_run(store_id)
+        _add_finding_with_type(store_id, "Burger Lab", scout_run_id, update_type="post")
+
+        run, findings = _get_latest_run(store_id)
+        assert run is not None
+        assert run.id == scout_run_id
