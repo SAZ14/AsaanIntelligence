@@ -280,3 +280,34 @@ def test_competitors_instruction_no_longer_caps_at_1_to_2_lines():
     from app.agents.scout.analysis import _command_instructions
     instructions = _command_instructions("Test Cafe")
     assert "1-2 lines" not in instructions["competitors"]
+
+
+# ── _chat disables GLM thinking mode ──────────────────────────────────────────
+#
+# Confirmed live: with thinking left on, report generation took 37.7s on a
+# small test prompt and, at real production scale (60 findings across 12
+# competitors), occasionally exceeded the 90s per-call timeout -- which,
+# combined with the shared client's max_retries=1, produced an outright
+# report failure ~7 minutes into an otherwise fully-successful run ("Report
+# generation failed: Request timed out." after 144 findings were already
+# scraped and ready). nothink_kwargs cut the same prompt to 11.4s with no
+# measurable quality loss on a realistic multi-competitor report.
+
+def test_chat_disables_thinking_mode():
+    from unittest.mock import MagicMock, patch
+    import app.agents.scout.analysis as analysis_mod
+
+    mock_client = MagicMock()
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = "report text"
+    mock_client.chat.completions.create.return_value = resp
+
+    with patch.object(analysis_mod, "_get_client", return_value=mock_client), \
+         patch.object(analysis_mod, "_get_model", return_value="glm-4.7"):
+        analysis_mod._chat("system prompt", "user prompt")
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert kwargs["timeout"] == 90
+    assert kwargs["max_tokens"] == 2000

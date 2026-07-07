@@ -150,13 +150,29 @@ def _extract_json(text: str) -> list:
 
 
 def _chat(system: str, user: str) -> str:
+    from app.core.llm import nothink_kwargs
+
     client = _get_client()
-    # Report generation with thinking runs long by design -- this overrides
-    # the shared client's 30s interactive default. max_tokens was previously
-    # unset (provider default), which left no explicit headroom for the
-    # denser per-competitor paragraphs REPORT_DEPTH_POLICY asks for.
+    model = _get_model()
+    # Confirmed live: with GLM's thinking mode left on (the previous
+    # behavior here), report generation took 37.7s on a small test prompt
+    # and, at real production scale (60 findings across 12 competitors),
+    # occasionally exceeded this call's own 90s timeout -- which, combined
+    # with the shared client's max_retries=1, meant an outright report
+    # failure ~7 minutes into an otherwise-successful run (confirmed live:
+    # "Report generation failed: Request timed out." after 144 findings
+    # were already scraped and ready). nothink_kwargs cut the same test
+    # prompt to 11.4s with no measurable quality loss on a realistic
+    # multi-competitor report (still cites exact numbers, still gives
+    # concrete per-competitor recommendations, still keeps a thin finding
+    # to one honest sentence) -- reliability wins over a marginal
+    # reasoning benefit for what is fundamentally a "write from the given
+    # evidence" task, not a multi-step reasoning problem. timeout=90
+    # overrides the shared client's 30s interactive default as headroom
+    # for the largest reports; max_tokens gives the denser per-competitor
+    # paragraphs REPORT_DEPTH_POLICY asks for room to actually use.
     resp = client.chat.completions.create(
-        model=_get_model(),
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -164,6 +180,7 @@ def _chat(system: str, user: str) -> str:
         temperature=0.4,
         timeout=90,
         max_tokens=2000,
+        **nothink_kwargs(model),
     )
     return resp.choices[0].message.content
 
