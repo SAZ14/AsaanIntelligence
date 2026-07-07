@@ -922,7 +922,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             f"Latest pending:\n\n" + _format_pending(pending)
         )
 
-    return f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. No negative reviews to action."
+    return f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. Nothing needs a reply right now."
 
 
 def _active_store_ids() -> list[int]:
