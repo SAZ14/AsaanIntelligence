@@ -88,3 +88,75 @@ def test_run_pipeline_all_sources_succeed(monkeypatch):
     assert set(ok) == {"google_maps", "instagram"}
     assert failed == []
     assert len(reviews) == 2
+
+
+# ── Instagram: only comments are customer feedback, captions are not ────────
+#
+# Post captions are the business's own marketing copy, not customer
+# sentiment. Treating them as "reviews" made no sense on its own, and
+# combined with the (separately fixed) rating=0-as-negative bug, an old
+# caption could surface as a "pending negative review" needing a reply --
+# to the business's own post.
+
+class TestInstagramCaptionsExcluded:
+    def test_captions_never_become_findings(self, monkeypatch):
+        from app.review_sources import instagram as ig
+
+        posts = [{
+            "url": "https://instagram.com/p/abc123",
+            "caption": "New burger launch this week! 🍔",
+            "ownerUsername": "anatummyisb",
+            "timestamp": "2026-07-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(ig, "_fetch_posts", lambda client, usernames: posts)
+        monkeypatch.setattr(ig, "_fetch_comments", lambda client, urls: [])
+
+        with patch("apify_client.ApifyClient"):
+            result = ig.fetch_reviews("fake-key", ["anatummyisb"])
+
+        assert result == []
+        assert not any("burger launch" in item.get("text", "") for item in result)
+
+    def test_comments_still_become_findings(self, monkeypatch):
+        from app.review_sources import instagram as ig
+
+        posts = [{"url": "https://instagram.com/p/abc123", "caption": "New burger!",
+                  "ownerUsername": "anatummyisb", "timestamp": "2026-07-01T00:00:00Z"}]
+        comments = [{
+            "text": "This was amazing, best burger in town!",
+            "parentPostUrl": "https://instagram.com/p/abc123",
+            "ownerUsername": "a_real_customer",
+            "timestamp": "2026-07-02T00:00:00Z",
+        }]
+        monkeypatch.setattr(ig, "_fetch_posts", lambda client, usernames: posts)
+        monkeypatch.setattr(ig, "_fetch_comments", lambda client, urls: comments)
+
+        with patch("apify_client.ApifyClient"):
+            result = ig.fetch_reviews("fake-key", ["anatummyisb"])
+
+        assert len(result) == 1
+        assert result[0]["text"] == "This was amazing, best burger in town!"
+        assert result[0]["author"] == "a_real_customer"
+
+    def test_posts_still_fetched_to_discover_comment_urls(self, monkeypatch):
+        """Posts must still be pulled -- comments are fetched per-post-URL,
+        so removing caption-as-finding shouldn't also stop post discovery."""
+        from app.review_sources import instagram as ig
+        calls = []
+
+        def _fake_fetch_posts(client, usernames):
+            calls.append("posts")
+            return [{"url": "https://instagram.com/p/xyz", "caption": "hi"}]
+
+        def _fake_fetch_comments(client, urls):
+            calls.append(("comments", urls))
+            return []
+
+        monkeypatch.setattr(ig, "_fetch_posts", _fake_fetch_posts)
+        monkeypatch.setattr(ig, "_fetch_comments", _fake_fetch_comments)
+
+        with patch("apify_client.ApifyClient"):
+            ig.fetch_reviews("fake-key", ["anatummyisb"])
+
+        assert "posts" in calls
+        assert ("comments", ["https://instagram.com/p/xyz"]) in calls

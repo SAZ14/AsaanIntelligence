@@ -41,6 +41,17 @@ def _fetch_comments(client: ApifyClient, post_urls: list[str]) -> list[dict]:
 
 
 def fetch_reviews(api_key: str, usernames: list[str]) -> list[dict]:
+    """Return customer-generated Instagram content for reputation checking.
+
+    Only comments qualify -- they're actual customer reactions. Post
+    captions are the business's OWN copy, not customer feedback; treating
+    them as "reviews" made no sense (what would "sentiment toward the
+    business" of the business's own marketing caption even mean?), and
+    with the old rating=0-defaults-to-negative classifier bug, a caption
+    older than 3 days could even surface as a "pending negative review"
+    needing a reply -- to your own post. Posts are still fetched here
+    purely to discover which URLs to pull comments from.
+    """
     client = ApifyClient(api_key)
     collected_at = datetime.now(timezone.utc).isoformat()
 
@@ -52,21 +63,6 @@ def fetch_reviews(api_key: str, usernames: list[str]) -> list[dict]:
     comments = _fetch_comments(client, post_urls)
 
     all_items: list[dict] = []
-
-    for p in posts:
-        caption = (p.get("caption") or "").strip()
-        source = f"Instagram - {p.get('ownerUsername', usernames[0])}"
-        if caption:
-            all_items.append({
-                "source": source,
-                "text": caption,
-                "rating": None,
-                "review_date": p.get("timestamp", ""),
-                "url": p.get("url", ""),
-                "author": p.get("ownerUsername", ""),
-                "collected_at": collected_at,
-                "hash": _sha256(source + " post", caption),
-            })
 
     seen: set[str] = set()
     for c in comments:
