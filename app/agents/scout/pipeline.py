@@ -300,15 +300,18 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     _store_findings(run_id, store_id, enriched)
 
     status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+    run_finished_at = datetime.utcnow()
     with SessionLocal() as db:
         db_run = db.query(Run).filter(Run.id == run_id).first()
         if db_run:
-            db_run.finished_at = datetime.utcnow()
+            db_run.finished_at = run_finished_at
             db_run.status = status
             db_run.sources_ok = sources_ok
             db_run.sources_failed = sources_failed
             db_run.finding_count = len(enriched)
             db.commit()
+    if status in ("ok", "partial"):
+        _mark_scout_run_fresh(store_id, run_finished_at, freshness_minutes)
 
     freshness_note = _build_freshness_note(None, is_live=True)
     if sources_failed:
@@ -334,12 +337,43 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     return report_text
 
 
+def _scout_cache_key(store_id: int) -> str:
+    return f"scout:last_run:{store_id}"
+
+
+def _mark_scout_run_fresh(store_id: int, finished_at, freshness_minutes: int) -> None:
+    from app.core import cache as _cache
+    ttl = freshness_minutes * 60
+    if ttl > 0:
+        _cache.set(_scout_cache_key(store_id), {"finished_at": finished_at.isoformat()}, ttl=ttl)
+
+
 def _is_scout_fresh(store_id: int, freshness_minutes: int = FRESHNESS_MINUTES) -> bool:
+    """Redis-backed fast path (app/core/cache.py -- same connection already
+    used for rate limits/cooldowns/the job queue): a pure existence check
+    with no need for the actual cached findings, unlike run()'s own inline
+    cache check (which needs the Finding rows from Postgres regardless of
+    outcome -- for report-building on a hit, or dedup on a miss -- so it
+    can't skip that query the same way; Redis wouldn't save anything
+    there). Falls back to Postgres (source of truth) on a Redis miss."""
     from datetime import datetime, timedelta
+    from app.core import cache as _cache
+
+    cached = _cache.get(_scout_cache_key(store_id))
+    if cached is not None:
+        try:
+            finished_at = datetime.fromisoformat(cached["finished_at"])
+            return finished_at >= datetime.utcnow() - timedelta(minutes=freshness_minutes)
+        except Exception:
+            pass  # malformed cache entry -- fall through to Postgres
+
     latest_run, _ = _get_latest_run(store_id)
     if latest_run is None or latest_run.finished_at is None:
         return False
-    return latest_run.finished_at >= datetime.utcnow() - timedelta(minutes=freshness_minutes)
+    fresh = latest_run.finished_at >= datetime.utcnow() - timedelta(minutes=freshness_minutes)
+    if fresh:
+        _mark_scout_run_fresh(store_id, latest_run.finished_at, freshness_minutes)
+    return fresh
 
 
 def run_scout_all() -> None:

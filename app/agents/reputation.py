@@ -660,27 +660,72 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
     return _chat_about_reviews(store_id, store_name, text)
 
 
-def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
-    """Return (True, text) if a completed check exists within REPUTATION_CACHE_HOURS, else (False, '')."""
-    from datetime import datetime, timedelta
-    from app.review_sources import db as review_db
+def _reputation_cache_key(store_id: int) -> str:
+    return f"reputation:last_check:{store_id}"
+
+
+def _get_reputation_last_check(store_id: int) -> datetime | None:
+    """Timestamp of the most recent completed ("ok") review check within
+    REPUTATION_CACHE_HOURS, or None if stale/missing.
+
+    Checks Redis first (app/core/cache.py -- same connection already used
+    for rate limits/cooldowns/the job queue) so the common case (a check
+    shortly after another check or a cron poll) is a single fast round-trip
+    instead of a Postgres query. Postgres remains the source of truth: on a
+    Redis miss (cold start, restart, key eviction -- cache.py fails open
+    the same way everywhere else in this codebase), falls back to the same
+    query this used to run unconditionally, and repopulates Redis with
+    whatever's left of the freshness window so the next call hits the fast
+    path again. This one helper replaces what used to be two separate,
+    near-identical Postgres queries (check_reputation_cache and
+    _check_reviews each had their own copy)."""
+    from app.core import cache as _cache
+
+    key = _reputation_cache_key(store_id)
+    cached = _cache.get(key)
+    if cached is not None:
+        try:
+            return datetime.fromisoformat(cached["finished_at"])
+        except Exception:
+            pass  # malformed cache entry -- fall through to Postgres
+
     from app.core.db import SessionLocal, ScoutRun as Run
 
     cutoff = datetime.utcnow() - timedelta(hours=REPUTATION_CACHE_HOURS)
     with SessionLocal() as db:
-        cached = db.query(Run).filter(
+        run = db.query(Run).filter(
             Run.store_id == store_id,
             Run.command == "whatsapp_check",
             Run.status == "ok",
             Run.finished_at >= cutoff,
         ).order_by(Run.finished_at.desc()).first()
-        if cached:
-            db.expunge(cached)
+        finished_at = run.finished_at if run else None
 
-    if not cached:
+    if finished_at is not None:
+        remaining = REPUTATION_CACHE_HOURS * 3600 - int((datetime.utcnow() - finished_at).total_seconds())
+        if remaining > 0:
+            _cache.set(key, {"finished_at": finished_at.isoformat()}, ttl=remaining)
+    return finished_at
+
+
+def _mark_reputation_checked(store_id: int, finished_at: datetime) -> None:
+    from app.core import cache as _cache
+    _cache.set(
+        _reputation_cache_key(store_id),
+        {"finished_at": finished_at.isoformat()},
+        ttl=REPUTATION_CACHE_HOURS * 3600,
+    )
+
+
+def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
+    """Return (True, text) if a completed check exists within REPUTATION_CACHE_HOURS, else (False, '')."""
+    from app.review_sources import db as review_db
+
+    finished_at = _get_reputation_last_check(store_id)
+    if finished_at is None:
         return False, ""
 
-    age_min = int((datetime.utcnow() - cached.finished_at).total_seconds() / 60)
+    age_min = int((datetime.utcnow() - finished_at).total_seconds() / 60)
     age_str = f"{age_min} min ago" if age_min > 0 else "just now"
     logger.info("reputation.cache_hit: store=%d age_min=%d", store_id, age_min)
 
@@ -717,19 +762,9 @@ def _check_reviews(store_id: int, store_name: str) -> str:
         return f"*{store_name}* - Review scrape already in progress. Results coming shortly 🔍"
 
     # Cache: if a review check completed recently, skip Apify and read from DB
-    cutoff = datetime.utcnow() - timedelta(hours=REPUTATION_CACHE_HOURS)
-    with SessionLocal() as db:
-        cached = db.query(Run).filter(
-            Run.store_id == store_id,
-            Run.command == "whatsapp_check",
-            Run.status == "ok",
-            Run.finished_at >= cutoff,
-        ).order_by(Run.finished_at.desc()).first()
-        if cached:
-            db.expunge(cached)
-
-    if cached:
-        age_min = int((datetime.utcnow() - cached.finished_at).total_seconds() / 60)
+    cache_finished_at = _get_reputation_last_check(store_id)
+    if cache_finished_at is not None:
+        age_min = int((datetime.utcnow() - cache_finished_at).total_seconds() / 60)
         age_str = f"{age_min} min ago" if age_min > 0 else "just now"
         logger.info("reputation.check: store=%d cache_hit age_min=%d", store_id, age_min)
         pending = review_db.get_pending_finding(store_id)
@@ -758,6 +793,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     if not raw_reviews:
         status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
         review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
+        if status == "ok":
+            _mark_reputation_checked(store_id, datetime.utcnow())
         return f"*{store_name}* - No new reviews found across all platforms."
 
     # Cap to most recent MAX_REVIEWS_PER_CHECK reviews
@@ -817,6 +854,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
     status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
     review_db.update_run(run_id, status, sources_ok, sources_failed, new_count)
+    if status == "ok":
+        _mark_reputation_checked(store_id, datetime.utcnow())
 
     if new_count == 0:
         return f"*{store_name}* - No new reviews found. All up to date."
