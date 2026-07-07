@@ -1890,6 +1890,22 @@ async def debug_jobqueue_clear() -> JSONResponse:
     return JSONResponse({"status": "cleared", "deleted": deleted})
 
 
+@app.post("/admin/debug/freshness_cache/clear")
+async def debug_freshness_cache_clear(store_id: int) -> JSONResponse:
+    """TEMPORARY — delete a store's scout/reputation Redis freshness-cache
+    keys (app/core/cache.py). No public Redis proxy exists, so this is the
+    only way to clear them remotely. Postgres (the source of truth) still
+    needs to be backdated separately for the next check to actually
+    re-scrape. Remove after use."""
+    from app.core import cache as _cache
+    from app.agents.scout.pipeline import _scout_cache_key
+    from app.agents.reputation import _reputation_cache_key
+
+    keys = [_scout_cache_key(store_id), _reputation_cache_key(store_id)]
+    _cache.delete(*keys)
+    return JSONResponse({"status": "cleared", "store_id": store_id, "keys": keys})
+
+
 @app.get("/admin/stores")
 async def list_stores() -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreTwilioNumber
