@@ -1790,11 +1790,15 @@ async def configure_reputation(store_id: int, request: Request) -> JSONResponse:
     Body (all optional — send only what you want to update):
       google_maps_terms    JSON array  ["Venue Name", "Venue Name City"]
       google_maps_location string      "City, Country"
-      foodpanda_url        string
-      foodpanda_keyword    string
       instagram_usernames  JSON array  ["handle1"]
       brand_voice_tone     string      "Warm, genuine, professional"
       brand_voice_never_say JSON array ["unfortunately"]
+
+    FoodPanda scraping was removed -- it never produced a single usable
+    review across any store's history (no official reviews API, and every
+    Apify actor tried failed to reliably extract real review text).
+    foodpanda_url/foodpanda_keyword are accepted for backwards compatibility
+    but silently ignored.
     """
     import json as _json
     from datetime import datetime as _dt
@@ -1824,10 +1828,8 @@ async def configure_reputation(store_id: int, request: Request) -> JSONResponse:
             rc.google_maps_terms = _parse_list("google_maps_terms")
         if "google_maps_location" in params:
             rc.google_maps_location = str(params["google_maps_location"]).strip() or None
-        if "foodpanda_url" in params:
-            rc.foodpanda_url = str(params["foodpanda_url"]).strip() or None
-        if "foodpanda_keyword" in params:
-            rc.foodpanda_keyword = str(params["foodpanda_keyword"]).strip() or None
+        # foodpanda_url / foodpanda_keyword intentionally not handled --
+        # FoodPanda scraping was removed (see docstring above).
         if "instagram_usernames" in params:
             rc.instagram_usernames = _parse_list("instagram_usernames")
         if "brand_voice_tone" in params:

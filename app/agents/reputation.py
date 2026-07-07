@@ -265,7 +265,15 @@ def classify_reviews_batch(
 
     # Rule-based for older reviews (no LLM cost)
     for ra in historical:
-        if ra.rating >= 4:
+        if not ra.rating:
+            # 0 = no star rating at all (e.g. Instagram captions/comments,
+            # which normalizer.py defaults to 0), not an actual 1-2 star
+            # review. Without this check every unrated older Instagram item
+            # fell into the "<= 2" branch below and got auto-labeled
+            # negative regardless of what it actually said.
+            ra.issue_class = "other"
+            ra.sentiment = "neutral"
+        elif ra.rating >= 4:
             ra.issue_class = "praise"
             ra.sentiment = "positive"
         elif ra.rating <= 2:
@@ -511,7 +519,6 @@ def _load_brand_voice(store_id: int, store_name: str) -> BrandVoice:
 
 _PLATFORM_NAMES = {
     "google_maps": "Google Maps",
-    "foodpanda": "FoodPanda",
     "instagram": "Instagram",
 }
 
@@ -584,9 +591,9 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         review_db.update_finding_summary(finding["id"], summary)
         draft = summary.get("draft_reply", "")
         # We can't publish this for you -- there's no write access to Google
-        # Maps / FoodPanda / Instagram review replies. This only marks the
-        # draft as handled on our side; the owner still has to paste it on
-        # the actual platform themselves.
+        # Maps / Instagram review replies. This only marks the draft as
+        # handled on our side; the owner still has to paste it on the
+        # actual platform themselves.
         reply = (
             f"*{store_name}* - Marked as replied ✅\n\n"
             f"Copy this and post it on *{_platform_label(finding)}*:\n\n"
@@ -714,15 +721,19 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
     logger.info("reputation.check: store=%d scraping_reviews", store_id)
     try:
-        raw_reviews = run_pipeline(store_id)
+        raw_reviews, sources_ok, sources_failed = run_pipeline(store_id)
     except Exception as exc:
         logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
         review_db.update_run(run_id, "error", [], [], 0)
         return f"*{store_name}* - Review check failed: {exc}"
 
-    logger.info("reputation.check: store=%d reviews_found=%d", store_id, len(raw_reviews))
+    logger.info(
+        "reputation.check: store=%d reviews_found=%d sources_ok=%s sources_failed=%s",
+        store_id, len(raw_reviews), sources_ok, sources_failed,
+    )
     if not raw_reviews:
-        review_db.update_run(run_id, "ok", [], [], 0)
+        status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+        review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
         return f"*{store_name}* - No new reviews found across all platforms."
 
     # Cap to most recent MAX_REVIEWS_PER_CHECK reviews
@@ -781,7 +792,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
         if review_db.save_review_finding(store_id, run_id, store_name, raw, ai_summary):
             new_count += 1
 
-    review_db.update_run(run_id, "ok", ["pipeline"], [], new_count)
+    status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+    review_db.update_run(run_id, status, sources_ok, sources_failed, new_count)
 
     if new_count == 0:
         return f"*{store_name}* - No new reviews found. All up to date."

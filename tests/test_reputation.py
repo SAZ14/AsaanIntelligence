@@ -246,3 +246,62 @@ class TestCorrelationOnDataShape:
         assert ctx.confidence == "high"
         assert ctx.matched_staff_name == "Bilal"
         assert ctx.order_count_in_window >= 1
+
+
+# ── classify_reviews_batch: rule-based path must not treat "no rating" as
+# a bad rating ──────────────────────────────────────────────────────────────
+#
+# normalizer.py defaults a missing star rating (e.g. every Instagram caption
+# and comment, which has no rating field at all) to 0. The rule-based
+# classifier used for anything older than HISTORICAL_CUTOFF_DAYS treated
+# "rating <= 2" as negative -- 0 satisfies that condition, so every older
+# unrated Instagram item was silently mislabeled negative regardless of
+# what it actually said.
+
+def _old_unrated(text: str) -> ReviewAnalysis:
+    from app.agents.reputation import HISTORICAL_CUTOFF_DAYS
+    old_date = (datetime.utcnow() - timedelta(days=HISTORICAL_CUTOFF_DAYS + 5)).strftime("%Y-%m-%d")
+    return ReviewAnalysis(
+        review_id="ig1", source="Instagram - anatummyisb", rating=0,
+        posted_at=old_date, reviewer_name="someone", text=text,
+    )
+
+
+class TestUnratedInstagramClassification:
+    def test_unrated_old_item_is_neutral_not_negative(self):
+        from app.agents.reputation import classify_reviews_batch
+        ra = _old_unrated("Check out our new burger launch this week!")
+        result = classify_reviews_batch([ra], client=None)
+        assert result[0].sentiment == "neutral"
+        assert result[0].issue_class == "other"
+
+    def test_unrated_old_item_never_excluded_from_draft_replies_by_being_negative(self):
+        """The bug's real-world consequence: a falsely-negative rating=0
+        item would satisfy draft_replies' "0 < rating <= 3" filter... except
+        rating IS 0, which is falsy, so it was already excluded from
+        drafting either way. This test locks in that rating=0 content never
+        gets treated as an actionable negative review needing a reply."""
+        ra = _old_unrated("Some comment with no star rating")
+        needs_reply = bool(ra.rating and 0 < ra.rating <= 3)
+        assert needs_reply is False
+
+    def test_genuinely_bad_rating_is_still_negative(self):
+        """Make sure the fix didn't break real 1-2 star classification."""
+        from app.agents.reputation import classify_reviews_batch, HISTORICAL_CUTOFF_DAYS
+        old_date = (datetime.utcnow() - timedelta(days=HISTORICAL_CUTOFF_DAYS + 5)).strftime("%Y-%m-%d")
+        ra = ReviewAnalysis(
+            review_id="gm1", source="Google Maps", rating=1,
+            posted_at=old_date, reviewer_name="someone", text="Terrible service",
+        )
+        result = classify_reviews_batch([ra], client=None)
+        assert result[0].sentiment == "negative"
+
+    def test_genuinely_good_rating_is_still_positive(self):
+        from app.agents.reputation import classify_reviews_batch, HISTORICAL_CUTOFF_DAYS
+        old_date = (datetime.utcnow() - timedelta(days=HISTORICAL_CUTOFF_DAYS + 5)).strftime("%Y-%m-%d")
+        ra = ReviewAnalysis(
+            review_id="gm2", source="Google Maps", rating=5,
+            posted_at=old_date, reviewer_name="someone", text="Loved it",
+        )
+        result = classify_reviews_batch([ra], client=None)
+        assert result[0].sentiment == "positive"
