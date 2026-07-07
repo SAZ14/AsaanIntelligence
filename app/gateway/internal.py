@@ -29,28 +29,28 @@ def staff_help_text(store_name: str) -> str:
     its own commands) instead of ever reaching either of them. One function,
     always the full command list across all four agents."""
     return (
-        f"Staff tools — {store_name}\n\n"
-        "*Integrity* — POS audit & leakage\n"
-        "  summary — full overview\n"
-        "  leakage — theft & voids breakdown\n"
-        "  profit — margins & COGS\n"
-        "  staff — per-staff anomalies\n"
-        "  daily / weekly — period report\n"
-        "  refresh — re-sync latest POS data\n\n"
-        "*Revenue* — Sales & strategy\n"
-        "  revenue — overall sales performance\n"
-        "  sales — item & category breakdown\n"
-        "  pricing — price optimisation tips\n"
-        "  strategy — growth recommendations\n\n"
-        "*Scout* — Competitor intelligence\n"
-        "  scout — scrape rivals (cached 24h)\n\n"
-        "*Reputation* — Review management\n"
-        "  check — scrape latest reviews (cached 24h)\n"
-        "  post — mark suggested reply as replied (post it yourself first)\n"
-        "  ignore — skip current review\n"
-        "  edit <text> — rewrite suggested reply\n\n"
-        "You can also just write in plain language — e.g. \"how did we do this "
-        "week\" or \"what are competitors offering\" — no need to remember exact "
+        f"Staff tools: {store_name}\n\n"
+        "*Integrity*: POS audit & leakage\n"
+        "  summary: full overview\n"
+        "  leakage: theft & voids breakdown\n"
+        "  profit: margins & COGS\n"
+        "  staff: per-staff anomalies\n"
+        "  daily / weekly: period report\n"
+        "  refresh: re-sync latest POS data\n\n"
+        "*Revenue*: Sales & strategy\n"
+        "  revenue: overall sales performance\n"
+        "  sales: item & category breakdown\n"
+        "  pricing: price optimisation tips\n"
+        "  strategy: growth recommendations\n\n"
+        "*Scout*: Competitor intelligence\n"
+        "  scout: scrape rivals (cached 24h)\n\n"
+        "*Reputation*: Review management\n"
+        "  check: scrape latest reviews (cached 24h)\n"
+        "  post: mark suggested reply as replied (post it yourself first)\n"
+        "  ignore: skip current review\n"
+        "  edit <text>: rewrite suggested reply\n\n"
+        "You can also just write in plain language, e.g. \"how did we do this "
+        "week\" or \"what are competitors offering\", no need to remember exact "
         "commands.\n\n"
         "Type *menu* to switch modes."
     )
@@ -306,7 +306,7 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
     from app.gateway.main import _scout_rate_ok
 
     if not _scout_rate_ok(from_number):
-        return "You've sent too many scout requests. Limit is 3 per hour — please wait before trying again."
+        return "You've sent too many scout requests. Limit is 3 per hour, please wait before trying again."
 
     with SessionLocal() as db:
         cutoff = datetime.utcnow() - timedelta(minutes=15)
@@ -316,7 +316,7 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
             Run.started_at >= cutoff,
         ).first()
     if in_flight:
-        return "Scout is already running — your report will arrive in a few minutes. Please wait."
+        return "Scout is already running, your report will arrive in a few minutes. Please wait."
 
     try:
         from app.agents.scout.pipeline import run as scout_run

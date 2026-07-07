@@ -116,8 +116,8 @@ def _mode_menu(store_name: str) -> str:
     return (
         f"Welcome to {store_name}!\n\n"
         "Reply with:\n"
-        "  1 — Staff tools (integrity, revenue, scout, reputation)\n"
-        "  2 — Customer app (stamps, deals, loyalty)\n\n"
+        "  1: Staff tools (integrity, revenue, scout, reputation)\n"
+        "  2: Customer app (stamps, deals, loyalty)\n\n"
         "Type *menu* anytime to return here."
     )
 
@@ -521,14 +521,14 @@ def _internal_ack(body: str) -> str:
     words = set(_re.sub(r"[^\w\s]", "", lower).split())
     first = lower.split()[0] if lower else ""
     if first in {"check", "scrape", "sync", "crawl"} and not _is_scout_message(body):
-        return "Checking your reviews now 🔍 I'll message you when done (30-90 sec)."
+        return "Checking your reviews now. I'll message you when done (30-90 sec)."
     if words & _REVIEW_KEYWORDS:
-        return "Pulling up your reviews — give me a sec 👀"
+        return "Pulling up your reviews, give me a sec."
     if words & _INTEGRITY_SHORTHAND:
-        return "Running your POS audit — report incoming 📊"
+        return "Running your POS audit, report incoming."
     if words & _REVENUE_KEYWORDS:
-        return "On it — checking your sales data now 📈"
-    return "On it — I'll message you back shortly."
+        return "On it, checking your sales data now."
+    return "On it, I'll message you back shortly."
 
 
 def _bg_internal(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None,
@@ -764,7 +764,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         if not ok:
             if reason == "inflight":
                 logger.info("gateway.webhook: customer inflight drop from=%s", from_number)
-                return _twiml("Still working on your last message — almost there! 🙏")
+                return _twiml("Still working on your last message, almost there! 🙏")
             logger.info("gateway.webhook: customer cooldown drop from=%s", from_number)
             return _twiml_empty()
         background_tasks.add_task(_bg_customer, store_id, from_number, _twilio_send_fn, body)
@@ -818,7 +818,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
             # 1. Per-user rate limit (3 per hour)
             if not _scout_rate_ok(from_number):
                 return _twiml(
-                    "You've sent too many scout requests. Limit is 3 per hour — "
+                    "You've sent too many scout requests. Limit is 3 per hour, "
                     "please wait before trying again."
                 )
 
@@ -832,7 +832,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                 ).first()
                 if in_flight:
                     return _twiml(
-                        "Scout is already running — your report will arrive in a few minutes. Please wait."
+                        "Scout is already running, your report will arrive in a few minutes. Please wait."
                     )
 
                 # 3. Return cached report if last successful run was recent (< 24h)
@@ -882,7 +882,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         # Dispatch every command as a background task and ack immediately.
         if not _staff_dispatch_ok(from_number):
             logger.info("gateway.webhook: staff cooldown drop from=%s", from_number)
-            return _twiml("Still working on your last request — one moment! 🙏")
+            return _twiml("Still working on your last request, one moment!")
         ack = _internal_ack(body)
         logger.info("gateway.webhook: internal_async store=%d from=%s ack=%r", store_id, from_number, ack)
         _dispatch_durable(
@@ -898,7 +898,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     if not ok:
         if reason == "inflight":
             logger.info("gateway.webhook: staff-customer inflight drop from=%s", from_number)
-            return _twiml("Still working on your last message — almost there! 🙏")
+            return _twiml("Still working on your last message, almost there! 🙏")
         logger.info("gateway.webhook: staff-customer cooldown drop from=%s", from_number)
         return _twiml_empty()
     background_tasks.add_task(_bg_customer, store_id, from_number, _twilio_send_fn, body)
@@ -957,7 +957,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
         if not ok:
             if reason == "inflight":
                 logger.info("%s: customer inflight drop from=%s", log_prefix, from_number)
-                background_tasks.add_task(send_fn, "Still working on your last message — almost there! 🙏")
+                background_tasks.add_task(send_fn, "Still working on your last message, almost there! 🙏")
             else:
                 logger.info("%s: customer cooldown drop from=%s", log_prefix, from_number)
             return "throttled"
@@ -1012,7 +1012,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
             if not _scout_rate_ok(from_number):
                 background_tasks.add_task(
                     send_fn,
-                    "You've sent too many scout requests. Limit is 3 per hour — please wait.",
+                    "You've sent too many scout requests. Limit is 3 per hour, please wait.",
                 )
                 return "ok"
 
@@ -1026,7 +1026,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
                 if in_flight:
                     background_tasks.add_task(
                         send_fn,
-                        "Scout is already running — your report will arrive in a few minutes.",
+                        "Scout is already running, your report will arrive in a few minutes.",
                     )
                     return "ok"
 
@@ -1074,7 +1074,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
 
         if not _staff_dispatch_ok(from_number):
             logger.info("%s: staff cooldown drop from=%s", log_prefix, from_number)
-            background_tasks.add_task(send_fn, "Still working on your last request — one moment! 🙏")
+            background_tasks.add_task(send_fn, "Still working on your last request, one moment!")
             return "throttled"
         ack = _internal_ack(body_text)
         logger.info("%s: internal_async store=%d from=%s ack=%r", log_prefix, store_id, from_number, ack)
@@ -1090,7 +1090,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
     if not ok:
         if reason == "inflight":
             logger.info("%s: staff-customer inflight drop from=%s", log_prefix, from_number)
-            background_tasks.add_task(send_fn, "Still working on your last message — almost there! 🙏")
+            background_tasks.add_task(send_fn, "Still working on your last message, almost there! 🙏")
         else:
             logger.info("%s: staff-customer cooldown drop from=%s", log_prefix, from_number)
         return "throttled"
@@ -1186,14 +1186,14 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
         if not b64:
             logger.warning("openwa.webhook: document without media data store=%d keys=%s",
                            store_id, sorted(data.keys()))
-            background_tasks.add_task(_owa_send, "Couldn't read the attached file — please resend it.")
+            background_tasks.add_task(_owa_send, "Couldn't read the attached file, please resend it.")
             return JSONResponse({"status": "ok"})
         import base64 as _b64
         try:
             content = _b64.b64decode(b64).decode("utf-8-sig", errors="replace")
         except Exception as exc:
             logger.error("openwa.webhook: media decode failed store=%d: %s", store_id, exc)
-            background_tasks.add_task(_owa_send, "Couldn't read the attached file — please resend it as CSV.")
+            background_tasks.add_task(_owa_send, "Couldn't read the attached file, please resend it as CSV.")
             return JSONResponse({"status": "ok"})
         logger.info("openwa.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
 

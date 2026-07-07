@@ -154,7 +154,7 @@ def menu_opportunities(
     for mi in heroes:
         moves.append(MenuMove(
             kind="feature", name=mi.name,
-            detail=f"{mi.margin*100:.0f}% margin and already selling — "
+            detail=f"{mi.margin*100:.0f}% margin and already selling, "
                    f"put it on specials / barista upsell.",
         ))
 
@@ -167,7 +167,7 @@ def menu_opportunities(
         if mi.margin is not None and mi.margin < 0.35:
             moves.append(MenuMove(
                 kind="fix", name=mi.name,
-                detail=f"only {mi.margin*100:.0f}% margin — reprice, re-source, "
+                detail=f"only {mi.margin*100:.0f}% margin, reprice, re-source, "
                        f"or drop it for something that earns its place.",
             ))
 
@@ -177,7 +177,7 @@ def menu_opportunities(
         if cat.split()[0].rstrip("s").lower() not in {p.lower() for p in present}:
             moves.append(MenuMove(
                 kind="add", name=cat,
-                detail="high-margin category you don't carry yet — easy add to "
+                detail="high-margin category you don't carry yet, easy add to "
                        "lift both ticket size and choice.",
             ))
     return moves

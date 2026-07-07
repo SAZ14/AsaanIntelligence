@@ -160,7 +160,7 @@ def _execute(raw: str) -> None:
             except Exception:
                 pass
         try:
-            send_fn("Sorry — that request couldn't be completed. Please try again.")
+            send_fn("Sorry, that request couldn't be completed. Please try again.")
         except Exception:
             logger.error("jobqueue: failure notice undeliverable for job %s", job["id"])
 

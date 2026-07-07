@@ -128,7 +128,8 @@ def handle_merchant_message(
         messages=[
             {"role": "system", "content": (
                 f"You are the owner assistant for {config.venue_name}. "
-                f"Answer briefly using only this data:\n{context}"
+                f"Answer briefly using only this data. "
+                f"No em-dashes -- use a comma or colon instead. No emojis.\n{context}"
             )},
             {"role": "user", "content": text},
         ],

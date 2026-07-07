@@ -221,7 +221,7 @@ def _decrease_candidate(units: dict[str, int], menu, span: int) -> "PriceMove | 
         name=mi.name, category=mi.category, units_month=m_units, direction="down",
         bump=bump, current_price=mi.price, new_price=mi.price - bump,
         monthly_impact=0.0,
-        reason=f"priciest {mi.category.lower()} item and slow (~{m_units}/mo) — "
+        reason=f"priciest {mi.category.lower()} item and slow (~{m_units}/mo), "
                f"a small cut may move more",
     )
 

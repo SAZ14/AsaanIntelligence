@@ -27,7 +27,7 @@ def broadcast_for_store(store_id: int) -> int:
     config = load_venue_config(store_id)
     message = format_leaderboard(
         counts, members,
-        title=f"{config.venue_name} — This week's top collectors",
+        title=f"{config.venue_name}, this week's top collectors",
     )
     sent = 0
     for member in members.values():

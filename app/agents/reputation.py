@@ -392,7 +392,7 @@ def draft_replies(
             f"You write public review responses on behalf of {effective_venue}. "
             f"Tone: {brand_voice.tone}. "
             f"{never_say_str}"
-            "Reply directly — no quotation marks, no intro like 'Here is a reply:'."
+            "Reply directly, no quotation marks, no intro like 'Here is a reply:'."
         )
     else:
         effective_venue = venue_name or DEFAULT_VENUE_NAME
@@ -400,7 +400,7 @@ def draft_replies(
         system_msg = (
             f"You write public review responses on behalf of {effective_venue}. "
             f"Brand voice: {bv_tone}. "
-            "Reply directly — no quotation marks."
+            "Reply directly, no quotation marks."
         )
 
     for ra in reviews:
@@ -429,7 +429,8 @@ def draft_replies(
             f"Review by {ra.reviewer_name} ({ra.rating}/5 on {ra.source}): \"{ra.text}\"\n"
             f"Visit context: {context_str}\n"
             f"Issue: {ra.issue_class}\n\n"
-            "Be specific to their experience, not generic. Do not use emojis."
+            "Be specific to their experience, not generic. Do not use emojis. "
+            "No em-dashes -- use a comma or colon instead."
         )
 
         try:
@@ -886,7 +887,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
                 f"\"{(r.get('text') or '')[:100]}\"\n"
             )
     else:
-        recent_ctx += "(None — type CHECK to scrape new reviews)\n"
+        recent_ctx += "(None, type CHECK to scrape new reviews)\n"
 
     system = (
         f"You assist the owner of '{store_name}' with review management on WhatsApp. "
@@ -895,7 +896,8 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
         "on the actual platform themselves, we can't publish it for them), "
         "*EDIT <text>* (revise draft), "
         "*IGNORE* (skip), *CHECK* (scrape new reviews).\n\n"
-        "WhatsApp format: no markdown, no em-dashes, use *word* for bold, short paragraphs.\n\n"
+        "WhatsApp format: no markdown, no em-dashes (use a comma or colon instead), "
+        "no emojis, use *word* for bold, short paragraphs.\n\n"
         f"{pending_ctx}\n{recent_ctx}"
     )
 

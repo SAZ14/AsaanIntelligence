@@ -83,7 +83,7 @@ DEFAULT_CAMPAIGNS: list[Campaign] = [
              "regular", est_cost_per_redemption=180.0,
              fits_dayparts=("Afternoon", "Evening", "Midday")),
     Campaign("priority_table", "Priority table",
-             "A held, best-in-house table — no wait",
+             "A held, best-in-house table, no wait",
              "premium", est_cost_per_redemption=0.0,
              fits_dayparts=("Evening", "Late night")),
     Campaign("members_mocktail", "Members-only mocktail",

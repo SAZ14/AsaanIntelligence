@@ -226,21 +226,23 @@ def _llm_generate(
         return ""
     system_content = (
         f"You are a friendly team member at {venue_name} chatting on WhatsApp. "
-        f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences — "
+        f"Guest name: {member.name or 'friend'}. Keep replies under 3 short sentences, "
         f"EXCEPT when listing menu items: list ALL items and prices from the context, do not cut the list short. "
-        f"Be warm, natural, and conversational — like a real human, not a robot. "
+        f"Be warm, natural, and conversational, like a real human, not a robot. "
         f"Naturally steer towards the menu, deals, or stamps.\n\n"
         f"WhatsApp formatting rules:\n"
         f"- Bold with *single asterisks* only, never **double**\n"
         f"- No markdown headers (no ##)\n"
-        f"- No em-dashes — use a colon or comma instead\n"
-        f"- Short sentences, 1-2 emojis max per reply\n\n"
+        f"- No em-dashes, use a colon or comma instead\n"
+        f"- Short sentences. A small number of contextually relevant emojis are welcome "
+        f"(e.g. 🍔 next to a burger, 🍕 next to pizza) -- max 3 per paragraph, never more, "
+        f"and never just decoration with no connection to what's being said\n\n"
         f"Content rules:\n"
-        f"(1) ALWAYS use exact prices from the MENU — never guess or round.\n"
+        f"(1) ALWAYS use exact prices from the MENU, never guess or round.\n"
         f"(2) For location questions, copy branch names word-for-word from STORE KNOWLEDGE.\n"
         f"(3) For hours questions, state the exact open and close times from STORE KNOWLEDGE.\n"
-        f"(4) For delivery questions, copy the EXACT platform name(s) from STORE KNOWLEDGE only — do not add any platform not mentioned there.\n"
-        f"(5) When asked about the menu or specific items, LIST the items and prices directly from MENU context — never say 'I'll send a menu link' or suggest a link. There is no link.\n"
+        f"(4) For delivery questions, copy the EXACT platform name(s) from STORE KNOWLEDGE only, do not add any platform not mentioned there.\n"
+        f"(5) When asked about the menu or specific items, LIST the items and prices directly from MENU context, never say 'I'll send a menu link' or suggest a link. There is no link.\n"
         f"(6) Never invent URLs, links, or information not present in the context below.\n\n{context}"
     )
     clean_history = [m for m in history[-6:] if m.get("content")]
@@ -276,7 +278,7 @@ def _chat_reply(
     """LLM call + history save. Use _llm_generate directly when validation is needed."""
     reply = _llm_generate(user_message, context, member, history, venue_name)
     if not reply:
-        return f"Sorry, I'm having trouble right now — try again in a moment 🙏"
+        return "Sorry, I'm having trouble right now, try again in a moment 🙏"
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
     save_chat_session(store_id, phone, history[-6:])
@@ -446,7 +448,7 @@ def handle_customer_message(
             if docs:
                 reply = "\n\n".join(d["content"] for d in docs[:2])
             else:
-                reply = f"Sorry {member.name}, I'm having trouble right now — please try again in a moment 🙏"
+                reply = f"Sorry {member.name}, I'm having trouble right now, please try again in a moment 🙏"
             return AgentReply(reply)
 
         if not reply:

@@ -47,7 +47,7 @@ def apply_stamp(
                 f"Stamp collected! 🎉\n\n"
                 f"You've earned *{config.reward_text}*. "
                 "Show this message to the cashier to claim your reward. "
-                "Your stamps have been reset — keep collecting!"
+                "Your stamps have been reset, keep collecting!"
             ),
             reward_issued=True,
         )
@@ -83,6 +83,6 @@ def welcome_back_message(name: str, member: CommunityMember, config: VenueConfig
     remaining = config.stamp_goal - member.stamps_current
     return (
         f"Welcome back, {name}! 👋\n\n"
-        f"You're on *{member.stamps_current}/{config.stamp_goal} stamps* — "
+        f"You're on *{member.stamps_current}/{config.stamp_goal} stamps*, "
         f"just {remaining} more to earn {config.reward_text}. Keep it up!"
     )

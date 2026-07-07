@@ -312,7 +312,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
 
     freshness_note = _build_freshness_note(None, is_live=True)
     if sources_failed:
-        freshness_note += f" (partial — {', '.join(sources_failed)} failed)"
+        freshness_note += f" (partial, {', '.join(sources_failed)} failed)"
 
     report_text = build_report(command, enriched, freshness_note, user_message=user_message,
                                store_name=store_name, store_category=store_category)

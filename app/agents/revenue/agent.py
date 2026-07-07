@@ -88,10 +88,10 @@ class RevenueAgent:
             if not ups:
                 self._price_wins = ""
             else:
-                lines = ["\n💰 Quick price wins (sell well → small bump):"]
+                lines = ["\nQuick price wins (sell well → small bump):"]
                 for m in ups:
                     lines.append(
-                        f"• {m.name} sells ~{m.units_month}/mo — raise PKR {m.bump:.0f} "
+                        f"• {m.name} sells ~{m.units_month}/mo, raise PKR {m.bump:.0f} "
                         f"({_money(m.current_price)}→{_money(m.new_price)}) = "
                         f"+{_money(m.monthly_impact)}/mo"
                     )
@@ -106,11 +106,11 @@ class RevenueAgent:
             if not pb.items:
                 self._bigger_moves = ""
             else:
-                lines = ["\n📈 Then bigger plays:"]
+                lines = ["\nThen bigger plays:"]
                 for i, it in enumerate(pb.items[:n], 1):
                     impact = f" (~{_money(it.est_monthly_impact)}/mo)" if it.est_monthly_impact else ""
                     first_action = it.action.split(".")[0].strip()
-                    lines.append(f"{i}. [{it.lever}] {it.title}{impact} — {first_action}.")
+                    lines.append(f"{i}. [{it.lever}] {it.title}{impact}: {first_action}.")
                 lines.append("Say 'how do I grow revenue' for the full plan.")
                 self._bigger_moves = "\n".join(lines)
         return self._bigger_moves
@@ -163,7 +163,7 @@ class RevenueAgent:
         top = perf.top_sellers[0] if perf.top_sellers else None
         top_line = f" Best seller: {top.name} ({top.units} sold)." if top else ""
         text = (
-            f"{self.config.venue_name} — {label}\n"
+            f"{self.config.venue_name}, {label}\n"
             f"Revenue: {_money(perf.total_revenue)} across {perf.order_count} orders "
             f"(avg ticket {_money(perf.avg_ticket)}).{top_line}"
         )
@@ -174,9 +174,9 @@ class RevenueAgent:
         perf = product_performance(orders, self.menu, self.staff, period_label=label)
         if not perf.top_sellers:
             return RevenueReply(text=f"No sales found for {label}.", intent="best_sellers", period=period)
-        lines = [f"Top sellers — {label}:"]
+        lines = [f"Top sellers: {label}"]
         for i, s in enumerate(perf.top_sellers, 1):
-            lines.append(f"{i}. {s.name} — {s.units} sold, {_money(s.revenue)}")
+            lines.append(f"{i}. {s.name}: {s.units} sold, {_money(s.revenue)}")
         biggest = perf.top_margin[0] if perf.top_margin else None
         if biggest:
             lines.append(f"Biggest profit driver: {biggest.name} "
@@ -195,7 +195,7 @@ class RevenueAgent:
         downs = [m for m in moves if m.direction == "down"]
         if not ups and not downs:
             return RevenueReply(
-                text="No clear price changes stand out — demand signals don't show "
+                text="No clear price changes stand out, demand signals don't show "
                      "pricing power right now.",
                 intent="pricing", period=period,
             )
@@ -204,7 +204,7 @@ class RevenueAgent:
         for m in ups:
             total += m.monthly_impact
             lines.append(
-                f"• {m.name} sells ~{m.units_month}/mo — raise PKR {m.bump:.0f} "
+                f"• {m.name} sells ~{m.units_month}/mo, raise PKR {m.bump:.0f} "
                 f"({_money(m.current_price)}→{_money(m.new_price)}) = "
                 f"+{_money(m.monthly_impact)}/mo"
             )
@@ -295,7 +295,7 @@ class RevenueAgent:
         labels = {"feature": "Feature", "fix": "Fix/cut", "add": "Add"}
         lines = ["Menu optimisation:"]
         for m in moves:
-            lines.append(f"• {labels.get(m.kind, m.kind)} {m.name} — {m.detail}")
+            lines.append(f"• {labels.get(m.kind, m.kind)} {m.name}: {m.detail}")
         return RevenueReply(text="\n".join(lines), intent="menu", period=period,
                             action="advise")
 
@@ -307,7 +307,7 @@ class RevenueAgent:
             f"• Repeat rate is {f.repeat_rate*100:.0f}% across {f.regulars} regulars. "
             f"{f.loyalty_note}\n"
             f"• {f.lapsed_regulars} regulars have gone quiet (≈ {_money(f.winback_value)} "
-            "of lost value) — send them a members-only invite to win them back.\n"
+            "of lost value), send them a members-only invite to win them back.\n"
             "• Host events in slow hours (open-mic, tastings) to build a habit of coming in."
         )
         return RevenueReply(text=text, intent="loyalty", period=period, action="advise")
@@ -316,7 +316,7 @@ class RevenueAgent:
         cadence = cadence if cadence in ("daily", "weekly", "monthly") else "weekly"
         self.store.upsert_subscription(OwnerSubscription(phone=phone, cadence=cadence))
         return RevenueReply(
-            text=f"Done — I'll send you a {cadence} revenue digest. "
+            text=f"Done, I'll send you a {cadence} revenue digest. "
                  "Reply 'stop digests' any time.",
             intent="subscribe", period=cadence_to_period(cadence), action="subscribed",
         )
@@ -325,16 +325,16 @@ class RevenueAgent:
         prefix = ("I didn't quite catch that. " if unknown else "")
         text = (
             f"{prefix}I'm your revenue advisor for {self.config.venue_name}. Ask me:\n"
-            "• 'How do I grow revenue?' — full growth playbook\n"
-            "• 'How did we do this week?' — revenue summary\n"
-            "• 'Best sellers this month' — top products\n"
-            "• 'How do I raise the average ticket?' — upsell & combos\n"
-            "• 'Menu advice' — high-margin heroes, dogs, gaps\n"
-            "• 'How do I get repeat customers?' — loyalty & win-back\n"
-            "• 'What can I raise prices on?' — pricing advice\n"
-            "• 'When are we slow?' — dead windows\n"
-            "• 'Campaign ideas' — brand-safe ways to fill quiet times\n"
-            "• 'Send me a weekly digest' — scheduled updates"
+            "• 'How do I grow revenue?': full growth playbook\n"
+            "• 'How did we do this week?': revenue summary\n"
+            "• 'Best sellers this month': top products\n"
+            "• 'How do I raise the average ticket?': upsell & combos\n"
+            "• 'Menu advice': high-margin heroes, dogs, gaps\n"
+            "• 'How do I get repeat customers?': loyalty & win-back\n"
+            "• 'What can I raise prices on?': pricing advice\n"
+            "• 'When are we slow?': dead windows\n"
+            "• 'Campaign ideas': brand-safe ways to fill quiet times\n"
+            "• 'Send me a weekly digest': scheduled updates"
         )
         return RevenueReply(text=text, intent="help")
 
@@ -369,7 +369,7 @@ def cadence_to_period(cadence: str) -> str:
 
 def render_digest_text(digest: RevenueDigest, venue_name: str) -> str:
     perf = digest.performance
-    lines = [f"{venue_name} — revenue digest · {digest.period_label}",
+    lines = [f"{venue_name}, revenue digest · {digest.period_label}",
              f"Revenue {_money(perf.total_revenue)} · {perf.order_count} orders · "
              f"avg ticket {_money(perf.avg_ticket)}"]
     if perf.top_sellers:

@@ -331,7 +331,7 @@ def _finish(res: NormalizeResult, header: list[str], out_rows: list[list], dropp
         return res
     if len(out_rows) / max(1, res.rows_in) < MIN_ROW_SUCCESS:
         res.error = (
-            f"Only {len(out_rows)} of {res.rows_in} rows parsed cleanly — "
+            f"Only {len(out_rows)} of {res.rows_in} rows parsed cleanly, "
             "the column mapping looks wrong for this file."
         )
         return res
@@ -361,14 +361,14 @@ def _normalize_sales(rows: list[dict], colmap: dict, res: NormalizeResult) -> No
 
     # Warnings for meaningful absences — staff should know what analyses degrade.
     if "is_void" not in have and "order_status" not in have:
-        res.warnings.append("No void/cancellation column — void analysis unavailable.")
+        res.warnings.append("No void/cancellation column, void analysis unavailable.")
     if "unit_price" not in have and "line_amount" not in have:
-        res.error = "Found no price or amount column — cannot analyze sales without one."
+        res.error = "Found no price or amount column, cannot analyze sales without one."
         return res
     if "qty" not in have:
-        res.warnings.append("No quantity column — assuming 1 per line.")
+        res.warnings.append("No quantity column, assuming 1 per line.")
     if "payment_amount" not in have:
-        res.warnings.append("No paid-total column — payment totals derived from line amounts.")
+        res.warnings.append("No paid-total column, payment totals derived from line amounts.")
 
     order_line_sums: dict[str, float] = {}
     parsed: list[dict] = []
@@ -443,7 +443,7 @@ def _normalize_menu(rows: list[dict], colmap: dict, res: NormalizeResult) -> Nor
     header = list(MENU_FIELDS)
     have = set(colmap)
     if "cost" not in have:
-        res.warnings.append("No cost/COGS column — profit-margin analysis will be limited.")
+        res.warnings.append("No cost/COGS column, profit-margin analysis will be limited.")
     out: list[list] = []
     dropped = 0
     for row in rows:
@@ -565,7 +565,7 @@ def describe_mapping_for_staff(res: NormalizeResult, type_label: str) -> str:
             if _norm_header(src_label) != _norm_header(fieldname):
                 shown.append(f"{src_label} → {fieldname.replace('_', ' ')}")
         if shown:
-            lines.append("\nNew format detected — columns mapped automatically:")
+            lines.append("\nNew format detected, columns mapped automatically:")
             lines.extend(f"• {s}" for s in shown[:8])
             if len(shown) > 8:
                 lines.append(f"• …and {len(shown) - 8} more")

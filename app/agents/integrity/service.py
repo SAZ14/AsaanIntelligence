@@ -20,14 +20,14 @@ CACHE_TTL = 900  # 15 min
 
 HELP_TEXT = (
     "Integrity Agent\n\n"
-    "summary     — executive summary\n"
-    "leakage     — leakage breakdown\n"
-    "profit      — profit & COGS\n"
-    "staff       — per-staff anomalies\n"
-    "daily       — today's period report\n"
-    "weekly      — 7-day trend\n"
-    "refresh     — re-pull POS data\n"
-    "pdf         — full PDF audit (link)\n"
+    "summary     : executive summary\n"
+    "leakage     : leakage breakdown\n"
+    "profit      : profit & COGS\n"
+    "staff       : per-staff anomalies\n"
+    "daily       : today's period report\n"
+    "weekly      : 7-day trend\n"
+    "refresh     : re-pull POS data\n"
+    "pdf         : full PDF audit (link)\n"
     "Or ask any question about your POS data."
 )
 
@@ -156,7 +156,7 @@ def _fallback_summary(r: IntegrityAgentReport) -> str:
     rec = r.reconciliation
     integ = r.integrity
     return (
-        f"{r.venue_name} — {r.period_days}d: "
+        f"{r.venue_name}, {r.period_days}d: "
         f"Net sales PKR {rec.net_sales:,.0f} | "
         f"Gross profit PKR {rec.gross_profit:,.0f} ({rec.gross_margin:.0%}) | "
         f"Leakage PKR {integ.estimated_leakage_period:,.0f} "
@@ -197,7 +197,7 @@ def _staff_text(r: IntegrityAgentReport) -> str:
     lines = ["Staff anomalies (impact-ranked):"]
     for f in staff_findings[:5]:
         lines.append(
-            f"  [{f.severity}] {f.subject} — {f.category}: "
+            f"  [{f.severity}] {f.subject}, {f.category}: "
             f"PKR {f.monetary_impact:,.0f}\n  {f.evidence}"
         )
     return "\n".join(lines)
@@ -209,7 +209,7 @@ def _fmt_period(rpt) -> str:
         return "No data available for the requested period."
     cur = rpt.current
     prev = rpt.previous
-    lines = [f"{rpt.label} — {rpt.venue_name}"]
+    lines = [f"{rpt.label}, {rpt.venue_name}"]
     lines.append(f"Orders: {cur.orders}  |  Sales: PKR {cur.net_sales:,.0f}")
     lines.append(f"Profit: PKR {cur.gross_profit:,.0f} ({cur.gross_margin:.0%})")
     lines.append(f"Leakage: PKR {cur.leakage:,.0f}")

@@ -42,7 +42,7 @@ def classify_agent(text: str) -> str | None:
 def store_menu(stores: list[Store]) -> str:
     lines = ["Which restaurant would you like to work with?\n"]
     for i, s in enumerate(stores, 1):
-        lines.append(f"{i}) {s.name}" + (f" — {s.location}" if s.location else ""))
+        lines.append(f"{i}) {s.name}" + (f", {s.location}" if s.location else ""))
     lines.append("\nReply with the number.")
     return "\n".join(lines)
 

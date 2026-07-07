@@ -26,7 +26,7 @@ def _report_system(store_name: str, store_category: str) -> str:
         f"You advise the owner of {store_name} ({store_category} restaurant). "
         "Be specific: name competitors and their concrete moves, cite exact evidence from "
         "the data whenever it's present -- prices, ratings, engagement numbers, dates, quotes. "
-        "Give concrete, actionable steps — specific bundle ideas, reel concepts, counter-offers. "
+        "Give concrete, actionable steps: specific bundle ideas, reel concepts, counter-offers. "
         "Never be generic, and never pad a thin finding with filler sentences that add no "
         "new information; conversely, don't compress a well-evidenced competitor into one "
         "throwaway line just to save space. Match length to how much real signal exists for "
@@ -38,7 +38,7 @@ def _report_system(store_name: str, store_category: str) -> str:
         "- Bold with *single asterisks*\n"
         "- Numbered lists or bullet points with -\n"
         "- No em-dashes, use a colon or comma instead\n"
-        "- 1-2 emojis per section max, used purposefully\n"
+        "- No emojis\n"
         "- Short paragraphs, easy to read on mobile"
     )
 
@@ -48,23 +48,23 @@ def _command_instructions(store_name: str) -> dict[str, str]:
         "scout": (
             "Write a full competitive intelligence report with these sections:\n"
             "1. SUMMARY (2-3 sentences on the competitive landscape right now)\n"
-            "2. TOP COMPETITOR MOVES (numbered; each gets a real paragraph, not a one-liner — "
+            "2. TOP COMPETITOR MOVES (numbered; each gets a real paragraph, not a one-liner: "
             "competitor name, what they did with specific evidence (price/rating/engagement), and why it matters)\n"
             "3. NEW PRODUCTS & OFFERS (specific items, prices if available)\n"
             "4. CAMPAIGNS & CONTENT TRENDS\n"
             f"5. OPPORTUNITIES FOR {store_name.upper()} (concrete gaps)\n"
             "6. SUGGESTED ACTIONS (3-5 specific, doable moves this week)\n"
-            "7. URGENCY: Low / Medium / High — with one sentence justifying it."
+            "7. URGENCY: Low / Medium / High, with one sentence justifying it."
         ),
         "alerts": (
-            "List ONLY the highest-impact recent competitor moves — new product launches, "
+            "List ONLY the highest-impact recent competitor moves: new product launches, "
             "unusually high-engagement posts, new offers/discounts, or major campaigns. "
             "Skip anything routine. For each: competitor name, what happened (with the actual "
             "numbers/prices/dates from the data), and why it's urgent enough to act on now."
         ),
         "competitors": (
             "For each competitor that has real signal in the findings, write a short paragraph "
-            "covering what they're doing right now — cite the actual evidence (specific menu items, "
+            "covering what they're doing right now: cite the actual evidence (specific menu items, "
             "prices, promotions, ratings, or engagement numbers), not a vague description. "
             f"Add a brief line on why it matters for {store_name} or what to consider doing about it. "
             "Competitors with rich findings deserve more space; a competitor with only one thin "
@@ -81,7 +81,7 @@ def _command_instructions(store_name: str) -> dict[str, str]:
             f"why now, and a specific action {store_name} can take this week."
         ),
         "pricing": (
-            "Report any pricing or menu signals found in the data — specific prices, deals, "
+            "Report any pricing or menu signals found in the data: specific prices, deals, "
             "value offers, or bundle pricing. If price data is unavailable, say so explicitly "
             "and describe menu/product signals instead. Do not invent prices."
         ),

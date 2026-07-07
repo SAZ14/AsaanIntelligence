@@ -13,4 +13,4 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         return reply.body
     except Exception as e:
         logger.error("Customer agent error store=%d: %s", store_id, e)
-        return "Something went wrong — please try again."
+        return "Something went wrong, please try again."
