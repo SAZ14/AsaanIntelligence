@@ -339,3 +339,95 @@ class TestUnratedInstagramClassification:
         result = classify_reviews_batch([ra], client)
         client.chat.completions.create.assert_not_called()
         assert result[0].sentiment == "positive"
+
+
+# ── select_reviews_needing_reply ─────────────────────────────────────────────
+#
+# Positive reviews used to be silently auto-closed with no drafted reply and
+# no way to see or respond to them -- only negative (1-3 star) reviews ever
+# entered the scrollable pending queue. Good reviews deserve a thank-you
+# draft and a chance to be seen too.
+
+def _rated(review_id: str, rating: float) -> ReviewAnalysis:
+    return ReviewAnalysis(
+        review_id=review_id, source="Google Maps", rating=rating,
+        posted_at="2026-07-01", reviewer_name="someone", text="some review text",
+    )
+
+
+class TestSelectReviewsNeedingReply:
+    def test_negative_reviews_are_selected(self):
+        from app.agents.reputation import select_reviews_needing_reply
+        reviews = [_rated("r1", 1.0), _rated("r2", 2.0)]
+        result = select_reviews_needing_reply(reviews)
+        assert {r.review_id for r in result} == {"r1", "r2"}
+
+    def test_positive_reviews_are_now_also_selected(self):
+        from app.agents.reputation import select_reviews_needing_reply
+        reviews = [_rated("r1", 5.0), _rated("r2", 4.0)]
+        result = select_reviews_needing_reply(reviews)
+        assert {r.review_id for r in result} == {"r1", "r2"}
+
+    def test_neutral_3_star_is_not_selected(self):
+        """3 stars already gets an "appreciative" tone via draft_replies for
+        the negative bucket -- keep the existing negative-inclusive <=3
+        boundary intact, don't accidentally double-select it as positive."""
+        from app.agents.reputation import select_reviews_needing_reply, MAX_DRAFT_REPLIES
+        reviews = [_rated("r1", 3.0)]
+        result = select_reviews_needing_reply(reviews)
+        assert len(result) == 1
+        assert result[0].review_id == "r1"
+
+    def test_unrated_reviews_never_selected(self):
+        """No star rating (e.g. every Instagram comment) means no signal to
+        pick a reply tone from -- excluded from both buckets, same as
+        before this change."""
+        from app.agents.reputation import select_reviews_needing_reply
+        reviews = [_rated("r1", 0)]
+        result = select_reviews_needing_reply(reviews)
+        assert result == []
+
+    def test_negative_and_positive_caps_are_independent(self):
+        """A flood of 5-star reviews must not crowd out negative-review
+        coverage, and vice versa -- each bucket has its own cap."""
+        from app.agents.reputation import (
+            select_reviews_needing_reply, MAX_DRAFT_REPLIES, MAX_POSITIVE_DRAFT_REPLIES,
+        )
+        negatives = [_rated(f"neg{i}", 1.0) for i in range(20)]
+        positives = [_rated(f"pos{i}", 5.0) for i in range(20)]
+        result = select_reviews_needing_reply(negatives + positives)
+        selected_ids = {r.review_id for r in result}
+        neg_selected = [rid for rid in selected_ids if rid.startswith("neg")]
+        pos_selected = [rid for rid in selected_ids if rid.startswith("pos")]
+        assert len(neg_selected) == MAX_DRAFT_REPLIES
+        assert len(pos_selected) == MAX_POSITIVE_DRAFT_REPLIES
+        assert len(result) == MAX_DRAFT_REPLIES + MAX_POSITIVE_DRAFT_REPLIES
+
+    def test_mixed_ratings_all_get_selected_up_to_their_own_cap(self):
+        from app.agents.reputation import select_reviews_needing_reply
+        reviews = [_rated("bad", 1.0), _rated("mid", 3.0), _rated("good", 4.0), _rated("great", 5.0)]
+        result = select_reviews_needing_reply(reviews)
+        assert {r.review_id for r in result} == {"bad", "mid", "good", "great"}
+
+
+# ── draft_replies gives positive reviews a real thank-you tone ──────────────
+
+class TestDraftRepliesPositiveTone:
+    def test_five_star_praise_gets_thankful_tone(self):
+        from app.agents.reputation import draft_replies
+        ra = _rated("r1", 5.0)
+        ra.issue_class = "praise"
+        client = _mock_llm_client([])
+        client.chat.completions.create.return_value.choices[0].message.content = "Thank you so much!"
+        draft_replies([ra], client, venue_name="Test Cafe")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        assert "thankful" in prompt.lower()
+        assert ra.draft_reply == "Thank you so much!"
+
+    def test_four_star_gets_warm_thank_you_tone(self):
+        from app.agents.reputation import draft_replies
+        ra = _rated("r1", 4.0)
+        client = _mock_llm_client([])
+        draft_replies([ra], client, venue_name="Test Cafe")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        assert "warm thank you" in prompt.lower()

@@ -28,6 +28,7 @@ CLASSIFIER_BATCH_SIZE = 30
 HISTORICAL_CUTOFF_DAYS = 3
 MAX_REVIEWS_PER_CHECK = 50
 MAX_DRAFT_REPLIES = 5
+MAX_POSITIVE_DRAFT_REPLIES = 5
 # Matches the cron cadence in scripts/run_server.py (3x/day, ~8h apart) --
 # by the time a staff member checks, a scheduled run should always have
 # happened within this window, so their check hits cache instantly instead
@@ -449,6 +450,21 @@ def draft_replies(
     return reviews
 
 
+def select_reviews_needing_reply(analyses: list[ReviewAnalysis]) -> list[ReviewAnalysis]:
+    """Which reviews get a drafted reply and enter the scrollable pending
+    queue (post/edit/ignore). Both rated negative reviews (apologetic/
+    appreciative tone, per draft_replies' own logic) and rated positive ones
+    (thankful/warm tone) qualify -- previously only negative reviews did, so
+    a genuinely good review was silently auto-closed with no draft and no
+    way to see or reply to it. Capped separately (not combined) so a flood
+    of 5-star reviews can't crowd out negative-review coverage, which
+    matters more. Excludes unrated platforms (Instagram has no star rating
+    at all, so there's no signal to pick a tone from)."""
+    negative = [ra for ra in analyses if ra.rating and 0 < ra.rating <= 3][:MAX_DRAFT_REPLIES]
+    positive = [ra for ra in analyses if ra.rating and ra.rating >= 4][:MAX_POSITIVE_DRAFT_REPLIES]
+    return negative + positive
+
+
 # ── Main agent ──
 
 def run_reputation_agent(
@@ -776,15 +792,14 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
     classify_reviews_batch([ra for _, ra in analyses], client)
 
-    # Only draft replies for rated negative reviews (excludes Instagram with no rating)
-    needs_reply = [ra for _, ra in analyses if ra.rating and 0 < ra.rating <= 3][:MAX_DRAFT_REPLIES]
+    needs_reply = select_reviews_needing_reply([ra for _, ra in analyses])
     draft_replies(needs_reply, client, venue_name=store_name, brand_voice=brand)
     reply_map = {ra.review_id: ra for ra in needs_reply}
 
     new_count = 0
     for raw, ra in analyses:
         drafted = reply_map.get(ra.review_id)
-        is_actionable = bool(ra.rating and 0 < ra.rating <= 3)
+        is_actionable = drafted is not None
         ai_summary = {
             "status": "pending" if is_actionable else "auto_closed",
             "sentiment": ra.sentiment,
