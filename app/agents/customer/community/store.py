@@ -69,7 +69,7 @@ def load_venue_config(store_id: int) -> VenueConfig:
                 venue_name=row.venue_name or "Restaurant",
                 stamp_goal=row.stamp_goal or 5,
                 reward_text=row.reward_text or "a free drink or dessert",
-                winback_days=row.winback_days or 5,
+                winback_days=row.winback_days or 10,
                 code_expiry_days=row.code_expiry_days or 30,
                 owner_phones=list(row.owner_phones or []),
                 qr_greeting=row.qr_greeting or "",

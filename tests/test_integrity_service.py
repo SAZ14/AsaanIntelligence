@@ -106,9 +106,24 @@ def test_empty_message_returns_help(svc, store_id_with_pos):
     assert "summary" in reply.lower()
 
 
-def test_commands_keyword_returns_help(svc, store_id_with_pos):
-    reply = svc.handle_message(store_id_with_pos, "+923001234567", "commands")
+def test_help_keyword_returns_help(svc, store_id_with_pos):
+    reply = svc.handle_message(store_id_with_pos, "+923001234567", "help")
     assert "leakage" in reply.lower()
+
+
+def test_bare_greetings_no_longer_special_cased_here(svc, store_id_with_pos):
+    """Greetings ("hi"/"hello"/"commands"/"start") used to return this
+    service's OWN integrity-only help text -- confusing when a staff
+    member's very first "hi" landed here (via the LLM router falling
+    through to integrity as its default) and got told about only
+    integrity's commands, with no mention of revenue/scout/reputation.
+    Greetings are now intercepted upstream in app/gateway/internal.py,
+    which shows the full staff command list across all four agents; this
+    service only special-cases an explicit "help" now, so a greeting
+    reaching it directly falls through to the free-form question path
+    instead of a canned reply."""
+    reply = svc.handle_message(store_id_with_pos, "+923001234567", "hi")
+    assert "Integrity Agent" not in reply
 
 
 # ── handle_message: summary ───────────────────────────────────────────────────

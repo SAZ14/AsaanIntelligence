@@ -13,26 +13,59 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-HELP_TEXT = (
-    "*Staff Tools* 🛠\n\n"
-    "*POS Audit*\n"
-    "summary, leakage, profit, staff, daily, weekly, refresh\n\n"
-    "*Revenue Advisor*\n"
-    "revenue, sales, pricing, strategy\n\n"
-    "*Competitor Scout*\n"
-    "scout - full report in 7-10 min 🔍\n\n"
-    "*Reviews*\n"
-    "check - scrape new reviews\n"
-    "post - mark draft as replied (post it on the platform yourself first)\n"
-    "edit <text> - revise draft\n"
-    "ignore - skip current review\n\n"
-    "help - this message\n"
-    "menu - switch mode"
-)
+_GREETINGS = {
+    "hi", "hello", "hey", "hy", "hii", "start", "commands",
+    "salam", "assalam", "asalam", "aoa", "assalamualaikum", "asalamualaikum",
+}
+
+
+def staff_help_text(store_name: str) -> str:
+    """The one canonical staff-tools message -- shown after selecting mode 1,
+    on a bare "help", and on any greeting. Previously main.py's mode-select
+    welcome and this module's HELP_TEXT were two separate, drifting copies
+    (the welcome was missing "refresh"); a greeting could also fall through
+    the LLM classifier into one specific agent (usually integrity, whose own
+    handle_message() had its own "hi"/"hello" special case returning ONLY
+    its own commands) instead of ever reaching either of them. One function,
+    always the full command list across all four agents."""
+    return (
+        f"Staff tools — {store_name}\n\n"
+        "*Integrity* — POS audit & leakage\n"
+        "  summary — full overview\n"
+        "  leakage — theft & voids breakdown\n"
+        "  profit — margins & COGS\n"
+        "  staff — per-staff anomalies\n"
+        "  daily / weekly — period report\n"
+        "  refresh — re-sync latest POS data\n\n"
+        "*Revenue* — Sales & strategy\n"
+        "  revenue — overall sales performance\n"
+        "  sales — item & category breakdown\n"
+        "  pricing — price optimisation tips\n"
+        "  strategy — growth recommendations\n\n"
+        "*Scout* — Competitor intelligence\n"
+        "  scout — scrape rivals (cached 24h)\n\n"
+        "*Reputation* — Review management\n"
+        "  check — scrape latest reviews (cached 24h)\n"
+        "  post — mark suggested reply as replied (post it yourself first)\n"
+        "  ignore — skip current review\n"
+        "  edit <text> — rewrite suggested reply\n\n"
+        "You can also just write in plain language — e.g. \"how did we do this "
+        "week\" or \"what are competitors offering\" — no need to remember exact "
+        "commands.\n\n"
+        "Type *menu* to switch modes."
+    )
+
+
+def _get_store_name(store_id: int) -> str:
+    from app.core.db import SessionLocal, Store
+    with SessionLocal() as db:
+        store = db.query(Store).filter(Store.id == store_id).first()
+        return store.name if store else "your restaurant"
+
 
 _REPUTATION_EXACT = {"post", "ignore"}
 
-# Documented Revenue Advisor shorthand commands (see HELP_TEXT). These bypass
+# Documented Revenue Advisor shorthand commands (see staff_help_text). These bypass
 # the LLM classifier entirely -- bare words like "revenue" and "sales" sound
 # financial/POS-related, and the LLM was consistently misrouting them to
 # integrity/summary or integrity/free_form instead of revenue/general,
@@ -188,8 +221,8 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     """Route one staff message to the right agent. Returns reply text."""
     text = (body or "").strip()
 
-    if not text or text.lower() == "help":
-        return HELP_TEXT
+    if not text or text.lower() in ("help", *_GREETINGS):
+        return staff_help_text(_get_store_name(store_id))
 
     first = text.lower().split()[0]
     is_natural = not _is_shorthand(text)

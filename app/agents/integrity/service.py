@@ -92,7 +92,15 @@ class IntegrityService:
 
     def handle_message(self, store_id: int, from_phone: str, body: str) -> str:
         text = (body or "").strip()
-        if not text or text.lower() in ("help", "start", "hi", "hello", "commands"):
+        # Bare greetings ("hi"/"hello"/"start"/"commands") are intercepted
+        # upstream in app/gateway/internal.py, which shows the full staff
+        # command list across all four agents -- this used to also fire on
+        # them here, meaning a greeting that fell through the LLM router's
+        # classification landed on integrity's OWN incomplete, integrity-only
+        # help text instead ("Integrity Agent\n\nsummary..."), with no
+        # mention of revenue/scout/reputation at all. Only "help" is handled
+        # here now, as a narrower explicit ask.
+        if not text or text.lower() == "help":
             return HELP_TEXT
         cmd = text.lower().split()[0]
         logger.info("integrity: store=%d cmd=%s from=%s", store_id, cmd, from_phone)

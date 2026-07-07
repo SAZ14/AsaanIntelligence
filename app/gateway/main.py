@@ -123,28 +123,8 @@ def _mode_menu(store_name: str) -> str:
 
 
 def _internal_welcome(store_name: str) -> str:
-    return (
-        f"Staff tools — {store_name}\n\n"
-        "*Integrity* — POS audit & leakage\n"
-        "  summary — full overview\n"
-        "  leakage — theft & voids breakdown\n"
-        "  profit — margins & COGS\n"
-        "  staff — per-staff anomalies\n"
-        "  daily / weekly — period report\n\n"
-        "*Revenue* — Sales & strategy\n"
-        "  revenue — overall sales performance\n"
-        "  sales — item & category breakdown\n"
-        "  pricing — price optimisation tips\n"
-        "  strategy — growth recommendations\n\n"
-        "*Scout* — Competitor intelligence\n"
-        "  scout — scrape rivals (cached 24h)\n\n"
-        "*Reputation* — Review management\n"
-        "  check — scrape latest reviews (cached 24h)\n"
-        "  post — mark suggested reply as replied (post it yourself first)\n"
-        "  ignore — skip current review\n"
-        "  edit <text> — rewrite suggested reply\n\n"
-        "Type *menu* to switch modes."
-    )
+    from app.gateway.internal import staff_help_text
+    return staff_help_text(store_name)
 
 
 def _customer_welcome() -> str:
@@ -1772,7 +1752,7 @@ async def configure_venue(store_id: int, request: Request) -> JSONResponse:
             row.venue_name = params.get("venue_name", store.name)
             row.stamp_goal = int(params.get("stamp_goal", 5))
             row.reward_text = params.get("reward_text", "a free drink or dessert")
-            row.winback_days = int(params.get("winback_days", 5))
+            row.winback_days = int(params.get("winback_days", 10))
             row.code_expiry_days = int(params.get("code_expiry_days", 30))
             row.owner_phones = owner_phones
             row.qr_greeting = params.get("qr_greeting") or ""
