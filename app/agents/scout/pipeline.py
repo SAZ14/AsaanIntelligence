@@ -334,17 +334,36 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     return report_text
 
 
+def _is_scout_fresh(store_id: int, freshness_minutes: int = FRESHNESS_MINUTES) -> bool:
+    from datetime import datetime, timedelta
+    latest_run, _ = _get_latest_run(store_id)
+    if latest_run is None or latest_run.finished_at is None:
+        return False
+    return latest_run.finished_at >= datetime.utcnow() - timedelta(minutes=freshness_minutes)
+
+
 def run_scout_all() -> None:
-    """Scheduled job (see scripts/run_server.py) -- runs a live "scout"
-    scrape for every store once daily, so it's already sitting in the
-    FRESHNESS_MINUTES (24h) cache by the time a staff member sends any
-    scout command that day, instead of them waiting 7-45 minutes for a
-    live run. command="scout" always forces a live fetch (is_live = command
-    == "scout" in run(), unconditionally) regardless of how fresh the
-    existing cache is -- that's exactly what's wanted here. Every other
-    command (competitors/alerts/pricing/...) reads whatever run() most
-    recently cached for the store regardless of which command produced
-    it, so this one daily "scout" run is enough to warm all of them.
+    """Scheduled job (see scripts/run_server.py) -- keeps every store's
+    scout cache warm so staff almost always land on a cached report
+    instead of waiting 7-45 minutes for a live run.
+
+    Runs frequently (see scripts/run_server.py's interval trigger) but only
+    actually scrapes a store once its cache has truly gone stale, checked
+    here via _is_scout_fresh() before ever calling run("scout", ...) --
+    command="scout" itself always forces a live fetch unconditionally
+    (is_live = command == "scout" in run()), so without this pre-check a
+    fixed clock-time cron and a staff member's own recent "scout" command
+    would drift out of sync: a manual run shortly before a scheduled cron
+    slot would either get wastefully re-scraped again minutes later, or
+    (worse, on a coarser schedule) the cache could sit stale for hours
+    between cron slots with nothing noticing. Polling often and checking
+    real staleness here instead syncs the next scrape to "last real scrape
+    + FRESHNESS_MINUTES" regardless of who triggered that last scrape or
+    what the clock says.
+
+    Every other command (competitors/alerts/pricing/...) reads whatever
+    run() most recently cached for the store regardless of which command
+    produced it, so one fresh "scout" run is enough to warm all of them.
 
     Sequential, not parallel -- a single run already takes 7-45 minutes
     (confirmed live) and fans out many Apify actors internally per store;
@@ -357,6 +376,9 @@ def run_scout_all() -> None:
         store_ids = [s.id for s in db.query(Store).all()]
 
     for store_id in store_ids:
+        if _is_scout_fresh(store_id):
+            logger.info("scout.cron: store=%d already fresh, skipping", store_id)
+            continue
         try:
             run("scout", store_id=store_id)
             logger.info("scout.cron: store=%d completed", store_id)

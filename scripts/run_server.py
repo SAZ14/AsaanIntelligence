@@ -39,21 +39,29 @@ def _start_scheduler() -> BackgroundScheduler:
         trigger="cron", day_of_week="sun", hour=18, minute=0,
         id="leaderboard_sunday", replace_existing=True,
     )
-    # Scout: once daily, early -- so it's already sitting in the 24h
-    # freshness cache by the time staff check during business hours,
-    # instead of them waiting 7-45 minutes for a live run.
+    # Scout & reputation: poll hourly rather than on a fixed clock schedule.
+    # Both target functions check actual cache staleness themselves
+    # (run_scout_all via _is_scout_fresh, run_reputation_check_all via
+    # _check_reviews' own cache check) and no-op cheaply (a DB query, no
+    # Apify cost) when the cache is still warm -- so this fires every hour
+    # but only actually scrapes once a store's cache has genuinely gone
+    # stale. A fixed 3x/day cron drifted out of sync with real usage: e.g.
+    # a staff member's manual check at 14:16 left the 8h cache fresh until
+    # 22:16, but the fixed 22:00 slot landed 16 minutes early (wasted, cache
+    # hit) and the next slot wasn't until 06:00 the next day -- an 8h+ gap
+    # where the cache sat stale with nothing refreshing it. Polling hourly
+    # and checking real staleness syncs the next scrape to "last real
+    # scrape + freshness window" regardless of who triggered that scrape or
+    # what the clock says.
     scheduler.add_job(
         run_scout_all,
-        trigger="cron", hour=6, minute=0,
-        id="scout_daily", replace_existing=True,
+        trigger="interval", hours=1,
+        id="scout_hourly_poll", replace_existing=True,
     )
-    # Reputation check: 3x/day, 8h apart, matching REPUTATION_CACHE_HOURS --
-    # a staff "check" almost always lands on a warm cache instead of
-    # waiting on a live Apify scrape.
     scheduler.add_job(
         run_reputation_check_all,
-        trigger="cron", hour="6,14,22", minute=0,
-        id="reputation_check_8h", replace_existing=True,
+        trigger="interval", hours=1,
+        id="reputation_check_hourly_poll", replace_existing=True,
     )
     scheduler.start()
     return scheduler
