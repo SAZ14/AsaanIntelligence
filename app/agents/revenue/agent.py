@@ -148,6 +148,48 @@ class RevenueAgent:
             return self._help()
         return self._help(unknown=True)
 
+    def answer_question(self, text: str) -> str:
+        """Free-form Q&A: one LLM call given real computed numbers and the
+        owner's actual question, mirroring integrity's answer_question()
+        and the customer agent's single-pass pattern -- both proven to
+        give genuinely tailored answers, unlike handle_message()'s path
+        (classify into one of 11 fixed intents, dispatch to a rigid
+        template, and only then try to retrofit a specific answer onto
+        whatever that generic template happened to contain via a second
+        LLM rewrite). Called directly for natural-language queries;
+        handle_message()'s classify-and-template path still serves exact
+        shorthand commands unchanged."""
+        if self.client is None:
+            return "AI Q&A unavailable right now, but you can still ask for summary, best sellers, pricing, dead windows, campaigns, or strategy."
+
+        context = "\n\n".join([
+            self._summary("week").text,
+            self._best_sellers("week").text,
+            self._pricing("month").text,
+            self._dead_windows("month").text,
+            self._loyalty("month").text,
+        ])
+
+        from app.core.llm import get_model, nothink_kwargs
+        prompt = (
+            "Answer the owner's question using ONLY the revenue data below. Cite exact "
+            "figures (PKR amounts, unit counts, percentages) from it; do not invent numbers. "
+            "If the data doesn't contain the answer, say so plainly. "
+            "No em-dashes -- use a comma or colon instead. No emojis.\n\n"
+            f"{context}\n\nQuestion: {text}"
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                timeout=25.0,
+                model=get_model(),
+                max_tokens=400,
+                messages=[{"role": "user", "content": prompt}],
+                **nothink_kwargs(get_model()),
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            return f"[question answering failed: {e}]"
+
     # ── handlers ──
 
     def _window(self, period: str):

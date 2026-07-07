@@ -83,11 +83,14 @@ def test_mode_select_welcome_uses_the_same_canonical_text():
 def test_real_natural_language_query_still_reaches_the_llm_router(store_id):
     """Make sure the greeting intercept is narrow -- a genuine question
     must still go through normal LLM classification, not get swallowed by
-    the greeting check."""
+    the greeting check. Integrity's natural-language path now passes the
+    original question straight through to IntegrityService (whose own
+    free-form answer_question() produces an already-tailored answer), not
+    through _adapt_response on top of a fixed-template result."""
     from app.gateway.internal import handle_internal_for_store
     with patch("app.gateway.internal._classify_with_llm", return_value=("integrity", "summary")) as mock_classify, \
-         patch("app.gateway.internal._integrity", return_value="mocked summary"), \
-         patch("app.gateway.internal._adapt_response", return_value="adapted"):
+         patch("app.gateway.internal._integrity", return_value="mocked summary") as mock_integrity:
         reply = handle_internal_for_store("+923001234567", "how did we do this week", store_id)
     mock_classify.assert_called_once()
-    assert reply == "adapted"
+    mock_integrity.assert_called_once_with(store_id, "+923001234567", "how did we do this week")
+    assert reply == "mocked summary"

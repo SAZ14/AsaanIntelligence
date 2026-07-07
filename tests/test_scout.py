@@ -346,9 +346,12 @@ def test_internal_handler_routes_to_scout(store_id):
 
 
 def test_internal_handler_routes_to_revenue(store_id):
+    """"revenue forecast" is natural language (2 words, not the exact
+    single-word shorthand) -- routes to the free-form answer_question()
+    path, not the classify-into-fixed-intent handle_message() path."""
     from app.gateway.internal import handle_internal_for_store
     from unittest.mock import patch as mp
-    with mp("app.gateway.internal._revenue", return_value="revenue reply") as mock_rev:
+    with mp("app.gateway.internal._revenue_answer", return_value="revenue reply") as mock_rev:
         result = handle_internal_for_store("+923001234567", "revenue forecast", store_id)
     mock_rev.assert_called_once()
     assert result == "revenue reply"

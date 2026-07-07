@@ -78,6 +78,12 @@ class RevenueRegistry:
         logger.info("revenue.registry: store=%d from=%s cmd=%s", store_id, from_phone, text.split()[0] if text else "")
         return agent.handle_message(from_phone, text)
 
+    def answer_question(self, store_id: int, text: str) -> str:
+        agent = self.agent_for_store(store_id)
+        if agent is None:
+            return "Revenue analysis isn't configured for this restaurant yet."
+        return agent.answer_question(text)
+
     def invalidate(self, store_id: int) -> None:
         self._agents.pop(store_id, None)
 
@@ -87,7 +93,20 @@ _registry: RevenueRegistry | None = None
 
 
 def get_registry() -> RevenueRegistry:
+    """RevenueRegistry() was always constructed with llm_client=None here --
+    no caller ever passed a real one -- so parse_query() never actually
+    used the LLM classifier (app.agents.revenue.nlu._parse_with_llm) and
+    silently ran on the crude keyword-regex fallback for every single
+    revenue message, forever. Any question that didn't match one of those
+    regexes fell straight to a generic "I didn't quite catch that" reply.
+    Same root cause blocked the new answer_question() free-form Q&A path
+    below from working at all."""
     global _registry
     if _registry is None:
-        _registry = RevenueRegistry()
+        try:
+            from app.core.llm import get_client
+            client = get_client()
+        except Exception:
+            client = None
+        _registry = RevenueRegistry(llm_client=client)
     return _registry

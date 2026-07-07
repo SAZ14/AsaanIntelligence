@@ -252,8 +252,19 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         return _scout(store_id, from_number, text)
 
     if agent == "revenue":
-        raw = _revenue(store_id, from_number, text)
-        return _adapt_response(text, raw) if is_natural else raw
+        # Natural language goes straight to answer_question() -- one LLM
+        # call given real computed numbers and the actual question,
+        # mirroring scout/reputation/customer's proven-good single-pass
+        # pattern. Previously this always went through handle_message()'s
+        # classify-into-one-of-11-fixed-intents-then-template path (whose
+        # own classifier ran on a keyword-regex fallback with no LLM at
+        # all -- see registry.get_registry()) and only got fixed up
+        # afterward via _adapt_response, which was working from a generic
+        # template's text rather than the real data. Exact shorthand
+        # commands (is_natural=False) still use the existing template path.
+        if is_natural:
+            return _revenue_answer(store_id, text)
+        return _revenue(store_id, from_number, text)
 
     if agent == "reputation":
         # "check" command → pass "check"; chat → pass original text
@@ -261,11 +272,17 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         return _reputation(store_id, from_number, body_to_send)
 
     # integrity (default)
-    # For natural language: pass the LLM-selected command so the right
-    # template fires, then adapt the output to answer the original question.
-    integrity_body = command if (is_natural and command in _INTEGRITY_CMDS) else text
-    raw = _integrity(store_id, from_number, integrity_body)
-    return _adapt_response(text, raw) if is_natural else raw
+    # Always pass the ORIGINAL text, never the classified command keyword.
+    # IntegrityService.handle_message() splits on the first word to pick a
+    # branch -- an exact shorthand command (is_natural=False) matches one
+    # of its fixed branches directly and behaves exactly as before; a real
+    # question's first word essentially never matches, so it naturally
+    # falls through to the service's own free-form answer_question() (one
+    # LLM call, real report data + the actual question) instead of the
+    # fixed summary/leakage/profit templates. That free-form answer is
+    # already a direct, tailored response, so no _adapt_response pass on
+    # top of it.
+    return _integrity(store_id, from_number, text)
 
 
 def _integrity(store_id: int, from_number: str, text: str) -> str:
@@ -284,6 +301,15 @@ def _revenue(store_id: int, from_number: str, text: str) -> str:
         return reply.text
     except Exception as e:
         logger.warning("internal._revenue: store=%d error=%s", store_id, e)
+        return "Revenue advisor is unavailable right now. Please try again shortly."
+
+
+def _revenue_answer(store_id: int, text: str) -> str:
+    try:
+        from app.agents.revenue.registry import get_registry
+        return get_registry().answer_question(store_id, text)
+    except Exception as e:
+        logger.warning("internal._revenue_answer: store=%d error=%s", store_id, e)
         return "Revenue advisor is unavailable right now. Please try again shortly."
 
 
