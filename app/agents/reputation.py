@@ -28,6 +28,11 @@ CLASSIFIER_BATCH_SIZE = 30
 HISTORICAL_CUTOFF_DAYS = 3
 MAX_REVIEWS_PER_CHECK = 50
 MAX_DRAFT_REPLIES = 5
+# Matches the cron cadence in scripts/run_server.py (3x/day, ~8h apart) --
+# by the time a staff member checks, a scheduled run should always have
+# happened within this window, so their check hits cache instantly instead
+# of waiting on a live Apify scrape.
+REPUTATION_CACHE_HOURS = 8
 
 DAY_KEYWORDS = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -639,12 +644,12 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
 
 
 def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
-    """Return (True, text) if a completed check exists within 24h, else (False, '')."""
+    """Return (True, text) if a completed check exists within REPUTATION_CACHE_HOURS, else (False, '')."""
     from datetime import datetime, timedelta
     from app.review_sources import db as review_db
     from app.core.db import SessionLocal, ScoutRun as Run
 
-    cutoff = datetime.utcnow() - timedelta(hours=24)
+    cutoff = datetime.utcnow() - timedelta(hours=REPUTATION_CACHE_HOURS)
     with SessionLocal() as db:
         cached = db.query(Run).filter(
             Run.store_id == store_id,
@@ -694,8 +699,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
     if in_flight:
         return f"*{store_name}* - Review scrape already in progress. Results coming shortly 🔍"
 
-    # Cache: if a review check completed within 24h, skip Apify and read from DB
-    cutoff = datetime.utcnow() - timedelta(hours=24)
+    # Cache: if a review check completed recently, skip Apify and read from DB
+    cutoff = datetime.utcnow() - timedelta(hours=REPUTATION_CACHE_HOURS)
     with SessionLocal() as db:
         cached = db.query(Run).filter(
             Run.store_id == store_id,
@@ -808,6 +813,35 @@ def _check_reviews(store_id: int, store_name: str) -> str:
         )
 
     return f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. No negative reviews to action."
+
+
+def _active_store_ids() -> list[int]:
+    from app.core.db import SessionLocal, Store
+    with SessionLocal() as db:
+        return [s.id for s in db.query(Store).all()]
+
+
+def run_reputation_check_all() -> None:
+    """Scheduled job (see scripts/run_server.py) -- runs a real review check
+    for every store on a cadence matched to REPUTATION_CACHE_HOURS, so a
+    staff member's own "check" command almost always lands on a warm cache
+    instead of waiting on a live Apify scrape. Reuses _check_reviews()
+    exactly as the real WhatsApp path does; the returned text is just
+    logged, never sent -- this only needs to populate the cache, not notify
+    anyone. _check_reviews' own in-flight guard and cache check make this
+    safe to call even if a staff member's own check overlaps with a
+    scheduled run."""
+    from app.core.db import SessionLocal, Store
+
+    for store_id in _active_store_ids():
+        try:
+            with SessionLocal() as db:
+                store = db.query(Store).filter(Store.id == store_id).first()
+                store_name = store.name if store else "restaurant"
+            result = _check_reviews(store_id, store_name)
+            logger.info("reputation.cron_check: store=%d result=%r", store_id, result[:120])
+        except Exception as exc:
+            logger.error("reputation.cron_check: store=%d failed: %s", store_id, exc)
 
 
 def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:

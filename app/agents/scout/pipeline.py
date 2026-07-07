@@ -333,3 +333,33 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     )
     return report_text
 
+
+def run_scout_all() -> None:
+    """Scheduled job (see scripts/run_server.py) -- runs a live "scout"
+    scrape for every store once daily, so it's already sitting in the
+    FRESHNESS_MINUTES (24h) cache by the time a staff member sends any
+    scout command that day, instead of them waiting 7-45 minutes for a
+    live run. command="scout" always forces a live fetch (is_live = command
+    == "scout" in run(), unconditionally) regardless of how fresh the
+    existing cache is -- that's exactly what's wanted here. Every other
+    command (competitors/alerts/pricing/...) reads whatever run() most
+    recently cached for the store regardless of which command produced
+    it, so this one daily "scout" run is enough to warm all of them.
+
+    Sequential, not parallel -- a single run already takes 7-45 minutes
+    (confirmed live) and fans out many Apify actors internally per store;
+    running several stores' scrapes concurrently would multiply that
+    fan-out and risk Apify rate limits. Fine at today's store count;
+    worth revisiting if this needs to cover many stores."""
+    from app.core.db import SessionLocal, Store
+
+    with SessionLocal() as db:
+        store_ids = [s.id for s in db.query(Store).all()]
+
+    for store_id in store_ids:
+        try:
+            run("scout", store_id=store_id)
+            logger.info("scout.cron: store=%d completed", store_id)
+        except Exception as exc:
+            logger.error("scout.cron: store=%d failed: %s", store_id, exc)
+

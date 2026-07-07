@@ -15,6 +15,8 @@ import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.agents.customer.jobs.winback import run_winback_all
 from app.agents.customer.jobs.leaderboard_broadcast import broadcast_all
+from app.agents.scout.pipeline import run_scout_all
+from app.agents.reputation import run_reputation_check_all
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +38,22 @@ def _start_scheduler() -> BackgroundScheduler:
         broadcast_all,
         trigger="cron", day_of_week="sun", hour=18, minute=0,
         id="leaderboard_sunday", replace_existing=True,
+    )
+    # Scout: once daily, early -- so it's already sitting in the 24h
+    # freshness cache by the time staff check during business hours,
+    # instead of them waiting 7-45 minutes for a live run.
+    scheduler.add_job(
+        run_scout_all,
+        trigger="cron", hour=6, minute=0,
+        id="scout_daily", replace_existing=True,
+    )
+    # Reputation check: 3x/day, 8h apart, matching REPUTATION_CACHE_HOURS --
+    # a staff "check" almost always lands on a warm cache instead of
+    # waiting on a live Apify scrape.
+    scheduler.add_job(
+        run_reputation_check_all,
+        trigger="cron", hour="6,14,22", minute=0,
+        id="reputation_check_8h", replace_existing=True,
     )
     scheduler.start()
     return scheduler
