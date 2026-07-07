@@ -204,6 +204,87 @@ def test_extract_business_name_no_capital_rejected():
     assert name is None  # no capitalised word
 
 
+# ── junk-name filtering (confirmed live: these exact shapes slipped through
+# and got scraped at real Apify cost before this filter existed) ────────────
+
+@pytest.mark.parametrize("text", [
+    "Cafe Sierra (Islamabad",           # truncated mid-parenthetical
+    "The Burgers (",
+    "Cafe Near Me",                     # generic phrase, not a business
+    "TBC on Instagram",
+    "Jawahar Mustafa❤️",       # person's name + emoji, not a business
+])
+def test_extract_business_name_rejects_junk_shapes(text):
+    from app.agents.scout.discovery import _extract_business_name as ebn
+    assert ebn(text) is None
+
+
+class TestLooksLikeJunkName:
+    def test_truncated_trailing_paren_is_junk(self):
+        from app.agents.scout.discovery import _looks_like_junk_name
+        assert _looks_like_junk_name("Cafe Sierra (") is True
+
+    def test_generic_phrase_is_junk(self):
+        from app.agents.scout.discovery import _looks_like_junk_name
+        assert _looks_like_junk_name("Cafe Near Me") is True
+        assert _looks_like_junk_name("TBC on Instagram") is True
+
+    def test_emoji_is_junk(self):
+        from app.agents.scout.discovery import _looks_like_junk_name
+        assert _looks_like_junk_name("Jawahar Mustafa❤️") is True
+
+    def test_normal_business_name_is_not_junk(self):
+        from app.agents.scout.discovery import _looks_like_junk_name
+        assert _looks_like_junk_name("Bangin Buns") is False
+        assert _looks_like_junk_name("KFC") is False
+        assert _looks_like_junk_name("Original Premium Burgers") is False
+
+
+# ── prune_stale_competitors ───────────────────────────────────────────────────
+
+def test_prune_removes_junk_named_competitor_immediately_regardless_of_age(store_id):
+    """A structurally-junk name is removed on sight -- it doesn't get the
+    same age-based grace period as an otherwise-well-formed but unproven
+    discovered competitor."""
+    from datetime import datetime
+    from app.agents.scout.discovery import prune_stale_competitors
+    from app.core.db import Competitor
+
+    with TestSession() as db:
+        db.add(Competitor(store_id=store_id, name="Cafe Near Me", source="discovered",
+                          created_at=datetime.utcnow()))  # created seconds ago
+        db.commit()
+
+    pruned = prune_stale_competitors(store_id)
+    assert pruned == 1
+    assert get_all_competitors(store_id) == []
+
+
+def test_prune_removes_junk_name_even_with_real_findings(store_id):
+    """Mirrors the live incident: a mismatched Google Maps entity produced
+    289 real review findings under a junk name. Finding count alone must
+    not save a structurally-invalid name."""
+    from datetime import datetime
+    from app.agents.scout.discovery import prune_stale_competitors
+    from app.core.db import Competitor, Finding, ScoutRun
+
+    with TestSession() as db:
+        db.add(Competitor(store_id=store_id, name="Cafe Near Me", source="discovered",
+                          created_at=datetime.utcnow()))
+        run = ScoutRun(store_id=store_id, command="scout", status="ok")
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        db.add(Finding(store_id=store_id, run_id=run.id, competitor_name="Cafe Near Me",
+                       source_platform="google_maps", update_type="post",
+                       content_text="x", content_hash="h1"))
+        db.commit()
+
+    pruned = prune_stale_competitors(store_id)
+    assert pruned == 1
+    assert get_all_competitors(store_id) == []
+
+
 # ── Keyword routing ───────────────────────────────────────────────────────────
 
 def test_classify_agent_integrity_keywords():

@@ -1,10 +1,14 @@
 from __future__ import annotations
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Optional
 
-from app.agents.scout.config import COMPETITORS, MAX_NEW_COMPETITORS, APIFY_TOKEN
-from app.core.db import Competitor, SessionLocal, Store, StoreLocation
+from app.agents.scout.config import (
+    COMPETITORS, MAX_NEW_COMPETITORS, APIFY_TOKEN,
+    PRUNE_MIN_AGE_DAYS, PRUNE_MIN_FINDINGS,
+)
+from app.core.db import Competitor, Finding, SessionLocal, Store, StoreLocation
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +137,66 @@ def discover_new_competitors(store_id: int) -> None:
             db.commit()
 
 
+def prune_stale_competitors(
+    store_id: int,
+    min_age_days: int = PRUNE_MIN_AGE_DAYS,
+    min_findings: int = PRUNE_MIN_FINDINGS,
+) -> int:
+    """Remove auto-discovered competitors that have never produced real signal.
+
+    Discovery only ever adds (see discover_new_competitors) -- nothing
+    previously removed a bad auto-extracted name (e.g. a misparsed business
+    name from a search snippet), so the discovered list only grows. Only
+    source == "discovered" rows are touched; primary/seed entries are
+    curated by the business and are never pruned regardless of performance.
+
+    Two independent removal rules, both scoped to source == "discovered":
+    1. Structurally junk names (_looks_like_junk_name -- truncated snippets,
+       generic boilerplate, emoji) are removed immediately regardless of
+       age or finding count. A mismatched Google Maps entity can still rack
+       up real findings (confirmed live: "Cafe Near Me" pulled 289 reviews
+       for what was almost certainly the wrong place) -- finding count
+       alone doesn't prove a junk name is relevant, so this rule doesn't
+       wait on it.
+    2. Otherwise-well-formed names are pruned once they've existed for at
+       least min_age_days (a fair chance across a few live runs, since
+       freshness caching means a brand-new one may not have been scraped
+       yet) and have fewer than min_findings Finding rows ever recorded
+       against their name for this store.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=min_age_days)
+    pruned = 0
+    with SessionLocal() as db:
+        discovered = db.query(Competitor).filter(
+            Competitor.store_id == store_id,
+            Competitor.source == "discovered",
+        ).all()
+        for c in discovered:
+            if _looks_like_junk_name(c.name):
+                logger.info(
+                    "Pruning junk-named competitor: %r (store=%d)", c.name, store_id,
+                )
+                db.delete(c)
+                pruned += 1
+                continue
+            if c.created_at > cutoff:
+                continue
+            finding_count = db.query(Finding).filter(
+                Finding.store_id == store_id,
+                Finding.competitor_name == c.name,
+            ).count()
+            if finding_count < min_findings:
+                logger.info(
+                    "Pruning low-relevance competitor: %r (store=%d, findings=%d)",
+                    c.name, store_id, finding_count,
+                )
+                db.delete(c)
+                pruned += 1
+        if pruned:
+            db.commit()
+    return pruned
+
+
 def _store_category(store_id: int) -> str:
     with SessionLocal() as db:
         store = db.query(Store).filter(Store.id == store_id).first()
@@ -157,6 +221,49 @@ _NOISE_STARTS = re.compile(
 )
 _ENDS_PREPOSITION = re.compile(r"\b(in|at|of|the|a|an|and|or|for|to|from|with)$", re.I)
 
+# Search-result snippets get cut mid-parenthetical ("Cafe Sierra (Best...")
+# or mid-punctuation far more often than a real business name ends this way.
+_TRUNCATED_END = re.compile(r"[(\[,&:;/-]\s*$")
+
+# Boilerplate that shows up in scraped snippets but is never itself a
+# business name -- confirmed live: "Cafe Near Me" (289 reviews pulled for a
+# mismatched Google Maps entity) and "TBC on Instagram" both passed every
+# other check here.
+_GENERIC_PHRASES = re.compile(
+    r"\b(near me|on instagram|on facebook|on tiktok|to be confirmed|\btbc\b|"
+    r"click here|read more|sponsored|coming soon)\b",
+    re.I,
+)
+
+# Emoji range matching cleaning.py's _remove_emoji_noise -- a real business
+# name basically never ships an emoji as part of the title text itself;
+# in practice this catches a person's name a reviewer/local-guide left
+# behind getting mis-scraped as if it were the business (e.g. "Jawahar
+# Mustafa❤️", confirmed live).
+_HAS_EMOJI = re.compile(
+    r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
+    r"\U0001F680-\U0001F6FF\U0001F700-\U0001F77F"
+    r"\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF"
+    r"\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F"
+    r"\U0001FA70-\U0001FAFF\U00002702-\U000027B0"
+    r"\U000024C2-\U0001F251]"
+)
+
+
+def _looks_like_junk_name(candidate: str) -> bool:
+    """Structural checks shared between discovery-time rejection (never add
+    it) and pruning (remove it if it slipped through before this existed).
+    Deliberately doesn't try to detect "looks like a human name" in
+    general -- too easy to false-positive on a legitimately unusual
+    restaurant name -- just the concrete junk patterns seen in practice."""
+    if _TRUNCATED_END.search(candidate):
+        return True
+    if _GENERIC_PHRASES.search(candidate):
+        return True
+    if _HAS_EMOJI.search(candidate):
+        return True
+    return False
+
 
 def _extract_business_name(text: str) -> Optional[str]:
     m = re.split(r"[|\-–—:@]", text)
@@ -174,6 +281,8 @@ def _extract_business_name(text: str) -> Optional[str]:
     if _NOISE_STARTS.match(candidate):
         return None
     if _ENDS_PREPOSITION.search(candidate):
+        return None
+    if _looks_like_junk_name(candidate):
         return None
     words = candidate.split()
     if not any(w[0].isupper() for w in words if len(w) > 2):

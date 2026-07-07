@@ -23,6 +23,26 @@ FRESHNESS_MINUTES = 1440            # use cached run if last scout was < 24 hour
 IG_POSTS_PER_PROFILE = 6           # posts scraped per Instagram profile
 MAX_NEW_COMPETITORS = 10            # max auto-discovered competitors added per run
 
+# --- Cost/relevance ceilings ---
+# Without these, a live run's cost scales unbounded with however many
+# competitors have accumulated (discovery only ever adds, never removes) and
+# however many raw items a scraper happens to return for one competitor
+# (a multi-branch chain like KFC can return 200+ Google Maps reviews despite
+# a per-competitor request of 15 -- confirmed live).
+MAX_SCRAPED_COMPETITORS = 12        # hard ceiling on competitors scraped per live run;
+                                     # primary/seed always kept, discovered ones ranked
+                                     # by historical finding count when over the cap.
+                                     # ~3 Apify calls/competitor (1 web crawl + 2 review
+                                     # passes; Instagram is batched across all of them),
+                                     # so this is the real per-run cost lever.
+MAX_FINDINGS_PER_COMPETITOR = 12    # per competitor, after dedup, before enrichment;
+                                     # balanced across strength/weakness/trend rather
+                                     # than truncating to whichever bucket scraped first
+PRUNE_MIN_AGE_DAYS = 3              # only prune "discovered" competitors past this age
+                                     # (give them a few live runs to prove themselves)
+PRUNE_MIN_FINDINGS = 1              # a discovered competitor needs at least this many
+                                     # Finding rows ever, or it's removed as noise
+
 # --- Competitor seed list ---
 COMPETITORS = [
     {

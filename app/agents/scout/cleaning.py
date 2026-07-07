@@ -24,6 +24,11 @@ VALID_PLATFORMS = {"instagram", "website", "google_maps", "web_search", "news"}
 VALID_UPDATE_TYPES = {
     "new_product", "discount", "menu_change", "campaign",
     "review_trend", "event", "branch_update", "post",
+    # google_reviews_scraper's own classification -- was missing here, so
+    # every review finding silently collapsed to the generic "post" bucket
+    # and cap_findings_per_competitor's strength/weakness/trend balancing
+    # below had nothing to balance.
+    "competitor_strength", "competitor_weakness",
 }
 
 MIN_CHARS = 30
@@ -155,4 +160,72 @@ def clean_findings(
     # Sort: known dates first (nulls last), then by relevance_score desc
     cleaned.sort(key=lambda x: (x.post_date is None, -(x.relevance_score or 0)))
     return cleaned
+
+
+def _engagement_score(engagement: Optional[dict]) -> float:
+    if not engagement:
+        return 0.0
+    return sum(v for v in engagement.values() if isinstance(v, (int, float)))
+
+
+def cap_findings_per_competitor(
+    findings: list[FindingSchema],
+    max_per_competitor: int,
+) -> list[FindingSchema]:
+    """Keep at most max_per_competitor findings per competitor.
+
+    A multi-branch chain's Google Maps reviews (or a very active Instagram
+    profile) can dwarf every other competitor's finding count in one run --
+    confirmed live: one chain alone produced 226 review findings in a single
+    run. Left unbounded that competitor floods build_report's top-N-by-
+    relevance selection, drowning out every other competitor, and bloats the
+    findings table for no benefit (enrich_findings only ever scores the
+    first MAX_ENRICH globally anyway).
+
+    Selection is a round-robin across update_type buckets (strength /
+    weakness / trend / other) so a trim keeps a balanced picture of one
+    competitor rather than whichever category the scraper happened to
+    return first. Within a bucket, findings with a more extreme rating or
+    higher engagement are kept first.
+    """
+    if max_per_competitor <= 0:
+        return findings
+
+    by_competitor: dict[str, list[FindingSchema]] = {}
+    for f in findings:
+        by_competitor.setdefault(f.competitor_name, []).append(f)
+
+    result: list[FindingSchema] = []
+    for name, items in by_competitor.items():
+        if len(items) <= max_per_competitor:
+            result.extend(items)
+            continue
+
+        buckets: dict[str, list[FindingSchema]] = {}
+        for f in items:
+            buckets.setdefault(f.update_type or "other", []).append(f)
+
+        def _signal(f: FindingSchema) -> tuple:
+            extremity = abs((f.rating if f.rating is not None else 3.0) - 3.0)
+            return (-extremity, -_engagement_score(f.engagement), f.post_date is None)
+
+        for bucket in buckets.values():
+            bucket.sort(key=_signal)
+
+        picked: list[FindingSchema] = []
+        bucket_lists = list(buckets.values())
+        idx = 0
+        while len(picked) < max_per_competitor and any(bucket_lists):
+            bucket = bucket_lists[idx % len(bucket_lists)]
+            if bucket:
+                picked.append(bucket.pop(0))
+            idx += 1
+            if idx > max_per_competitor * (len(bucket_lists) + 1):
+                break  # safety valve; all buckets exhausted before filling the cap
+        logger.info(
+            "cap_findings_per_competitor: %r trimmed %d -> %d", name, len(items), len(picked)
+        )
+        result.extend(picked)
+
+    return result
 

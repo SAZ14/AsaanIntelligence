@@ -24,9 +24,15 @@ def _enrich_system(store_name: str, store_category: str) -> str:
 def _report_system(store_name: str, store_category: str) -> str:
     return (
         f"You advise the owner of {store_name} ({store_category} restaurant). "
-        "Be specific: name competitors and their concrete moves, cite engagement and ratings when present. "
+        "Be specific: name competitors and their concrete moves, cite exact evidence from "
+        "the data whenever it's present -- prices, ratings, engagement numbers, dates, quotes. "
         "Give concrete, actionable steps — specific bundle ideas, reel concepts, counter-offers. "
-        "Never be generic. Keep it tight and skimmable for WhatsApp.\n\n"
+        "Never be generic, and never pad a thin finding with filler sentences that add no "
+        "new information; conversely, don't compress a well-evidenced competitor into one "
+        "throwaway line just to save space. Match length to how much real signal exists for "
+        "each item. Keep it skimmable for WhatsApp -- short paragraphs, not one giant block --"
+        " but substance over brevity: a report that's slightly longer and actually useful beats"
+        " one that's short and empty.\n\n"
         "Formatting rules:\n"
         "- Plain text only, no markdown (no ##, no **, no --)\n"
         "- Bold with *single asterisks*\n"
@@ -42,7 +48,8 @@ def _command_instructions(store_name: str) -> dict[str, str]:
         "scout": (
             "Write a full competitive intelligence report with these sections:\n"
             "1. SUMMARY (2-3 sentences on the competitive landscape right now)\n"
-            "2. TOP COMPETITOR MOVES (numbered, each with competitor name + what they did + why it matters)\n"
+            "2. TOP COMPETITOR MOVES (numbered; each gets a real paragraph, not a one-liner — "
+            "competitor name, what they did with specific evidence (price/rating/engagement), and why it matters)\n"
             "3. NEW PRODUCTS & OFFERS (specific items, prices if available)\n"
             "4. CAMPAIGNS & CONTENT TRENDS\n"
             f"5. OPPORTUNITIES FOR {store_name.upper()} (concrete gaps)\n"
@@ -52,12 +59,16 @@ def _command_instructions(store_name: str) -> dict[str, str]:
         "alerts": (
             "List ONLY the highest-impact recent competitor moves — new product launches, "
             "unusually high-engagement posts, new offers/discounts, or major campaigns. "
-            "Skip anything routine. For each: competitor name, what happened, why urgent."
+            "Skip anything routine. For each: competitor name, what happened (with the actual "
+            "numbers/prices/dates from the data), and why it's urgent enough to act on now."
         ),
         "competitors": (
-            "For each competitor mentioned in the findings, write 1-2 lines describing "
-            "what they are currently doing online (content strategy, recent posts, promotions). "
-            "Be specific about what you see in the data."
+            "For each competitor that has real signal in the findings, write a short paragraph "
+            "covering what they're doing right now — cite the actual evidence (specific menu items, "
+            "prices, promotions, ratings, or engagement numbers), not a vague description. "
+            f"Add a brief line on why it matters for {store_name} or what to consider doing about it. "
+            "Competitors with rich findings deserve more space; a competitor with only one thin "
+            "finding should get one honest sentence, not padding."
         ),
         "campaigns": (
             "Identify all current promotions, seasonal campaigns (Eid/summer/winter/Valentine), "
@@ -141,7 +152,9 @@ def _extract_json(text: str) -> list:
 def _chat(system: str, user: str) -> str:
     client = _get_client()
     # Report generation with thinking runs long by design -- this overrides
-    # the shared client's 30s interactive default.
+    # the shared client's 30s interactive default. max_tokens was previously
+    # unset (provider default), which left no explicit headroom for the
+    # denser per-competitor paragraphs REPORT_DEPTH_POLICY asks for.
     resp = client.chat.completions.create(
         model=_get_model(),
         messages=[
@@ -150,6 +163,7 @@ def _chat(system: str, user: str) -> str:
         ],
         temperature=0.4,
         timeout=90,
+        max_tokens=2000,
     )
     return resp.choices[0].message.content
 
@@ -246,6 +260,53 @@ def classify_intent(
     return "scout"
 
 
+# Applied to every command instruction except "help". Confirmed live: with
+# the old flat "write 1-2 lines per competitor" instruction, a run that
+# processed 1500+ findings produced a report with a single throwaway
+# sentence per competitor -- all that scraping and enrichment cost, thrown
+# away at the last step. This makes length follow evidence instead of a
+# fixed line cap.
+REPORT_DEPTH_POLICY = (
+    " Depth policy: match how much you write to how much real evidence exists for that "
+    "item -- a competitor with several concrete findings (prices, ratings, engagement, specific "
+    "products) earns a real paragraph that uses them, not a compressed one-liner; a competitor "
+    "with only one thin finding earns one honest sentence, not padding. Never write a sentence "
+    "that contains no actual information from the data."
+)
+
+# Per-competitor quota for the findings passed into the report-generation
+# prompt. A flat global top-N (the old approach) lets 2-3 highly-scored
+# competitors crowd out every other competitor's evidence entirely --
+# exactly why the report above had nothing to say about most of them.
+# Guaranteeing each competitor its own slice means the model always has
+# something concrete to write about whichever competitors are mentioned.
+REPORT_FINDINGS_PER_COMPETITOR = 4
+REPORT_MAX_TOTAL_FINDINGS = 60
+
+
+def _select_report_findings(findings: list[FindingSchema]) -> list[FindingSchema]:
+    by_competitor: dict[str, list[FindingSchema]] = {}
+    for f in findings:
+        by_competitor.setdefault(f.competitor_name, []).append(f)
+
+    def _signal(f: FindingSchema) -> tuple:
+        extremity = abs((f.rating if f.rating is not None else 3.0) - 3.0)
+        engagement = sum(v for v in (f.engagement or {}).values() if isinstance(v, (int, float)))
+        return (-(f.relevance_score or 0), -extremity, -engagement)
+
+    selected: list[FindingSchema] = []
+    for items in by_competitor.values():
+        items_sorted = sorted(items, key=_signal)
+        selected.extend(items_sorted[:REPORT_FINDINGS_PER_COMPETITOR])
+
+    if len(selected) > REPORT_MAX_TOTAL_FINDINGS:
+        # Trim the globally weakest signal rather than dropping whole
+        # competitors -- preserves breadth over depth when still over budget.
+        selected.sort(key=_signal)
+        selected = selected[:REPORT_MAX_TOTAL_FINDINGS]
+    return selected
+
+
 def build_report(
     command: str,
     findings: list[FindingSchema],
@@ -275,8 +336,10 @@ def build_report(
         )
 
     instruction = instructions.get(cmd, instructions["scout"])
+    if cmd != "help":
+        instruction += REPORT_DEPTH_POLICY
 
-    top = sorted(findings, key=lambda f: -(f.relevance_score or 0))[:25]
+    top = _select_report_findings(findings)
 
     findings_text = "\n\n".join(
         f"[{f.competitor_name} | {f.source_platform} | {f.update_type}]\n"

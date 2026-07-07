@@ -6,17 +6,65 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.agents.scout.config import FRESHNESS_MINUTES, IG_POSTS_PER_PROFILE, enabled_sources
+from sqlalchemy import func
+
+from app.agents.scout.config import (
+    FRESHNESS_MINUTES, IG_POSTS_PER_PROFILE, enabled_sources,
+    MAX_SCRAPED_COMPETITORS, MAX_FINDINGS_PER_COMPETITOR,
+)
 from app.core.db import SessionLocal, Run, Finding as DBFinding, Report
 from app.agents.scout.schemas import FindingSchema
-from app.agents.scout.cleaning import clean_findings
+from app.agents.scout.cleaning import clean_findings, cap_findings_per_competitor
 from app.agents.scout.analysis import enrich_findings, build_report
-from app.agents.scout.discovery import confirm_seed_competitors, discover_new_competitors, get_all_competitors
+from app.agents.scout.discovery import (
+    confirm_seed_competitors, discover_new_competitors, get_all_competitors,
+    prune_stale_competitors,
+)
 
 logger = logging.getLogger(__name__)
 
 RAW_DATA_DIR = Path("data/raw")
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _select_competitors_to_scrape(
+    competitors: list[dict], store_id: int, max_total: int,
+) -> list[dict]:
+    """Cap the scrape list without ever dropping curated entries.
+
+    get_all_competitors() only grows over time (discovery adds up to
+    MAX_NEW_COMPETITORS per run, nothing removes -- prune_stale_competitors
+    handles that separately, but on any given run there can still be more
+    unproven "discovered" entries than we want to pay to scrape). primary/
+    seed rows are always kept since a human deliberately chose them. If
+    "discovered" entries push the total over max_total, keep the ones with
+    the strongest historical track record (most Finding rows ever recorded
+    against that name) -- proven signal beats an unproven recent guess.
+    """
+    curated = [c for c in competitors if c.get("source") in ("primary", "seed")]
+    discovered = [c for c in competitors if c.get("source") not in ("primary", "seed")]
+
+    remaining = max_total - len(curated)
+    if remaining <= 0:
+        return curated[:max_total]
+    if len(discovered) <= remaining:
+        return curated + discovered
+
+    with SessionLocal() as db:
+        counts = dict(
+            db.query(DBFinding.competitor_name, func.count(DBFinding.id))
+            .filter(DBFinding.store_id == store_id)
+            .group_by(DBFinding.competitor_name)
+            .all()
+        )
+    discovered.sort(key=lambda c: counts.get(c["name"], 0), reverse=True)
+    dropped = len(discovered) - remaining
+    if dropped:
+        logger.info(
+            "scout.pipeline: competitor_cap store=%d dropping %d lowest-history discovered entries",
+            store_id, dropped,
+        )
+    return curated + discovered[:remaining]
 
 
 def _dump_raw(run_id: int, source: str, data: object) -> None:
@@ -214,10 +262,14 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
     try:
         confirm_seed_competitors(store_id)
         discover_new_competitors(store_id)
+        pruned = prune_stale_competitors(store_id)
+        if pruned:
+            logger.info("scout.pipeline: pruned %d stale competitors store=%d", pruned, store_id)
     except Exception as exc:
         logger.error("scout.pipeline: discovery_failed store=%d error=%s", store_id, exc)
 
     competitors = get_all_competitors(store_id)
+    competitors = _select_competitors_to_scrape(competitors, store_id, MAX_SCRAPED_COMPETITORS)
     logger.info("scout.pipeline: scraping store=%d competitors=%d", store_id, len(competitors))
 
     with SessionLocal() as db:
@@ -241,6 +293,8 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
 
     cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
     logger.info("scout.pipeline: dedup store=%d raw=%d cleaned=%d", store_id, len(raw_findings), len(cleaned))
+    cleaned = cap_findings_per_competitor(cleaned, MAX_FINDINGS_PER_COMPETITOR)
+    logger.info("scout.pipeline: capped store=%d cleaned_capped=%d", store_id, len(cleaned))
 
     enriched = enrich_findings(cleaned, store_name=store_name, store_category=store_category)
     _store_findings(run_id, store_id, enriched)
