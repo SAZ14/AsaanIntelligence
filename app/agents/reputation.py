@@ -258,22 +258,20 @@ def classify_reviews_batch(
             age = (now - posted).days
         except Exception:
             age = 0
-        if age > cutoff_days:
+        # The rule-based path below has no signal to work with for unrated
+        # platforms (Instagram comments have no stars) -- it can only look
+        # at rating, so an unrated item there gets a placeholder ("neutral")
+        # rather than real analysis of what it actually says. Route unrated
+        # items through the LLM regardless of age so they get genuine
+        # text-based classification instead.
+        if age > cutoff_days and ra.rating:
             historical.append(ra)
         else:
             recent.append(ra)
 
-    # Rule-based for older reviews (no LLM cost)
+    # Rule-based for older RATED reviews only (no LLM cost)
     for ra in historical:
-        if not ra.rating:
-            # 0 = no star rating at all (e.g. Instagram captions/comments,
-            # which normalizer.py defaults to 0), not an actual 1-2 star
-            # review. Without this check every unrated older Instagram item
-            # fell into the "<= 2" branch below and got auto-labeled
-            # negative regardless of what it actually said.
-            ra.issue_class = "other"
-            ra.sentiment = "neutral"
-        elif ra.rating >= 4:
+        if ra.rating >= 4:
             ra.issue_class = "praise"
             ra.sentiment = "positive"
         elif ra.rating <= 2:
@@ -283,11 +281,15 @@ def classify_reviews_batch(
             ra.issue_class = "other"
             ra.sentiment = "neutral"
 
-    # Batch LLM for recent reviews
+    # Batch LLM for recent reviews (and any unrated item, regardless of age)
     for i in range(0, len(recent), CLASSIFIER_BATCH_SIZE):
         batch = recent[i : i + CLASSIFIER_BATCH_SIZE]
         lines = [
-            f"{j}. [Rating {ra.rating}/5] \"{ra.text[:200]}\""
+            # "[Rating 0/5]" reads as the worst possible score, not "no
+            # rating provided" -- misleading for platforms like Instagram
+            # that have no star ratings at all. Say so plainly instead.
+            f"{j}. [{f'Rating {ra.rating}/5' if ra.rating else 'No star rating (platform has none)'}] "
+            f"\"{ra.text[:200]}\""
             for j, ra in enumerate(batch, 1)
         ]
         prompt = (

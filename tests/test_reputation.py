@@ -267,41 +267,75 @@ def _old_unrated(text: str) -> ReviewAnalysis:
     )
 
 
-class TestUnratedInstagramClassification:
-    def test_unrated_old_item_is_neutral_not_negative(self):
-        from app.agents.reputation import classify_reviews_batch
-        ra = _old_unrated("Check out our new burger launch this week!")
-        result = classify_reviews_batch([ra], client=None)
-        assert result[0].sentiment == "neutral"
-        assert result[0].issue_class == "other"
+def _mock_llm_client(reply_lines: list[str]):
+    """A minimal stand-in for the ZAI client's chat.completions.create()
+    shape, returning a fixed 'N. issue_class,sentiment' response body."""
+    from unittest.mock import MagicMock
+    client = MagicMock()
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = "\n".join(reply_lines)
+    client.chat.completions.create.return_value = resp
+    return client
 
-    def test_unrated_old_item_never_excluded_from_draft_replies_by_being_negative(self):
-        """The bug's real-world consequence: a falsely-negative rating=0
-        item would satisfy draft_replies' "0 < rating <= 3" filter... except
-        rating IS 0, which is falsy, so it was already excluded from
-        drafting either way. This test locks in that rating=0 content never
-        gets treated as an actionable negative review needing a reply."""
+
+class TestUnratedInstagramClassification:
+    def test_unrated_old_item_routed_through_llm_not_rule_based(self):
+        """The rule-based path can only look at rating -- it has nothing
+        to work with for an unrated platform, so it used to hand back a
+        placeholder ("neutral") regardless of what the text actually said.
+        Unrated items must go through the LLM (which reads the text)
+        regardless of age."""
+        from app.agents.reputation import classify_reviews_batch
+        ra = _old_unrated("This place is absolutely terrible, avoid it")
+        client = _mock_llm_client(["1. service_speed,negative"])
+        result = classify_reviews_batch([ra], client)
+        client.chat.completions.create.assert_called_once()
+        assert result[0].sentiment == "negative"
+        assert result[0].issue_class == "service_speed"
+
+    def test_llm_prompt_does_not_claim_a_fake_zero_star_rating(self):
+        """"[Rating 0/5]" reads as the worst possible score to an LLM, not
+        "no rating provided" -- misleading for a platform (Instagram) that
+        has no star ratings at all."""
+        from app.agents.reputation import classify_reviews_batch
+        ra = _old_unrated("Neutral comment text")
+        client = _mock_llm_client(["1. other,neutral"])
+        classify_reviews_batch([ra], client)
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Rating 0/5" not in prompt
+        assert "No star rating" in prompt
+
+    def test_unrated_item_never_treated_as_actionable_negative_review(self):
+        """rating=0 is falsy, so it's excluded from draft_replies'
+        "0 < rating <= 3" filter regardless of classified sentiment --
+        unrated content never gets a drafted reply queued for posting."""
         ra = _old_unrated("Some comment with no star rating")
         needs_reply = bool(ra.rating and 0 < ra.rating <= 3)
         assert needs_reply is False
 
-    def test_genuinely_bad_rating_is_still_negative(self):
-        """Make sure the fix didn't break real 1-2 star classification."""
+    def test_genuinely_bad_rating_still_uses_the_fast_rule_based_path(self):
+        """A real 1-2 star review has a real signal to classify from --
+        it should stay on the free rule-based path, not cost an LLM call."""
         from app.agents.reputation import classify_reviews_batch, HISTORICAL_CUTOFF_DAYS
         old_date = (datetime.utcnow() - timedelta(days=HISTORICAL_CUTOFF_DAYS + 5)).strftime("%Y-%m-%d")
         ra = ReviewAnalysis(
             review_id="gm1", source="Google Maps", rating=1,
             posted_at=old_date, reviewer_name="someone", text="Terrible service",
         )
-        result = classify_reviews_batch([ra], client=None)
+        client = _mock_llm_client([])
+        result = classify_reviews_batch([ra], client)
+        client.chat.completions.create.assert_not_called()
         assert result[0].sentiment == "negative"
 
-    def test_genuinely_good_rating_is_still_positive(self):
+    def test_genuinely_good_rating_still_uses_the_fast_rule_based_path(self):
         from app.agents.reputation import classify_reviews_batch, HISTORICAL_CUTOFF_DAYS
         old_date = (datetime.utcnow() - timedelta(days=HISTORICAL_CUTOFF_DAYS + 5)).strftime("%Y-%m-%d")
         ra = ReviewAnalysis(
             review_id="gm2", source="Google Maps", rating=5,
             posted_at=old_date, reviewer_name="someone", text="Loved it",
         )
-        result = classify_reviews_batch([ra], client=None)
+        client = _mock_llm_client([])
+        result = classify_reviews_batch([ra], client)
+        client.chat.completions.create.assert_not_called()
         assert result[0].sentiment == "positive"
