@@ -451,6 +451,65 @@ def draft_replies(
     return reviews
 
 
+def _review_platform(source: str) -> str:
+    source = source or ""
+    if source.startswith("Google"):
+        return "google_maps"
+    if source.startswith("Instagram"):
+        return "instagram"
+    return "other"
+
+
+def cap_reviews_balanced(raw_reviews: list[dict], max_total: int) -> list[dict]:
+    """Cap scraped reviews to max_total, balanced across platforms instead
+    of a flat global recency sort.
+
+    Confirmed live: Instagram has no star ratings at all, so a review
+    from there can never be classified as negative or positive by
+    select_reviews_needing_reply (both buckets require a real rating) --
+    Google Maps is the only source that can ever produce a drafted reply
+    or a pending-queue item. A pure "most recent N overall" cap doesn't
+    protect that: a burst of recent Instagram comments crowded out every
+    single Google Maps review from a real 50-review batch, so despite
+    real (possibly negative or positive) Google Maps reviews existing,
+    none of them made it into the capped batch at all -- the report said
+    "no negative reviews" not because there weren't any, but because
+    none were even looked at.
+
+    Splits the budget evenly across whichever platforms are present
+    (each internally sorted by recency), then backfills any leftover
+    budget with whatever's most recent overall -- so a platform with
+    fewer items than its even share doesn't waste budget, and one with
+    a lot doesn't get capped below its share unless truly outnumbered.
+    """
+    from collections import defaultdict
+
+    by_platform: dict[str, list[dict]] = defaultdict(list)
+    for r in raw_reviews:
+        by_platform[_review_platform(r.get("source", ""))].append(r)
+
+    for items in by_platform.values():
+        items.sort(key=lambda r: r.get("posted_at") or r.get("date") or "", reverse=True)
+
+    platforms = list(by_platform.keys())
+    if not platforms:
+        return []
+    per_platform = max(1, max_total // len(platforms))
+
+    selected: list[dict] = []
+    for platform in platforms:
+        selected.extend(by_platform[platform][:per_platform])
+
+    if len(selected) < max_total:
+        leftover: list[dict] = []
+        for platform in platforms:
+            leftover.extend(by_platform[platform][per_platform:])
+        leftover.sort(key=lambda r: r.get("posted_at") or r.get("date") or "", reverse=True)
+        selected.extend(leftover[: max_total - len(selected)])
+
+    return selected[:max_total]
+
+
 def select_reviews_needing_reply(analyses: list[ReviewAnalysis]) -> list[ReviewAnalysis]:
     """Which reviews get a drafted reply and enter the scrollable pending
     queue (post/edit/ignore). Both rated negative reviews (apologetic/
@@ -797,12 +856,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             _mark_reputation_checked(store_id, datetime.utcnow())
         return f"*{store_name}* - No new reviews found across all platforms."
 
-    # Cap to most recent MAX_REVIEWS_PER_CHECK reviews
-    raw_reviews = sorted(
-        raw_reviews,
-        key=lambda r: r.get("posted_at") or r.get("date") or "",
-        reverse=True,
-    )[:MAX_REVIEWS_PER_CHECK]
+    # Cap to MAX_REVIEWS_PER_CHECK, balanced across platforms
+    raw_reviews = cap_reviews_balanced(raw_reviews, MAX_REVIEWS_PER_CHECK)
     logger.info("reputation.check: store=%d capped_to=%d", store_id, len(raw_reviews))
 
     client = get_client()

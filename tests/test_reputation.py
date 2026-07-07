@@ -431,3 +431,61 @@ class TestDraftRepliesPositiveTone:
         draft_replies([ra], client, venue_name="Test Cafe")
         prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
         assert "warm thank you" in prompt.lower()
+
+
+# ── cap_reviews_balanced ──────────────────────────────────────────────────────
+#
+# Confirmed live: a real check capped to the 50 most-recent-overall reviews
+# came back 100% Instagram (which has no star ratings), so none of them
+# could ever be classified as negative or positive -- the report said "no
+# negative reviews" not because there weren't any, but because a burst of
+# recent Instagram comments crowded every single Google Maps review (the
+# only source that can ever be actionable) out of the batch entirely.
+
+def _raw(source: str, posted_at: str) -> dict:
+    return {"source": source, "text": "x", "posted_at": posted_at, "hash": f"{source}-{posted_at}"}
+
+
+class TestCapReviewsBalanced:
+    def test_reproduces_the_live_bug_scenario(self):
+        """50 very-recent Instagram comments + 10 older-but-real Google
+        Maps reviews -- a flat recency sort drops every Google Maps review;
+        balancing must not."""
+        from app.agents.reputation import cap_reviews_balanced
+        instagram = [_raw("Instagram - x comment", f"2026-07-0{7}T{i:02d}:00:00Z") for i in range(50)]
+        google = [_raw("Google Maps - Anatummy", f"2026-06-{20+i}T00:00:00Z") for i in range(10)]
+        result = cap_reviews_balanced(instagram + google, max_total=50)
+        platforms = {r["source"].split(" - ")[0] for r in result}
+        assert "Google Maps" in platforms
+        google_in_result = [r for r in result if r["source"].startswith("Google")]
+        assert len(google_in_result) == 10  # all of them fit within its even share
+
+    def test_even_split_across_two_platforms(self):
+        from app.agents.reputation import cap_reviews_balanced
+        instagram = [_raw("Instagram - x comment", f"2026-07-0{i%9+1}T00:00:00Z") for i in range(40)]
+        google = [_raw("Google Maps - Anatummy", f"2026-07-0{i%9+1}T00:00:00Z") for i in range(40)]
+        result = cap_reviews_balanced(instagram + google, max_total=50)
+        counts = {}
+        for r in result:
+            counts[r["source"].split(" - ")[0]] = counts.get(r["source"].split(" - ")[0], 0) + 1
+        assert counts["Instagram"] == 25
+        assert counts["Google Maps"] == 25
+
+    def test_single_platform_gets_everything_up_to_cap(self):
+        from app.agents.reputation import cap_reviews_balanced
+        google = [_raw("Google Maps - Anatummy", f"2026-07-0{i%9+1}T00:00:00Z") for i in range(30)]
+        result = cap_reviews_balanced(google, max_total=50)
+        assert len(result) == 30
+
+    def test_backfills_leftover_budget_from_the_larger_platform(self):
+        """One platform has fewer than its even share -- the unused budget
+        should go to the other platform, not be wasted."""
+        from app.agents.reputation import cap_reviews_balanced
+        google = [_raw("Google Maps - Anatummy", f"2026-07-0{i%9+1}T00:00:00Z") for i in range(3)]
+        instagram = [_raw("Instagram - x comment", f"2026-07-0{i%9+1}T00:00:00Z") for i in range(40)]
+        result = cap_reviews_balanced(google + instagram, max_total=50)
+        assert len(result) == 43  # 3 google (all of them) + 40 instagram (all of them, under cap)
+
+    def test_empty_input_returns_empty(self):
+        from app.agents.reputation import cap_reviews_balanced
+        assert cap_reviews_balanced([], max_total=50) == []
