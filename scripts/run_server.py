@@ -39,31 +39,35 @@ def _start_scheduler() -> BackgroundScheduler:
         trigger="cron", day_of_week="sun", hour=18, minute=0,
         id="leaderboard_sunday", replace_existing=True,
     )
-    # Scout & reputation: poll every 10 minutes rather than on a fixed
+    # Scout & reputation: poll every 5 minutes rather than on a fixed
     # clock schedule. Both target functions check actual cache staleness
     # themselves (run_scout_all via _is_scout_fresh, run_reputation_check_all
     # via _check_reviews' own cache check, both Redis-backed and cheap on a
     # hit) and no-op with zero Apify/LLM cost when the cache is still warm --
-    # so this fires every 10 min but only actually scrapes once a store's
+    # so this fires every 5 min but only actually scrapes once a store's
     # cache has genuinely gone stale. A fixed 3x/day cron drifted out of
     # sync with real usage: e.g. a staff member's manual check at 14:16 left
     # the 8h cache fresh until 22:16, but the fixed 22:00 slot landed 16
     # minutes early (wasted, cache hit) and the next slot wasn't until 06:00
     # the next day -- an 8h+ gap where the cache sat stale with nothing
-    # refreshing it. An earlier hourly poll narrowed that gap to up to ~60
-    # min after the cache actually went stale; 10 min narrows it further to
-    # ~10 min, still at negligible added cost since the poll itself is just
-    # a cheap Redis/DB staleness check regardless of frequency -- the
-    # expensive work only fires on a genuine miss, unchanged either way.
+    # refreshing it. Polling narrows that gap to roughly one poll interval
+    # after the cache actually went stale, at negligible added cost either
+    # way: the poll itself is just a cheap Redis/DB staleness check, the
+    # expensive work (Apify/LLM) only fires on a genuine miss and is gated
+    # by the freshness window itself, not by how often this poll runs.
+    # APScheduler's default max_instances=1 per job also means a slow live
+    # scrape (7-45 min, confirmed live -- much longer than this interval)
+    # can never overlap with itself: a poll firing while the previous one
+    # is still running is simply skipped, not run concurrently.
     scheduler.add_job(
         run_scout_all,
-        trigger="interval", minutes=10,
-        id="scout_10min_poll", replace_existing=True,
+        trigger="interval", minutes=5,
+        id="scout_5min_poll", replace_existing=True,
     )
     scheduler.add_job(
         run_reputation_check_all,
-        trigger="interval", minutes=10,
-        id="reputation_check_10min_poll", replace_existing=True,
+        trigger="interval", minutes=5,
+        id="reputation_check_5min_poll", replace_existing=True,
     )
     scheduler.start()
     return scheduler

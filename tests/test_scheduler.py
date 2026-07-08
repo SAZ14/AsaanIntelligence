@@ -29,11 +29,29 @@ def test_all_four_jobs_registered_with_expected_triggers():
     finally:
         scheduler.shutdown(wait=False)
 
-    assert jobs["scout_10min_poll"] == "interval[0:10:00]"
-    assert jobs["reputation_check_10min_poll"] == "interval[0:10:00]"
+    assert jobs["scout_5min_poll"] == "interval[0:05:00]"
+    assert jobs["reputation_check_5min_poll"] == "interval[0:05:00]"
     # existing jobs must survive the addition, not get clobbered
     assert "winback_daily" in jobs
     assert "leaderboard_sunday" in jobs
+
+
+def test_poll_jobs_cannot_run_concurrently_with_themselves():
+    """A live scout scrape can take 7-45 minutes (confirmed live) --
+    much longer than the 5-minute poll interval. APScheduler's
+    max_instances defaults to 1 per job, meaning a poll firing while the
+    previous invocation of the SAME job is still running is skipped
+    rather than launched as a second concurrent execution. This is what
+    actually makes a poll interval shorter than typical scrape duration
+    safe -- confirm it's really in effect, not just assumed."""
+    import scripts.run_server as rs
+    scheduler = rs._start_scheduler()
+    try:
+        for job_id in ("scout_5min_poll", "reputation_check_5min_poll"):
+            job = scheduler.get_job(job_id)
+            assert job.max_instances == 1
+    finally:
+        scheduler.shutdown(wait=False)
 
 
 # ── run_scout_all ──────────────────────────────────────────────────────────────
