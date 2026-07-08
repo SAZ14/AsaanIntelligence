@@ -271,7 +271,10 @@ def get_recent_reviews(store_id: int, limit: int = 50) -> list[dict]:
         ]
 
 
-def search_reviews_semantic(store_id: int, query: str, top_k: int = 15, min_similarity: float = 0.25) -> list[dict]:
+def search_reviews_semantic(
+    store_id: int, query: str, top_k: int = 15, min_similarity: float = 0.25,
+    sentiment: str | None = None,
+) -> list[dict]:
     """Reviews whose TEXT is semantically relevant to `query`, most
     relevant first -- not "most recent". Fixes a real gap in the old
     get_recent_reviews(limit=10)-only approach to free-form review chat:
@@ -290,6 +293,15 @@ def search_reviews_semantic(store_id: int, query: str, top_k: int = 15, min_simi
     unavailable, or if the store has no embedded reviews yet (e.g. not
     yet backfilled) -- callers should treat this the same as "nothing
     relevant found", not a failure needing a fallback message of its own.
+
+    `sentiment`, if given, filters to reviews whose already-classified
+    ai_summary.sentiment matches -- computed once during the normal
+    review check, not re-classified here. Fixes a real, confirmed-live
+    gap: pure topical similarity matches SUBJECT, not polarity, so
+    "complaints about the branch" surfaced praise ("Very nice amazing
+    Branch") right alongside actual complaints, since both mention
+    "branch". Callers detect whether a query has a sentiment lean (see
+    reputation.py's _detect_sentiment_lean) and pass it through here.
     """
     if not query or not query.strip():
         return []
@@ -308,8 +320,16 @@ def search_reviews_semantic(store_id: int, query: str, top_k: int = 15, min_simi
             )
             .all()
         )
-        rows = [
-            {
+        rows = []
+        for f in findings:
+            if sentiment:
+                try:
+                    summary = json.loads(f.ai_summary) if f.ai_summary else {}
+                except Exception:
+                    summary = {}
+                if summary.get("sentiment") != sentiment:
+                    continue
+            rows.append({
                 "id": f.id,
                 "source": f.source_platform,
                 "text": f.content_text,
@@ -319,9 +339,7 @@ def search_reviews_semantic(store_id: int, query: str, top_k: int = 15, min_simi
                 "collected_at": str(f.collected_at) if f.collected_at else None,
                 "hash": f.content_hash,
                 "embedding": f.content_embedding,
-            }
-            for f in findings
-        ]
+            })
     if not rows:
         return []
 

@@ -576,6 +576,90 @@ class TestSearchReviewsSemantic:
         assert review_db.search_reviews_semantic(store_id, "", top_k=5) == []
         assert review_db.search_reviews_semantic(store_id, "anything", top_k=5) == []  # no reviews seeded
 
+    def test_sentiment_filter_excludes_topically_similar_wrong_polarity_matches(self, store_id):
+        """The real gap found live: pure topical similarity matches SUBJECT,
+        not polarity -- "complaints about the branch" surfaced praise
+        ("Very nice amazing Branch") right alongside actual complaints,
+        since both mention "branch". Confirmed against real production
+        review data before this filter existed."""
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        seeds = [
+            ("praise1", "Very nice amazing new branch, loved it!", "positive"),
+            ("praise2", "The new branch opening is fantastic news.", "positive"),
+            ("complaint1", "The new branch has terrible service, waited forever.", "negative"),
+            ("complaint2", "New branch location has no parking, very disappointing.", "negative"),
+        ]
+        for hash_, text, sentiment in seeds:
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe",
+                _raw_review(hash_, text=text, rating=5.0 if sentiment == "positive" else 1.5),
+                {"status": "auto_closed", "sentiment": sentiment},
+            )
+
+        unfiltered = review_db.search_reviews_semantic(store_id, "complaints about the branch", top_k=5)
+        assert len(unfiltered) == 4  # the bug: both polarities match topically
+
+        filtered = review_db.search_reviews_semantic(store_id, "complaints about the branch", top_k=5, sentiment="negative")
+        assert {r["hash"] for r in filtered} == {"complaint1", "complaint2"}
+
+    def test_no_sentiment_filter_when_none_passed(self, store_id):
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe", _raw_review("h1", text="Great branch experience overall.", rating=5.0),
+            {"status": "auto_closed", "sentiment": "positive"},
+        )
+        results = review_db.search_reviews_semantic(store_id, "the branch", top_k=5, sentiment=None)
+        assert len(results) == 1
+
+
+class TestDetectSentimentLean:
+    """Structural correctness with a mocked LLM response -- tests run
+    with ZAI_API_KEY="" (conftest.py disables live calls by default).
+    Real-model accuracy verified separately, live (confirmed: correctly
+    detects "negative" for "complaints about the branch" and "positive"
+    for "praise for the new branch" against the real API)."""
+
+    def _mock_response(self, content):
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = content
+        return mock_client
+
+    def test_returns_negative_when_llm_says_negative(self):
+        from app.agents.reputation import _detect_sentiment_lean
+        with patch("app.core.llm.get_client", return_value=self._mock_response("negative")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_sentiment_lean("complaints about the branch") == "negative"
+
+    def test_returns_positive_when_llm_says_positive(self):
+        from app.agents.reputation import _detect_sentiment_lean
+        with patch("app.core.llm.get_client", return_value=self._mock_response("positive")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_sentiment_lean("praise for the new branch") == "positive"
+
+    def test_returns_none_when_llm_says_none(self):
+        from app.agents.reputation import _detect_sentiment_lean
+        with patch("app.core.llm.get_client", return_value=self._mock_response("none")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_sentiment_lean("what do people say about the branch") is None
+
+    def test_unrecognized_answer_falls_back_to_none(self):
+        """Untrusted output -- anything that isn't literally 'positive'
+        or 'negative' must degrade to no filter, not an error or a
+        guessed value."""
+        from app.agents.reputation import _detect_sentiment_lean
+        with patch("app.core.llm.get_client", return_value=self._mock_response("maybe?")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_sentiment_lean("something") is None
+
+    def test_no_api_key_returns_none_without_erroring(self):
+        from app.agents.reputation import _detect_sentiment_lean
+        # conftest.py already sets ZAI_API_KEY="" -- get_client() itself
+        # will raise/misbehave without a key, confirming the except path works.
+        assert _detect_sentiment_lean("complaints about the branch") is None
+
 
 class TestChatAboutReviewsBlending:
     def test_relevant_and_recent_are_merged_without_duplicates(self, store_id):

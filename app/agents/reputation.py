@@ -1134,6 +1134,60 @@ def _filter_label(sentiment: str | None, status: str | None) -> str:
     return " ".join(parts) if parts else "all"
 
 
+def _detect_sentiment_lean(text: str) -> str | None:
+    """Does answering this free-form question care about POSITIVE or
+    NEGATIVE reviews specifically, or neither? A different question from
+    _classify_review_query above (which detects LIST requests and
+    deliberately returns none for free-form questions like this one, so
+    it can't be reused here) -- this exists to fix a real gap in
+    search_reviews_semantic: pure topical cosine similarity matches
+    subject matter, not polarity, so "complaints about the branch"
+    surfaced praise ("Very nice amazing Branch") right alongside actual
+    complaints, since both mention "branch". Confirmed live against
+    real production review data before this existed. Feeding the
+    detected lean into search_reviews_semantic's sentiment filter (which
+    uses each review's already-classified ai_summary.sentiment, computed
+    once during the normal review check, not re-classified here) fixes
+    that by excluding the wrong-polarity matches entirely rather than
+    just topically-adjacent ones."""
+    try:
+        from app.core.llm import get_client, get_fast_model
+        client = get_client()
+        resp = client.chat.completions.create(
+            model=get_fast_model(),
+            messages=[
+                {"role": "system", "content": (
+                    "A restaurant owner is asking a free-form question about their "
+                    "reviews. Does answering it well specifically require POSITIVE "
+                    "reviews, specifically NEGATIVE reviews, or could relevant "
+                    "content be either (a neutral/general topic)?\n"
+                    "Reply with EXACTLY one word: positive, negative, or none.\n"
+                    "'none' means the question itself doesn't lean toward one "
+                    "polarity -- use it whenever unsure, since wrongly filtering "
+                    "out relevant content is worse than including a bit extra.\n\n"
+                    "Examples:\n"
+                    "'complaints about the branch' -> negative\n"
+                    "'has anyone complained about parking' -> negative\n"
+                    "'any issues with wifi' -> negative\n"
+                    "'praise for the new branch' -> positive\n"
+                    "'what do people love about us' -> positive\n"
+                    "'what do people say about the branch' -> none\n"
+                    "'how is the food quality' -> none\n"
+                    "'is the wifi any good' -> none"
+                )},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=5,
+            timeout=8.0,
+        )
+        answer = resp.choices[0].message.content.strip().lower()
+        return answer if answer in ("positive", "negative") else None
+    except Exception as exc:
+        logger.warning("reputation._detect_sentiment_lean: failed (%s)", exc)
+        return None
+
+
 REVIEW_PAGE_SIZE = 10
 REVIEW_PAGE_STATE_TTL = 1800  # 30 min -- long enough to page through, short enough not to linger
 
@@ -1224,7 +1278,8 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     # question; a small recent sample stays alongside it so general
     # "how are we doing overall"-type questions -- where similarity to
     # the question itself isn't meaningful -- still have something to go on.
-    relevant_reviews = review_db.search_reviews_semantic(store_id, text, top_k=15)
+    sentiment_lean = _detect_sentiment_lean(text)
+    relevant_reviews = review_db.search_reviews_semantic(store_id, text, top_k=15, sentiment=sentiment_lean)
     recent_reviews = review_db.get_recent_reviews(store_id, limit=5)
     seen_ids = {r["id"] for r in relevant_reviews}
     recent_reviews = [r for r in recent_reviews if r["id"] not in seen_ids]
