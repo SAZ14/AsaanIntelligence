@@ -274,86 +274,123 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             is_live = True
 
     # --- Live fetch ---
+    # Atomic lock (Redis SET NX -- app/core/cache.py, same connection as
+    # rate limits/cooldowns/the job queue) is the authoritative "is a live
+    # fetch already running for this store" answer, checked by every
+    # caller (cron, gateway/main.py's two dispatch sites, internal.py's
+    # _scout() fallback) via is_locked(scout_live_lock_key(store_id))
+    # before ever reaching here. Acquiring it here too, right before any
+    # work starts, closes what used to be a real race: discovery
+    # (confirm_seed_competitors/discover_new_competitors/prune_stale_
+    # competitors below) can take real time, and the Postgres "running"
+    # row used to not get written until after all of that -- so two
+    # callers whose freshness checks landed within that window (e.g. the
+    # cron poll and a staff message arriving moments apart) could both
+    # decide independently to proceed and both start a full live fetch.
+    # SET NX is atomic: only one caller can ever hold this key at a time,
+    # no matter how close in time two attempts are. TTL matches
+    # RUN_IN_FLIGHT_MINUTES as a safety net (releases itself even if the
+    # process crashes before the finally below runs); the finally
+    # releases it immediately on the normal path so the next genuine
+    # staleness cycle doesn't wait out the full TTL for no reason.
+    from app.core import cache as _cache
+    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+    lock_key = scout_live_lock_key(store_id)
+    if not _cache.try_lock(lock_key, ttl_seconds=RUN_IN_FLIGHT_MINUTES * 60):
+        logger.info("scout.pipeline: lock_held store=%d — already running elsewhere", store_id)
+        return "Scout is already running, your report will arrive in a few minutes. Please wait."
+
     try:
-        confirm_seed_competitors(store_id)
-        discover_new_competitors(store_id)
-        pruned = prune_stale_competitors(store_id)
-        if pruned:
-            logger.info("scout.pipeline: pruned %d stale competitors store=%d", pruned, store_id)
-    except Exception as exc:
-        logger.error("scout.pipeline: discovery_failed store=%d error=%s", store_id, exc)
+        try:
+            confirm_seed_competitors(store_id)
+            discover_new_competitors(store_id)
+            pruned = prune_stale_competitors(store_id)
+            if pruned:
+                logger.info("scout.pipeline: pruned %d stale competitors store=%d", pruned, store_id)
+        except Exception as exc:
+            logger.error("scout.pipeline: discovery_failed store=%d error=%s", store_id, exc)
 
-    competitors = get_all_competitors(store_id)
-    competitors = _select_competitors_to_scrape(competitors, store_id, MAX_SCRAPED_COMPETITORS)
-    logger.info("scout.pipeline: scraping store=%d competitors=%d", store_id, len(competitors))
+        competitors = get_all_competitors(store_id)
+        competitors = _select_competitors_to_scrape(competitors, store_id, MAX_SCRAPED_COMPETITORS)
+        logger.info("scout.pipeline: scraping store=%d competitors=%d", store_id, len(competitors))
 
-    with SessionLocal() as db:
-        db_run = Run(store_id=store_id, command=command, status="running")
-        db.add(db_run)
-        db.commit()
-        db.refresh(db_run)
-        run_id = db_run.id
-
-    raw_findings, sources_ok, sources_failed = _fetch_all_sources(competitors)
-    _dump_raw(run_id, "all_raw", [f.model_dump() for f in raw_findings])
-    logger.info(
-        "scout.pipeline: sources_done store=%d ok=%s failed=%s raw_findings=%d",
-        store_id, sources_ok, sources_failed, len(raw_findings),
-    )
-
-    seen_hashes: set[str] = set()
-    if latest_run:
-        for dbf in db_findings:
-            seen_hashes.add(dbf.content_hash)
-
-    cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
-    logger.info("scout.pipeline: dedup store=%d raw=%d cleaned=%d", store_id, len(raw_findings), len(cleaned))
-    cleaned = cap_findings_per_competitor(cleaned, MAX_FINDINGS_PER_COMPETITOR)
-    logger.info("scout.pipeline: capped store=%d cleaned_capped=%d", store_id, len(cleaned))
-
-    enriched = enrich_findings(cleaned, store_name=store_name, store_category=store_category)
-    _store_findings(run_id, store_id, enriched)
-
-    status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
-    run_finished_at = datetime.utcnow()
-    with SessionLocal() as db:
-        db_run = db.query(Run).filter(Run.id == run_id).first()
-        if db_run:
-            db_run.finished_at = run_finished_at
-            db_run.status = status
-            db_run.sources_ok = sources_ok
-            db_run.sources_failed = sources_failed
-            db_run.finding_count = len(enriched)
+        with SessionLocal() as db:
+            db_run = Run(store_id=store_id, command=command, status="running")
+            db.add(db_run)
             db.commit()
-    if status in ("ok", "partial"):
-        _mark_scout_run_fresh(store_id, run_finished_at, freshness_minutes)
+            db.refresh(db_run)
+            run_id = db_run.id
 
-    freshness_note = _build_freshness_note(None, is_live=True)
-    if sources_failed:
-        freshness_note += f" (partial, {', '.join(sources_failed)} failed)"
+        raw_findings, sources_ok, sources_failed = _fetch_all_sources(competitors)
+        _dump_raw(run_id, "all_raw", [f.model_dump() for f in raw_findings])
+        logger.info(
+            "scout.pipeline: sources_done store=%d ok=%s failed=%s raw_findings=%d",
+            store_id, sources_ok, sources_failed, len(raw_findings),
+        )
 
-    report_text = build_report(command, enriched, freshness_note, user_message=user_message,
-                               store_name=store_name, store_category=store_category)
+        seen_hashes: set[str] = set()
+        if latest_run:
+            for dbf in db_findings:
+                seen_hashes.add(dbf.content_hash)
 
-    with SessionLocal() as db:
-        db.add(Report(
-            store_id=store_id,
-            run_id=run_id,
-            command=command,
-            report_text=report_text,
-        ))
-        db.commit()
+        cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
+        logger.info("scout.pipeline: dedup store=%d raw=%d cleaned=%d", store_id, len(raw_findings), len(cleaned))
+        cleaned = cap_findings_per_competitor(cleaned, MAX_FINDINGS_PER_COMPETITOR)
+        logger.info("scout.pipeline: capped store=%d cleaned_capped=%d", store_id, len(cleaned))
 
-    elapsed = int(time.monotonic() - t0)
-    logger.info(
-        "scout.pipeline: run_complete store=%d command=%s findings=%d status=%s duration=%ds",
-        store_id, command, len(enriched), status, elapsed,
-    )
-    return report_text
+        enriched = enrich_findings(cleaned, store_name=store_name, store_category=store_category)
+        _store_findings(run_id, store_id, enriched)
+
+        status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+        run_finished_at = datetime.utcnow()
+        with SessionLocal() as db:
+            db_run = db.query(Run).filter(Run.id == run_id).first()
+            if db_run:
+                db_run.finished_at = run_finished_at
+                db_run.status = status
+                db_run.sources_ok = sources_ok
+                db_run.sources_failed = sources_failed
+                db_run.finding_count = len(enriched)
+                db.commit()
+        if status in ("ok", "partial"):
+            _mark_scout_run_fresh(store_id, run_finished_at, freshness_minutes)
+
+        freshness_note = _build_freshness_note(None, is_live=True)
+        if sources_failed:
+            freshness_note += f" (partial, {', '.join(sources_failed)} failed)"
+
+        report_text = build_report(command, enriched, freshness_note, user_message=user_message,
+                                   store_name=store_name, store_category=store_category)
+
+        with SessionLocal() as db:
+            db.add(Report(
+                store_id=store_id,
+                run_id=run_id,
+                command=command,
+                report_text=report_text,
+            ))
+            db.commit()
+
+        elapsed = int(time.monotonic() - t0)
+        logger.info(
+            "scout.pipeline: run_complete store=%d command=%s findings=%d status=%s duration=%ds",
+            store_id, command, len(enriched), status, elapsed,
+        )
+        return report_text
+    finally:
+        _cache.release_lock(lock_key)
 
 
 def _scout_cache_key(store_id: int) -> str:
     return f"scout:last_run:{store_id}"
+
+
+def scout_live_lock_key(store_id: int) -> str:
+    """Not underscore-prefixed -- gateway/main.py (x2) and
+    gateway/internal.py's _scout() also need this exact key to pre-screen
+    with cache.is_locked() before ever calling run(), so their "already
+    running" reply matches what run()'s own try_lock() would decide."""
+    return f"scout:live_lock:{store_id}"
 
 
 def _mark_scout_run_fresh(store_id: int, finished_at, freshness_minutes: int) -> None:

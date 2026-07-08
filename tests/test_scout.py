@@ -26,6 +26,19 @@ def store_id():
 
 
 @pytest.fixture
+def fake_redis(monkeypatch):
+    """The scout in-flight guard is an atomic Redis lock (SET NX) -- without
+    a real or fake connection, cache.try_lock/is_locked fail open (True/
+    False respectively), which would make every in-flight test trivially
+    pass or fail regardless of the actual guard logic. Same fixture
+    pattern as test_review_dedup_and_listing.py/test_guards.py."""
+    fakeredis = pytest.importorskip("fakeredis")
+    import app.core.cache as cache
+    monkeypatch.setattr(cache, "_client", fakeredis.FakeRedis(decode_responses=True))
+    monkeypatch.setattr(cache, "_unavailable", False)
+
+
+@pytest.fixture
 def two_store_ids():
     chain_id = seed_chain("Scout Chain 2")
     s1 = seed_store(chain_id, name="Brew Point", location="Johar Town, Lahore", category="coffee")
@@ -401,15 +414,19 @@ def test_pipeline_store_name_unknown_store_returns_restaurant():
     assert name == "the restaurant"
 
 
-# ── In-flight guard: must cover the confirmed live scrape duration ──────────
-# A live scout run has been confirmed live to take 7-45 minutes. The
-# "is a run already in flight for this store" guard (gateway/internal.py's
-# _scout(), and its two twins in gateway/main.py) used to cut off at 15
-# minutes -- shorter than the observed max, meaning a genuinely still-
-# running scrape stopped being recognized as in flight partway through,
-# letting a second trigger start a duplicate concurrent scrape and waste
-# Apify credits. RUN_IN_FLIGHT_MINUTES (app/agents/scout/config.py) fixes
-# this; these tests pin its value and confirm the guard actually uses it.
+# ── In-flight guard: atomic Redis lock, no race, covers cron too ────────────
+# A live scout run has been confirmed live to take 7-45 minutes. The old
+# guard was a Postgres SELECT-then-INSERT (check for a "running" row,
+# then later write one) with a 15-minute cutoff shorter than the observed
+# max -- both a correctness gap (a genuinely still-running scrape stopped
+# being recognized as in flight partway through) and a real race (two
+# callers whose checks landed within the same window could both decide
+# to proceed independently, since the check and the row write weren't
+# atomic). Replaced with an atomic Redis lock (SET NX -- cache.try_lock),
+# checked identically by every caller: the cron poll, gateway/main.py's
+# two dispatch sites, and gateway/internal.py's _scout() fallback tested
+# here. These tests cover the lock mechanism directly and confirm _scout()
+# honors it regardless of who (cron or another staff message) is holding it.
 
 def test_run_in_flight_minutes_covers_the_confirmed_worst_case_duration():
     from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
@@ -417,20 +434,17 @@ def test_run_in_flight_minutes_covers_the_confirmed_worst_case_duration():
     assert RUN_IN_FLIGHT_MINUTES > CONFIRMED_MAX_LIVE_SCRAPE_MINUTES
 
 
-def test_scout_still_recognizes_a_scrape_running_20_minutes_as_in_flight(store_id):
-    """20 minutes in is past the old, too-short 15-minute cutoff but well
-    within a real scrape's confirmed 7-45 minute range -- must still be
-    treated as in flight, not double-triggered."""
-    from datetime import datetime, timedelta
-    from app.core.db import ScoutRun
+def test_scout_recognizes_a_lock_held_by_someone_else_as_in_flight(store_id, fake_redis):
+    """Simulates the exact scenario asked about: the cron job's own
+    run_scout_all() (or another staff message) already holds the lock --
+    a staff message arriving here must see "already running", not start
+    a second concurrent scrape, regardless of who/what acquired the lock."""
+    from app.core import cache as _cache
+    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+    from app.agents.scout.pipeline import scout_live_lock_key
     from app.gateway.internal import _scout
 
-    with TestSession() as db:
-        db.add(ScoutRun(
-            store_id=store_id, command="scout", status="running",
-            started_at=datetime.utcnow() - timedelta(minutes=20),
-        ))
-        db.commit()
+    assert _cache.try_lock(scout_live_lock_key(store_id), ttl_seconds=RUN_IN_FLIGHT_MINUTES * 60)
 
     with patch("app.gateway.main._scout_rate_ok", return_value=True), \
          patch("app.agents.scout.pipeline.run") as mock_run:
@@ -440,20 +454,8 @@ def test_scout_still_recognizes_a_scrape_running_20_minutes_as_in_flight(store_i
     assert "already running" in reply.lower()
 
 
-def test_scout_allows_a_fresh_attempt_after_a_run_is_truly_orphaned(store_id):
-    """A "running" row from 90 minutes ago is long past any real scrape
-    duration -- almost certainly an orphaned row from a crashed process,
-    not genuine ongoing work. Must not block forever."""
-    from datetime import datetime, timedelta
-    from app.core.db import ScoutRun
+def test_scout_proceeds_once_the_lock_is_free(store_id, fake_redis):
     from app.gateway.internal import _scout
-
-    with TestSession() as db:
-        db.add(ScoutRun(
-            store_id=store_id, command="scout", status="running",
-            started_at=datetime.utcnow() - timedelta(minutes=90),
-        ))
-        db.commit()
 
     with patch("app.gateway.main._scout_rate_ok", return_value=True), \
          patch("app.agents.scout.pipeline.run", return_value="fresh report") as mock_run:
@@ -461,3 +463,41 @@ def test_scout_allows_a_fresh_attempt_after_a_run_is_truly_orphaned(store_id):
 
     mock_run.assert_called_once()
     assert reply == "fresh report"
+
+
+def test_only_one_of_two_simultaneous_callers_acquires_the_lock(store_id, fake_redis):
+    """The actual atomicity guarantee -- two callers racing for the same
+    key, neither having seen the other's state first. SET NX means
+    exactly one succeeds no matter how close in time the attempts are."""
+    from app.core import cache as _cache
+    from app.agents.scout.pipeline import scout_live_lock_key
+
+    key = scout_live_lock_key(store_id)
+    first = _cache.try_lock(key, ttl_seconds=60)
+    second = _cache.try_lock(key, ttl_seconds=60)
+
+    assert first is True
+    assert second is False
+
+
+def test_runs_own_lock_blocks_a_concurrent_call_and_releases_when_done(store_id, fake_redis):
+    """Integration-style: run() itself, not just the caller-side
+    pre-screen, must refuse to proceed if the lock is already held, and
+    must release it when it finishes so a later, genuinely fresh attempt
+    isn't blocked forever."""
+    from app.core import cache as _cache
+    from app.agents.scout.pipeline import run, scout_live_lock_key, _scout_cache_key
+    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+
+    key = scout_live_lock_key(store_id)
+
+    # Someone else already holds it -- run() must not do any discovery work.
+    _cache.try_lock(key, ttl_seconds=RUN_IN_FLIGHT_MINUTES * 60)
+    with patch("app.agents.scout.pipeline.confirm_seed_competitors") as mock_discover:
+        reply = run("scout", store_id=store_id)
+    mock_discover.assert_not_called()
+    assert "already running" in reply.lower()
+
+    # Once released, a fresh attempt can proceed and re-acquire it.
+    _cache.release_lock(key)
+    assert _cache.try_lock(key, ttl_seconds=60) is True

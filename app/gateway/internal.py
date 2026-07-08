@@ -355,22 +355,14 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
     Reuses the same rate-limit (3/hour) and in-flight-run guards as the
     keyword path so this fallback can't be used to bypass them.
     """
-    from datetime import datetime, timedelta
-    from app.core.db import SessionLocal, ScoutRun as Run
     from app.gateway.main import _scout_rate_ok
-    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+    from app.core import cache as _cache
+    from app.agents.scout.pipeline import scout_live_lock_key
 
     if not _scout_rate_ok(from_number):
         return "You've sent too many scout requests. Limit is 3 per hour, please wait before trying again."
 
-    with SessionLocal() as db:
-        cutoff = datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES)
-        in_flight = db.query(Run).filter(
-            Run.store_id == store_id,
-            Run.status == "running",
-            Run.started_at >= cutoff,
-        ).first()
-    if in_flight:
+    if _cache.is_locked(scout_live_lock_key(store_id)):
         return "Scout is already running, your report will arrive in a few minutes. Please wait."
 
     try:

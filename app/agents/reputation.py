@@ -41,6 +41,14 @@ MAX_POSITIVE_DRAFT_REPLIES = 5
 # of waiting on a live Apify scrape.
 REPUTATION_CACHE_HOURS = 8
 
+# TTL on the atomic Redis lock (_check_reviews' in-flight guard) that
+# decides whether a review scrape is already running for a store. A real
+# scrape has been observed to complete in ~5-6 minutes; this stays well
+# above that so a genuinely still-running scrape is never mistaken for
+# stale/orphaned, while still releasing itself as a safety net if a
+# crashed process never reaches the `finally: release_lock`.
+REPUTATION_RUN_LOCK_MINUTES = 20
+
 DAY_KEYWORDS = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
     "friday": 4, "saturday": 5, "sunday": 6,
@@ -763,6 +771,10 @@ def _reputation_cache_key(store_id: int) -> str:
     return f"reputation:last_check:{store_id}"
 
 
+def _reputation_live_lock_key(store_id: int) -> str:
+    return f"reputation:live_lock:{store_id}"
+
+
 def _get_reputation_last_check(store_id: int) -> datetime | None:
     """Timestamp of the most recent completed ("ok") review check within
     REPUTATION_CACHE_HOURS, or None if stale/missing.
@@ -841,26 +853,16 @@ def check_reputation_cache(store_id: int, store_name: str) -> tuple[bool, str]:
 
 
 def _check_reviews(store_id: int, store_name: str) -> str:
-    from datetime import datetime, timedelta
+    from datetime import datetime
     from app.review_sources.pipeline import run_pipeline
     from app.review_sources import db as review_db
     from app.review_sources.normalizer import to_review_model
     from app.core.llm import get_client
-    from app.core.db import SessionLocal, ScoutRun as Run
+    from app.core import cache as _cache
 
-    # In-flight guard: if a scrape is already running for this store, wait for it
-    cutoff_inflight = datetime.utcnow() - timedelta(minutes=10)
-    with SessionLocal() as db:
-        in_flight = db.query(Run).filter(
-            Run.store_id == store_id,
-            Run.command == "whatsapp_check",
-            Run.status == "running",
-            Run.started_at >= cutoff_inflight,
-        ).first()
-    if in_flight:
-        return f"*{store_name}* - Review scrape already in progress. Results coming shortly 🔍"
-
-    # Cache: if a review check completed recently, skip Apify and read from DB
+    # Cache: if a review check completed recently, skip Apify and read from
+    # DB. Checked before the in-flight lock below so the common case (cache
+    # still warm) never touches Redis's lock machinery at all.
     cache_finished_at = _get_reputation_last_check(store_id)
     if cache_finished_at is not None:
         age_min = int((datetime.utcnow() - cache_finished_at).total_seconds() / 60)
@@ -874,118 +876,132 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             )
         return f"*{store_name}* - Reviews up to date ({age_str}). No pending replies."
 
-    # Mark run as "running" before Apify so in-flight guard can detect it
-    run_id = review_db.save_run(store_id, "whatsapp_check")
+    # In-flight guard: atomic Redis lock (SET NX -- app/core/cache.py, same
+    # connection as rate limits/cooldowns/the job queue), not a Postgres
+    # SELECT-then-INSERT. The two-step version is racy: two callers (the
+    # cron poll and a staff message arriving moments apart, both having
+    # just seen the same "stale" cache result above) could both decide
+    # independently to proceed and both start a scrape. try_lock is
+    # atomic -- only one caller can ever hold this key, so at most one
+    # scrape ever actually runs for this store at a time.
+    lock_key = _reputation_live_lock_key(store_id)
+    if not _cache.try_lock(lock_key, ttl_seconds=REPUTATION_RUN_LOCK_MINUTES * 60):
+        return f"*{store_name}* - Review scrape already in progress. Results coming shortly 🔍"
 
-    logger.info("reputation.check: store=%d scraping_reviews", store_id)
     try:
-        raw_reviews, sources_ok, sources_failed = run_pipeline(store_id)
-    except Exception as exc:
-        logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
-        review_db.update_run(run_id, "error", [], [], 0)
-        return f"*{store_name}* - Review check failed: {exc}"
+        run_id = review_db.save_run(store_id, "whatsapp_check")
 
-    logger.info(
-        "reputation.check: store=%d reviews_found=%d sources_ok=%s sources_failed=%s",
-        store_id, len(raw_reviews), sources_ok, sources_failed,
-    )
-    if not raw_reviews:
-        status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
-        review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
-        if status == "ok":
-            _mark_reputation_checked(store_id, datetime.utcnow())
-        return f"*{store_name}* - No new reviews found across all platforms."
-
-    # Dedup against the DB BEFORE any classification or drafting -- the
-    # only thing that makes "process everything scraped, not just the
-    # newest 50" both correct and cheap. A review already seen in a
-    # previous run is skipped entirely here: never reclassified, never
-    # redrafted, and save_review_finding() leaves its existing workflow
-    # status (pending/posted/ignored) and draft completely untouched.
-    # Steady-state cost per check is therefore just the delta of
-    # genuinely new reviews since the last check, not the full scrape.
-    hashes = [r.get("hash", "") for r in raw_reviews if r.get("hash")]
-    already_seen = review_db.existing_content_hashes(store_id, hashes)
-    new_raw_reviews = [r for r in raw_reviews if r.get("hash") not in already_seen]
-    logger.info(
-        "reputation.check: store=%d scraped=%d already_seen=%d new=%d",
-        store_id, len(raw_reviews), len(already_seen), len(new_raw_reviews),
-    )
-
-    if not new_raw_reviews:
-        status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
-        review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
-        if status == "ok":
-            _mark_reputation_checked(store_id, datetime.utcnow())
-        return f"*{store_name}* - No new reviews found. All up to date."
-
-    # Defensive safety ceiling, not a routine cap -- see MAX_NEW_REVIEWS_PER_CHECK.
-    raw_reviews = cap_reviews_balanced(new_raw_reviews, MAX_NEW_REVIEWS_PER_CHECK)
-    logger.info("reputation.check: store=%d processing=%d", store_id, len(raw_reviews))
-
-    client = get_client()
-
-    # Load brand voice from per-store config
-    brand = _load_brand_voice(store_id, store_name)
-
-    analyses: list[tuple[dict, ReviewAnalysis]] = []
-    for r in raw_reviews:
+        logger.info("reputation.check: store=%d scraping_reviews", store_id)
         try:
-            rev_model = to_review_model(r)
-            ctx = correlate_review(rev_model, [], {}, {})
-            ra = ReviewAnalysis(
-                review_id=rev_model.review_id,
-                source=rev_model.source,
-                rating=rev_model.rating,
-                posted_at=str(rev_model.posted_at),
-                reviewer_name=rev_model.reviewer_name,
-                text=rev_model.text,
-                correlation=ctx,
-            )
-            analyses.append((r, ra))
+            raw_reviews, sources_ok, sources_failed = run_pipeline(store_id)
         except Exception as exc:
-            logger.warning("Skipping review: %s", exc)
+            logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
+            review_db.update_run(run_id, "error", [], [], 0)
+            return f"*{store_name}* - Review check failed: {exc}"
 
-    classify_reviews_batch([ra for _, ra in analyses], client)
+        logger.info(
+            "reputation.check: store=%d reviews_found=%d sources_ok=%s sources_failed=%s",
+            store_id, len(raw_reviews), sources_ok, sources_failed,
+        )
+        if not raw_reviews:
+            status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+            review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
+            if status == "ok":
+                _mark_reputation_checked(store_id, datetime.utcnow())
+            return f"*{store_name}* - No new reviews found across all platforms."
 
-    needs_reply = select_reviews_needing_reply([ra for _, ra in analyses])
-    draft_replies(needs_reply, client, venue_name=store_name, brand_voice=brand)
-    reply_map = {ra.review_id: ra for ra in needs_reply}
-
-    new_count = 0
-    for raw, ra in analyses:
-        drafted = reply_map.get(ra.review_id)
-        is_actionable = drafted is not None
-        ai_summary = {
-            "status": "pending" if is_actionable else "auto_closed",
-            "sentiment": ra.sentiment,
-            "issue_class": ra.issue_class,
-            "draft_reply": drafted.draft_reply if drafted else "",
-            "correlation": {
-                "estimated_date": ra.correlation.estimated_date,
-                "matched_staff_name": ra.correlation.matched_staff_name,
-                "confidence": ra.correlation.confidence,
-            },
-        }
-        if review_db.save_review_finding(store_id, run_id, store_name, raw, ai_summary) == "new":
-            new_count += 1
-
-    status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
-    review_db.update_run(run_id, status, sources_ok, sources_failed, new_count)
-    if status == "ok":
-        _mark_reputation_checked(store_id, datetime.utcnow())
-
-    if new_count == 0:
-        return f"*{store_name}* - No new reviews found. All up to date."
-
-    pending = review_db.get_pending_finding(store_id)
-    if pending:
-        return (
-            f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. "
-            f"Latest pending:\n\n" + _format_pending(pending)
+        # Dedup against the DB BEFORE any classification or drafting -- the
+        # only thing that makes "process everything scraped, not just the
+        # newest 50" both correct and cheap. A review already seen in a
+        # previous run is skipped entirely here: never reclassified, never
+        # redrafted, and save_review_finding() leaves its existing workflow
+        # status (pending/posted/ignored) and draft completely untouched.
+        # Steady-state cost per check is therefore just the delta of
+        # genuinely new reviews since the last check, not the full scrape.
+        hashes = [r.get("hash", "") for r in raw_reviews if r.get("hash")]
+        already_seen = review_db.existing_content_hashes(store_id, hashes)
+        new_raw_reviews = [r for r in raw_reviews if r.get("hash") not in already_seen]
+        logger.info(
+            "reputation.check: store=%d scraped=%d already_seen=%d new=%d",
+            store_id, len(raw_reviews), len(already_seen), len(new_raw_reviews),
         )
 
-    return f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. Nothing needs a reply right now."
+        if not new_raw_reviews:
+            status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+            review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
+            if status == "ok":
+                _mark_reputation_checked(store_id, datetime.utcnow())
+            return f"*{store_name}* - No new reviews found. All up to date."
+
+        # Defensive safety ceiling, not a routine cap -- see MAX_NEW_REVIEWS_PER_CHECK.
+        raw_reviews = cap_reviews_balanced(new_raw_reviews, MAX_NEW_REVIEWS_PER_CHECK)
+        logger.info("reputation.check: store=%d processing=%d", store_id, len(raw_reviews))
+
+        client = get_client()
+
+        # Load brand voice from per-store config
+        brand = _load_brand_voice(store_id, store_name)
+
+        analyses: list[tuple[dict, ReviewAnalysis]] = []
+        for r in raw_reviews:
+            try:
+                rev_model = to_review_model(r)
+                ctx = correlate_review(rev_model, [], {}, {})
+                ra = ReviewAnalysis(
+                    review_id=rev_model.review_id,
+                    source=rev_model.source,
+                    rating=rev_model.rating,
+                    posted_at=str(rev_model.posted_at),
+                    reviewer_name=rev_model.reviewer_name,
+                    text=rev_model.text,
+                    correlation=ctx,
+                )
+                analyses.append((r, ra))
+            except Exception as exc:
+                logger.warning("Skipping review: %s", exc)
+
+        classify_reviews_batch([ra for _, ra in analyses], client)
+
+        needs_reply = select_reviews_needing_reply([ra for _, ra in analyses])
+        draft_replies(needs_reply, client, venue_name=store_name, brand_voice=brand)
+        reply_map = {ra.review_id: ra for ra in needs_reply}
+
+        new_count = 0
+        for raw, ra in analyses:
+            drafted = reply_map.get(ra.review_id)
+            is_actionable = drafted is not None
+            ai_summary = {
+                "status": "pending" if is_actionable else "auto_closed",
+                "sentiment": ra.sentiment,
+                "issue_class": ra.issue_class,
+                "draft_reply": drafted.draft_reply if drafted else "",
+                "correlation": {
+                    "estimated_date": ra.correlation.estimated_date,
+                    "matched_staff_name": ra.correlation.matched_staff_name,
+                    "confidence": ra.correlation.confidence,
+                },
+            }
+            if review_db.save_review_finding(store_id, run_id, store_name, raw, ai_summary) == "new":
+                new_count += 1
+
+        status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+        review_db.update_run(run_id, status, sources_ok, sources_failed, new_count)
+        if status == "ok":
+            _mark_reputation_checked(store_id, datetime.utcnow())
+
+        if new_count == 0:
+            return f"*{store_name}* - No new reviews found. All up to date."
+
+        pending = review_db.get_pending_finding(store_id)
+        if pending:
+            return (
+                f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. "
+                f"Latest pending:\n\n" + _format_pending(pending)
+            )
+
+        return f"*{store_name}* - Processed {new_count} new review{'s' if new_count != 1 else ''}. Nothing needs a reply right now."
+    finally:
+        _cache.release_lock(lock_key)
 
 
 def _active_store_ids() -> list[int]:

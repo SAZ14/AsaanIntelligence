@@ -814,7 +814,8 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         if _is_scout_message(body):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
-            from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+            from app.core import cache as _cache
+            from app.agents.scout.pipeline import scout_live_lock_key
 
             # 1. Per-user rate limit (3 per hour)
             if not _scout_rate_ok(from_number):
@@ -823,19 +824,18 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                     "please wait before trying again."
                 )
 
-            with SessionLocal() as _db:
-                # 2. Block if a run is already in flight for this store
-                cutoff_running = datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES)
-                in_flight = _db.query(Run).filter(
-                    Run.store_id == store_id,
-                    Run.status == "running",
-                    Run.started_at >= cutoff_running,
-                ).first()
-                if in_flight:
-                    return _twiml(
-                        "Scout is already running, your report will arrive in a few minutes. Please wait."
-                    )
+            # 2. Block if a run is already in flight for this store. This
+            # is a fast pre-screen (avoids the DB round-trip below for the
+            # common "already running" case); run() itself atomically
+            # acquires this same lock as the authoritative guard, so even
+            # if this check races with another caller, at most one of
+            # them actually proceeds to a live fetch.
+            if _cache.is_locked(scout_live_lock_key(store_id)):
+                return _twiml(
+                    "Scout is already running, your report will arrive in a few minutes. Please wait."
+                )
 
+            with SessionLocal() as _db:
                 # 3. Return cached report if last successful run was recent (< 24h)
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
                 cached_run = _db.query(Run).filter(
@@ -1009,7 +1009,8 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
         if _is_scout_message(body_text):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
-            from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+            from app.core import cache as _cache
+            from app.agents.scout.pipeline import scout_live_lock_key
 
             if not _scout_rate_ok(from_number):
                 background_tasks.add_task(
@@ -1018,20 +1019,14 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
                 )
                 return "ok"
 
-            with SessionLocal() as _db:
-                cutoff_running = datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES)
-                in_flight = _db.query(Run).filter(
-                    Run.store_id == store_id,
-                    Run.status == "running",
-                    Run.started_at >= cutoff_running,
-                ).first()
-                if in_flight:
-                    background_tasks.add_task(
-                        send_fn,
-                        "Scout is already running, your report will arrive in a few minutes.",
-                    )
-                    return "ok"
+            if _cache.is_locked(scout_live_lock_key(store_id)):
+                background_tasks.add_task(
+                    send_fn,
+                    "Scout is already running, your report will arrive in a few minutes.",
+                )
+                return "ok"
 
+            with SessionLocal() as _db:
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
                 cached_run = _db.query(Run).filter(
                     Run.store_id == store_id,

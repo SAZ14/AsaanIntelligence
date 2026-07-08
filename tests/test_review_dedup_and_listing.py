@@ -174,6 +174,66 @@ class TestCheckReviewsDedup:
         assert len(classified) == 120
 
 
+# ── _check_reviews in-flight guard: atomic Redis lock, no race ──────────────
+# Mirrors the same fix applied to scout (app/agents/scout/pipeline.py's
+# run()): the old guard was a Postgres SELECT-then-INSERT (check for a
+# "running" row, then later write one), which is racy -- two callers
+# (the cron poll and a staff message arriving moments apart) could both
+# see "not running yet" and both start a scrape. Replaced with an atomic
+# Redis lock (SET NX -- cache.try_lock), so at most one scrape ever
+# actually runs for a store at a time, regardless of who triggered it.
+
+class TestCheckReviewsInFlightLock:
+    def test_recognizes_a_lock_held_by_someone_else_as_in_flight(self, store_id):
+        from app.core import cache as _cache
+        from app.agents.reputation import _check_reviews, _reputation_live_lock_key, REPUTATION_RUN_LOCK_MINUTES
+
+        assert _cache.try_lock(_reputation_live_lock_key(store_id), ttl_seconds=REPUTATION_RUN_LOCK_MINUTES * 60)
+
+        with patch("app.review_sources.pipeline.run_pipeline") as mock_pipeline:
+            reply = _check_reviews(store_id, "Review Dedup Cafe")
+
+        mock_pipeline.assert_not_called()
+        assert "already in progress" in reply.lower()
+
+    def test_proceeds_and_releases_the_lock_once_the_scrape_completes(self, store_id):
+        from app.core import cache as _cache
+        from app.agents.reputation import _check_reviews, _reputation_live_lock_key
+
+        with patch("app.review_sources.pipeline.run_pipeline",
+                    return_value=([_raw_review("new1", rating=5.0)], ["google_maps"], [])), \
+             patch("app.agents.reputation.classify_reviews_batch"), \
+             patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
+             patch("app.core.llm.get_client", return_value=MagicMock()):
+            _check_reviews(store_id, "Review Dedup Cafe")
+
+        # Lock must be free again after a completed run, not held for its
+        # full TTL -- otherwise every store would wait out the TTL between
+        # any two checks even when nothing is actually still running.
+        assert _cache.try_lock(_reputation_live_lock_key(store_id), ttl_seconds=60) is True
+
+    def test_releases_the_lock_even_if_the_scrape_raises(self, store_id):
+        """try/finally must release the lock on the error path too, or a
+        single failed Apify call would strand every future check behind
+        the lock's full TTL."""
+        from app.core import cache as _cache
+        from app.agents.reputation import _check_reviews, _reputation_live_lock_key
+
+        with patch("app.review_sources.pipeline.run_pipeline", side_effect=RuntimeError("apify down")):
+            reply = _check_reviews(store_id, "Review Dedup Cafe")
+
+        assert "failed" in reply.lower()
+        assert _cache.try_lock(_reputation_live_lock_key(store_id), ttl_seconds=60) is True
+
+    def test_only_one_of_two_simultaneous_callers_acquires_the_lock(self, store_id):
+        from app.core import cache as _cache
+        from app.agents.reputation import _reputation_live_lock_key
+
+        key = _reputation_live_lock_key(store_id)
+        assert _cache.try_lock(key, ttl_seconds=60) is True
+        assert _cache.try_lock(key, ttl_seconds=60) is False
+
+
 # ── list_reviews ──────────────────────────────────────────────────────────────
 
 class TestListReviews:

@@ -29,8 +29,8 @@ def test_all_four_jobs_registered_with_expected_triggers():
     finally:
         scheduler.shutdown(wait=False)
 
-    assert jobs["scout_5min_poll"] == "interval[0:05:00]"
-    assert jobs["reputation_check_5min_poll"] == "interval[0:05:00]"
+    assert jobs["scout_60s_poll"] == "interval[0:01:00]"
+    assert jobs["reputation_check_60s_poll"] == "interval[0:01:00]"
     # existing jobs must survive the addition, not get clobbered
     assert "winback_daily" in jobs
     assert "leaderboard_sunday" in jobs
@@ -38,16 +38,19 @@ def test_all_four_jobs_registered_with_expected_triggers():
 
 def test_poll_jobs_cannot_run_concurrently_with_themselves():
     """A live scout scrape can take 7-45 minutes (confirmed live) --
-    much longer than the 5-minute poll interval. APScheduler's
+    much longer than the 60-second poll interval. APScheduler's
     max_instances defaults to 1 per job, meaning a poll firing while the
     previous invocation of the SAME job is still running is skipped
-    rather than launched as a second concurrent execution. This is what
-    actually makes a poll interval shorter than typical scrape duration
-    safe -- confirm it's really in effect, not just assumed."""
+    rather than launched as a second concurrent execution. This protects
+    the job from itself; it does NOT protect against a completely
+    different caller (a staff message) invoking run()/_check_reviews()
+    directly while this job's own scrape is mid-flight -- that's what
+    the atomic Redis locks inside run()/_check_reviews() are for (see
+    test_scout.py's TestCheckReviewsInFlightLock-style tests)."""
     import scripts.run_server as rs
     scheduler = rs._start_scheduler()
     try:
-        for job_id in ("scout_5min_poll", "reputation_check_5min_poll"):
+        for job_id in ("scout_60s_poll", "reputation_check_60s_poll"):
             job = scheduler.get_job(job_id)
             assert job.max_instances == 1
     finally:

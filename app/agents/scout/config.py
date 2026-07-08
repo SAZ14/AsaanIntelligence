@@ -24,15 +24,22 @@ IG_POSTS_PER_PROFILE = 6           # posts scraped per Instagram profile
 MAX_NEW_COMPETITORS = 10            # max auto-discovered competitors added per run
 
 # A live run has been confirmed live to take anywhere from 7 to 45 minutes
-# (many Apify actors fanned out per store). The "is a run already in
-# flight for this store" guards (gateway/main.py x2, gateway/internal.py's
-# _scout()) use this to decide whether a "running" row still represents
-# real, ongoing work or a crashed/orphaned process that should no longer
-# block a fresh attempt. Must stay comfortably above the observed max
-# duration -- a cutoff shorter than that (previously 15 min, confirmed too
-# short) stops recognizing a genuinely still-running scrape as in flight
-# partway through, letting a second trigger start a duplicate concurrent
-# scrape for the same store and waste Apify credits.
+# (many Apify actors fanned out per store). This is the TTL on the atomic
+# Redis lock (pipeline.run()'s scout_live_lock_key, acquired via
+# cache.try_lock) that decides whether a live fetch is already in
+# progress for this store -- every caller (cron, gateway/main.py's two
+# dispatch sites, gateway/internal.py's _scout()) checks or acquires this
+# exact lock, so it's a single, race-free source of truth rather than
+# three separate Postgres queries racing against when run() happened to
+# write its "running" row. The TTL is a safety net for a crashed process
+# that never reaches run()'s `finally: release_lock` (the normal path
+# releases it immediately on completion, success or failure) -- must stay
+# comfortably above the observed max duration, or a genuinely still-
+# running scrape would stop being recognized as in flight partway
+# through and a second trigger could start a duplicate concurrent scrape,
+# wasting Apify credits. (Previously a 15-min Postgres cutoff with the
+# same purpose -- confirmed too short, and separately racy since the
+# check-then-write wasn't atomic.)
 RUN_IN_FLIGHT_MINUTES = 60
 
 # --- Cost/relevance ceilings ---

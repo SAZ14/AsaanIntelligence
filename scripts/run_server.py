@@ -39,12 +39,12 @@ def _start_scheduler() -> BackgroundScheduler:
         trigger="cron", day_of_week="sun", hour=18, minute=0,
         id="leaderboard_sunday", replace_existing=True,
     )
-    # Scout & reputation: poll every 5 minutes rather than on a fixed
+    # Scout & reputation: poll every 60 seconds rather than on a fixed
     # clock schedule. Both target functions check actual cache staleness
     # themselves (run_scout_all via _is_scout_fresh, run_reputation_check_all
     # via _check_reviews' own cache check, both Redis-backed and cheap on a
     # hit) and no-op with zero Apify/LLM cost when the cache is still warm --
-    # so this fires every 5 min but only actually scrapes once a store's
+    # so this fires every 60s but only actually scrapes once a store's
     # cache has genuinely gone stale. A fixed 3x/day cron drifted out of
     # sync with real usage: e.g. a staff member's manual check at 14:16 left
     # the 8h cache fresh until 22:16, but the fixed 22:00 slot landed 16
@@ -55,19 +55,32 @@ def _start_scheduler() -> BackgroundScheduler:
     # way: the poll itself is just a cheap Redis/DB staleness check, the
     # expensive work (Apify/LLM) only fires on a genuine miss and is gated
     # by the freshness window itself, not by how often this poll runs.
-    # APScheduler's default max_instances=1 per job also means a slow live
-    # scrape (7-45 min, confirmed live -- much longer than this interval)
-    # can never overlap with itself: a poll firing while the previous one
-    # is still running is simply skipped, not run concurrently.
+    #
+    # A live scout scrape (7-45 min, confirmed live) is far longer than
+    # this interval, so overlap protection matters here more than it would
+    # at a coarser cadence. Two layers: APScheduler's default max_instances
+    # =1 per job means run_scout_all can never overlap with itself (a poll
+    # firing mid-scrape is simply skipped, not run concurrently); and
+    # separately, run() and _check_reviews() each hold their own atomic
+    # Redis lock (SET NX -- app/agents/scout/pipeline.py's
+    # scout_live_lock_key, app/agents/reputation.py's
+    # _reputation_live_lock_key) for the duration of a live fetch, checked
+    # by every caller regardless of what triggered it -- this cron poll, a
+    # staff message that arrives while this poll's own scrape is still
+    # running, or two staff messages arriving close together. That lock is
+    # what actually prevents two concurrent live fetches for the same
+    # store; the scheduler's max_instances only protects this job from
+    # itself, not from a completely different caller invoking run() or
+    # _check_reviews() directly.
     scheduler.add_job(
         run_scout_all,
-        trigger="interval", minutes=5,
-        id="scout_5min_poll", replace_existing=True,
+        trigger="interval", seconds=60,
+        id="scout_60s_poll", replace_existing=True,
     )
     scheduler.add_job(
         run_reputation_check_all,
-        trigger="interval", minutes=5,
-        id="reputation_check_5min_poll", replace_existing=True,
+        trigger="interval", seconds=60,
+        id="reputation_check_60s_poll", replace_existing=True,
     )
     scheduler.start()
     return scheduler
