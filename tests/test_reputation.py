@@ -269,7 +269,7 @@ def _old_unrated(text: str) -> ReviewAnalysis:
 
 def _mock_llm_client(reply_lines: list[str]):
     """A minimal stand-in for the ZAI client's chat.completions.create()
-    shape, returning a fixed 'N. issue_class,sentiment' response body."""
+    shape, returning a fixed 'N. issue_class,sentiment,is_review' response body."""
     from unittest.mock import MagicMock
     client = MagicMock()
     resp = MagicMock()
@@ -288,7 +288,7 @@ class TestUnratedInstagramClassification:
         regardless of age."""
         from app.agents.reputation import classify_reviews_batch
         ra = _old_unrated("This place is absolutely terrible, avoid it")
-        client = _mock_llm_client(["1. service_speed,negative"])
+        client = _mock_llm_client(["1. service_speed,negative,yes"])
         result = classify_reviews_batch([ra], client)
         client.chat.completions.create.assert_called_once()
         assert result[0].sentiment == "negative"
@@ -300,7 +300,7 @@ class TestUnratedInstagramClassification:
         has no star ratings at all."""
         from app.agents.reputation import classify_reviews_batch
         ra = _old_unrated("Neutral comment text")
-        client = _mock_llm_client(["1. other,neutral"])
+        client = _mock_llm_client(["1. other,neutral,yes"])
         classify_reviews_batch([ra], client)
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert "Rating 0/5" not in prompt

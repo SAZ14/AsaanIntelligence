@@ -101,6 +101,18 @@ class ReviewAnalysis:
     issue_class: str = "other"
     sentiment: str = "neutral"
     draft_reply: str = ""
+    # False for content that isn't actually feedback about the food/
+    # service/experience -- a question ("do you deliver?"), a well-wish
+    # ("good luck!"), a business inquiry ("collaboration"), or an
+    # off-topic/spam remark. Confirmed live: Instagram comments (casual
+    # social replies, not a dedicated review system like Google Maps)
+    # regularly include these mixed in with genuine feedback, and they
+    # were getting a sentiment tag and counted as real reviews anyway.
+    # Defaults True -- only the LLM classification path (recent/unrated
+    # items) actually evaluates this; rule-based classification of older
+    # RATED reviews skips it, since a star rating means the item went
+    # through the platform's own review-submission flow already.
+    is_review: bool = True
 
 
 @dataclass
@@ -313,33 +325,77 @@ def classify_reviews_batch(
             for j, ra in enumerate(batch, 1)
         ]
         prompt = (
-            f"Classify each review. Reply with one line per review: N. issue_class,sentiment\n"
+            "Classify each review. Reply with one line per review: "
+            "N. issue_class,sentiment,is_review\n"
             f"Issue classes: {', '.join(ISSUE_CLASSES)}\n"
-            "Sentiments: positive, negative, neutral, mixed\n\n"
+            "Sentiments: positive, negative, neutral, mixed\n"
+            "is_review is 'yes' if this is genuine feedback about the food, "
+            "service, or experience -- 'no' if it's actually a question "
+            "('do you deliver?'), a well-wish ('good luck!', 'welcome back'), "
+            "a business inquiry ('collaboration'), or an off-topic/unrelated "
+            "remark. A short-but-genuine reaction ('yumm', 'so good') is "
+            "still is_review=yes -- only mark 'no' when it isn't feedback "
+            "about the business AT ALL, not just because it's brief.\n\n"
             + "\n".join(lines)
         )
-        try:
-            resp = client.chat.completions.create(
-                timeout=60.0,
-                model=get_model(),
-                max_tokens=CLASSIFIER_BATCH_SIZE * 12,
-                messages=[{"role": "user", "content": prompt}],
-                **nothink_kwargs(get_model()),
-            )
-            output = resp.choices[0].message.content.strip()
-            for line in output.split("\n"):
-                m = re.match(r"(\d+)\.\s*(\w+)\s*,\s*(\w+)", line.strip())
-                if m:
-                    idx = int(m.group(1)) - 1
-                    if 0 <= idx < len(batch):
-                        issue = m.group(2).strip().lower()
-                        sent = m.group(3).strip().lower()
-                        if issue in ISSUE_CLASSES:
-                            batch[idx].issue_class = issue
-                        if sent in ("positive", "negative", "neutral", "mixed"):
-                            batch[idx].sentiment = sent
-        except Exception as exc:
-            logger.warning("Batch classify failed: %s", exc)
+        # Confirmed live: the model doesn't reliably substitute the "N."
+        # line-number placeholder with the actual index -- it sometimes
+        # echoes the literal "N." on every line, or even echoes the
+        # instruction template itself as a stray line ("N. issue_class,
+        # sentiment,is_review"), which can make an ENTIRE batch parse to
+        # zero valid lines. Trusting the parsed number as an array index
+        # meant that failure mode silently left every review at its
+        # default (sentiment=neutral, is_review=True) with no error and
+        # no retry -- wrong classifications got saved permanently. Fixed
+        # three ways: (1) match POSITIONALLY -- the Kth valid line maps
+        # to batch[K], regardless of what number prefix the model
+        # actually wrote, so "N."/"1."/wrong numbers all still work;
+        # (2) only accept a line whose three values are all real
+        # ISSUE_CLASSES/sentiments/yes-no -- an echoed instruction line
+        # fails this validation and gets skipped rather than silently
+        # consuming a slot and shifting every later item off by one;
+        # (3) retry once if a whole batch comes back with zero matches,
+        # since a second attempt at the same non-deterministic call has
+        # reliably produced well-formed output when this was tested live.
+        for attempt in range(2):
+            try:
+                resp = client.chat.completions.create(
+                    timeout=60.0,
+                    model=get_model(),
+                    max_tokens=CLASSIFIER_BATCH_SIZE * 16,
+                    messages=[{"role": "user", "content": prompt}],
+                    **nothink_kwargs(get_model()),
+                )
+                output = resp.choices[0].message.content.strip()
+                matched = 0
+                for line in output.split("\n"):
+                    m = re.match(r"(?:\d+|N)\.\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*$", line.strip())
+                    if not m:
+                        continue
+                    issue = m.group(1).strip().lower()
+                    sent = m.group(2).strip().lower()
+                    is_review = m.group(3).strip().lower()
+                    if issue not in ISSUE_CLASSES or sent not in ("positive", "negative", "neutral", "mixed") \
+                            or is_review not in ("yes", "no"):
+                        continue
+                    if matched >= len(batch):
+                        break
+                    batch[matched].issue_class = issue
+                    batch[matched].sentiment = sent
+                    batch[matched].is_review = is_review == "yes"
+                    matched += 1
+                if matched == 0 and attempt == 0:
+                    logger.warning("Batch classify: 0/%d matched, retrying once", len(batch))
+                    continue
+                if matched < len(batch):
+                    logger.warning(
+                        "Batch classify: only %d/%d reviews got a valid classification line",
+                        matched, len(batch),
+                    )
+                break
+            except Exception as exc:
+                logger.warning("Batch classify failed: %s", exc)
+                break
 
     return reviews
 
@@ -970,6 +1026,19 @@ def _check_reviews(store_id: int, store_name: str) -> str:
                 logger.warning("Skipping review: %s", exc)
 
         classify_reviews_batch([ra for _, ra in analyses], client)
+
+        # Drop non-feedback content (questions, well-wishes, business
+        # inquiries, off-topic remarks) before drafting replies or saving
+        # -- no point drafting a business reply to "do you deliver?", and
+        # no point storing it as if it were a real review affecting
+        # sentiment counts. Confirmed live: Instagram comments regularly
+        # mix genuine feedback with this kind of noise (unlike Google
+        # Maps, a dedicated review system where every entry is already a
+        # deliberate review submission).
+        skipped_non_review = sum(1 for _, ra in analyses if not ra.is_review)
+        if skipped_non_review:
+            logger.info("reputation.check: store=%d skipped_non_review=%d", store_id, skipped_non_review)
+        analyses = [(raw, ra) for raw, ra in analyses if ra.is_review]
 
         needs_reply = select_reviews_needing_reply([ra for _, ra in analyses])
         draft_replies(needs_reply, client, venue_name=store_name, brand_voice=brand)

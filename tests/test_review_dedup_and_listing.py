@@ -174,6 +174,199 @@ class TestCheckReviewsDedup:
         assert len(classified) == 120
 
 
+# ── Non-review content filtering ─────────────────────────────────────────────
+# Confirmed live: Instagram comments (casual social replies, not a dedicated
+# review system) regularly mix genuine feedback with questions ("do you
+# deliver?"), well-wishes ("good luck!"), business inquiries
+# ("collaboration"), and off-topic remarks -- all of which were getting a
+# sentiment tag and saved as if they were real reviews. classify_reviews_
+# batch now also flags is_review; non-review content gets dropped before
+# drafting a reply or saving, not just before someone reads it.
+
+class TestNonReviewContentFiltering:
+    def test_non_review_items_are_not_saved(self, store_id):
+        def fake_classify(reviews, client):
+            for ra in reviews:
+                if "good luck" in ra.text.lower():
+                    ra.is_review = False
+            return reviews
+
+        with patch("app.review_sources.pipeline.run_pipeline",
+                    return_value=([
+                        _raw_review("real1", rating=5.0, text="Great burgers, loved it!"),
+                        _raw_review("wellwish1", rating=None, text="Good luck Anatummy!"),
+                    ], ["google_maps"], [])), \
+             patch("app.agents.reputation.classify_reviews_batch", side_effect=fake_classify), \
+             patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
+             patch("app.core.llm.get_client", return_value=MagicMock()):
+            from app.agents.reputation import _check_reviews
+            _check_reviews(store_id, "Review Dedup Cafe")
+
+        from app.review_sources import db as review_db
+        matches, total = review_db.list_reviews(store_id)
+        assert total == 1
+        assert matches[0]["content_hash"] == "real1"
+
+    def test_all_non_review_reports_zero_new(self, store_id):
+        def fake_classify(reviews, client):
+            for ra in reviews:
+                ra.is_review = False
+            return reviews
+
+        with patch("app.review_sources.pipeline.run_pipeline",
+                    return_value=([_raw_review("q1", rating=None, text="do you deliver??")], ["google_maps"], [])), \
+             patch("app.agents.reputation.classify_reviews_batch", side_effect=fake_classify), \
+             patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
+             patch("app.core.llm.get_client", return_value=MagicMock()):
+            from app.agents.reputation import _check_reviews
+            reply = _check_reviews(store_id, "Review Dedup Cafe")
+
+        assert "no new reviews" in reply.lower() or "up to date" in reply.lower()
+
+
+class TestClassifyReviewsBatchIsReviewParsing:
+    """classify_reviews_batch's LLM output parsing for the new is_review
+    field -- structural correctness with a mocked response, matching the
+    pattern used for other classifier tests in this suite. Real-model
+    accuracy verified separately, live."""
+
+    def _mock_client(self, reply: str):
+        client = MagicMock()
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = reply
+        client.chat.completions.create.return_value = resp
+        return client
+
+    def test_parses_is_review_yes(self):
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ra = ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="so good")
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch([ra], self._mock_client("1. praise,positive,yes"))
+        assert ra.is_review is True
+
+    def test_parses_is_review_no(self):
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ra = ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="do you deliver?")
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch([ra], self._mock_client("1. other,neutral,no"))
+        assert ra.is_review is False
+
+    def test_malformed_response_keeps_default_true(self):
+        """Untrusted output -- anything that doesn't parse cleanly must
+        not silently drop a review that should have been kept."""
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ra = ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="great food")
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch([ra], self._mock_client("garbage output"))
+        assert ra.is_review is True
+
+    def test_literal_N_placeholder_still_parses_positionally(self):
+        """Confirmed live: the model doesn't reliably substitute the "N."
+        line-number placeholder with the real index -- sometimes every
+        line comes back as literal "N." instead of "1.", "2.", etc. The
+        old index-trusting parser silently matched zero lines in this
+        case, leaving every review at its default classification with no
+        error. Must still work by matching lines positionally."""
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ras = [
+            ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="good luck!"),
+            ReviewAnalysis(review_id="2", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="best burgers ever"),
+        ]
+        reply = "N. other,neutral,no\nN. praise,positive,yes"
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch(ras, self._mock_client(reply))
+        assert ras[0].is_review is False
+        assert ras[1].is_review is True
+        assert ras[1].sentiment == "positive"
+
+    def test_echoed_instruction_line_does_not_shift_results(self):
+        """Confirmed live: the model can echo part of the instruction
+        template as a stray first line ("N. issue_class,sentiment,
+        is_review") before the real classifications. That line
+        superficially matches the same regex shape -- must be rejected
+        by value validation (not a real issue_class/sentiment/yes-no),
+        not accidentally consumed as review #1's result and shifting
+        every subsequent review off by one."""
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ras = [
+            ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="good luck!"),
+            ReviewAnalysis(review_id="2", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="best burgers ever"),
+        ]
+        reply = "N. issue_class,sentiment,is_review\n1. other,neutral,no\n2. praise,positive,yes"
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch(ras, self._mock_client(reply))
+        assert ras[0].is_review is False
+        assert ras[1].is_review is True
+        assert ras[1].sentiment == "positive"
+
+    def test_zero_matches_triggers_one_retry_that_can_succeed(self):
+        """Confirmed live: a whole batch can come back with zero valid
+        classification lines (a run of "N."s with no real values). A
+        second attempt at the same non-deterministic call has reliably
+        produced well-formed output when this was tested live -- must
+        actually retry rather than silently accepting the failure."""
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ra = ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="best burgers ever")
+        client = MagicMock()
+        bad_resp = MagicMock()
+        bad_resp.choices = [MagicMock()]
+        bad_resp.choices[0].message.content = "garbage, no valid lines at all"
+        good_resp = MagicMock()
+        good_resp.choices = [MagicMock()]
+        good_resp.choices[0].message.content = "1. praise,positive,yes"
+        client.chat.completions.create.side_effect = [bad_resp, good_resp]
+
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch([ra], client)
+
+        assert client.chat.completions.create.call_count == 2
+        assert ra.is_review is True
+        assert ra.sentiment == "positive"
+        assert ra.issue_class == "praise"
+
+    def test_second_attempt_also_failing_does_not_retry_forever(self):
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        ra = ReviewAnalysis(review_id="1", source="ig", rating=None, posted_at="2026-07-01",
+                            reviewer_name="x", text="best burgers ever")
+        client = MagicMock()
+        client.chat.completions.create.return_value.choices = [MagicMock()]
+        client.chat.completions.create.return_value.choices[0].message.content = "garbage output"
+
+        with patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            classify_reviews_batch([ra], client)
+
+        assert client.chat.completions.create.call_count == 2  # exactly one retry, not unbounded
+        assert ra.is_review is True  # safe default preserved
+
+    def test_rule_based_historical_path_defaults_to_review(self):
+        """Older RATED reviews go through the rule-based path (no LLM
+        call) -- a star rating means it already went through the
+        platform's own review-submission flow, so it's trusted as real."""
+        from app.agents.reputation import classify_reviews_batch, ReviewAnalysis
+        from datetime import datetime, timedelta
+        old_date = (datetime.utcnow() - timedelta(days=400)).strftime("%Y-%m-%d")
+        ra = ReviewAnalysis(review_id="1", source="google_maps", rating=5,
+                            posted_at=old_date, reviewer_name="x", text="great")
+        classify_reviews_batch([ra], MagicMock())
+        assert ra.is_review is True
+
+
 # ── _check_reviews in-flight guard: atomic Redis lock, no race ──────────────
 # Mirrors the same fix applied to scout (app/agents/scout/pipeline.py's
 # run()): the old guard was a Postgres SELECT-then-INSERT (check for a
