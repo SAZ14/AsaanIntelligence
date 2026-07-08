@@ -1903,6 +1903,46 @@ async def debug_freshness_cache_clear(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "cleared", "store_id": store_id, "keys": keys})
 
 
+@app.post("/admin/debug/backfill_review_embeddings")
+async def debug_backfill_review_embeddings() -> JSONResponse:
+    """TEMPORARY — one-time backfill of Finding.content_embedding for
+    existing reviews (added for reputation's semantic review search,
+    app/review_sources/db.py's search_reviews_semantic). New reviews get
+    an embedding automatically at save time going forward regardless.
+    Runs inside the actual web process, not a bare SSH shell -- the
+    sentence-transformers model has a real, confirmed environment
+    dependency (libstdc++/nix store dynamic linking) that only resolves
+    correctly in the deployed process's own runtime. Remove after use."""
+    import json
+    from app.core.db import SessionLocal, Finding
+    from app.core.embeddings import embedding_model
+
+    model = embedding_model()
+    if model is None:
+        return JSONResponse({"status": "error", "detail": "embedding model unavailable"}, status_code=500)
+
+    with SessionLocal() as db:
+        rows = db.query(Finding).filter(
+            Finding.update_type == "review",
+            Finding.content_embedding.is_(None),
+        ).all()
+        total = len(rows)
+        done = 0
+        skipped = 0
+        for f in rows:
+            if not f.content_text or not f.content_text.strip():
+                skipped += 1
+                continue
+            try:
+                f.content_embedding = json.dumps(model.encode(f.content_text).tolist())
+                done += 1
+            except Exception:
+                skipped += 1
+        db.commit()
+
+    return JSONResponse({"status": "ok", "total": total, "embedded": done, "skipped": skipped})
+
+
 @app.get("/admin/stores")
 async def list_stores() -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreTwilioNumber
