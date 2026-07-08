@@ -408,7 +408,6 @@ def _is_scout_fresh(store_id: int, freshness_minutes: int = FRESHNESS_MINUTES) -
     outcome -- for report-building on a hit, or dedup on a miss -- so it
     can't skip that query the same way; Redis wouldn't save anything
     there). Falls back to Postgres (source of truth) on a Redis miss."""
-    from datetime import datetime, timedelta
     from app.core import cache as _cache
 
     cached = _cache.get(_scout_cache_key(store_id))
