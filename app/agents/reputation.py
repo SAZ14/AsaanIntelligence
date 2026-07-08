@@ -26,7 +26,13 @@ ISSUE_CLASSES = [
 
 CLASSIFIER_BATCH_SIZE = 30
 HISTORICAL_CUTOFF_DAYS = 3
-MAX_REVIEWS_PER_CHECK = 50
+# Every review is now processed and stored (not just the newest 50) -- this
+# is a defensive safety ceiling on genuinely NEW reviews in a single check,
+# not a routine cap. Dedup against the DB happens before this and before any
+# LLM call, so steady-state volume per check is normally just the delta
+# since the last check; this only matters for a large first-time catch-up
+# run against a store with a big backlog.
+MAX_NEW_REVIEWS_PER_CHECK = 500
 MAX_DRAFT_REPLIES = 5
 MAX_POSITIVE_DRAFT_REPLIES = 5
 # Matches the cron cadence in scripts/run_server.py (3x/day, ~8h apart) --
@@ -716,6 +722,14 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
     if any(kw in text_lower for kw in ("check", "scrape", "crawl", "sync")):
         return _check_reviews(store_id, store_name)
 
+    # "show me positive/negative reviews", "what did we ignore", etc --
+    # answered from a direct, deterministic DB query, not the general chat
+    # LLM guessing from a small recent-reviews sample. See
+    # _classify_review_query's docstring for why.
+    sentiment_filter, status_filter = _classify_review_query(text)
+    if sentiment_filter or status_filter:
+        return _list_reviews_reply(store_id, store_name, sentiment_filter, status_filter)
+
     return _chat_about_reviews(store_id, store_name, text)
 
 
@@ -856,9 +870,32 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             _mark_reputation_checked(store_id, datetime.utcnow())
         return f"*{store_name}* - No new reviews found across all platforms."
 
-    # Cap to MAX_REVIEWS_PER_CHECK, balanced across platforms
-    raw_reviews = cap_reviews_balanced(raw_reviews, MAX_REVIEWS_PER_CHECK)
-    logger.info("reputation.check: store=%d capped_to=%d", store_id, len(raw_reviews))
+    # Dedup against the DB BEFORE any classification or drafting -- the
+    # only thing that makes "process everything scraped, not just the
+    # newest 50" both correct and cheap. A review already seen in a
+    # previous run is skipped entirely here: never reclassified, never
+    # redrafted, and save_review_finding() leaves its existing workflow
+    # status (pending/posted/ignored) and draft completely untouched.
+    # Steady-state cost per check is therefore just the delta of
+    # genuinely new reviews since the last check, not the full scrape.
+    hashes = [r.get("hash", "") for r in raw_reviews if r.get("hash")]
+    already_seen = review_db.existing_content_hashes(store_id, hashes)
+    new_raw_reviews = [r for r in raw_reviews if r.get("hash") not in already_seen]
+    logger.info(
+        "reputation.check: store=%d scraped=%d already_seen=%d new=%d",
+        store_id, len(raw_reviews), len(already_seen), len(new_raw_reviews),
+    )
+
+    if not new_raw_reviews:
+        status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
+        review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
+        if status == "ok":
+            _mark_reputation_checked(store_id, datetime.utcnow())
+        return f"*{store_name}* - No new reviews found. All up to date."
+
+    # Defensive safety ceiling, not a routine cap -- see MAX_NEW_REVIEWS_PER_CHECK.
+    raw_reviews = cap_reviews_balanced(new_raw_reviews, MAX_NEW_REVIEWS_PER_CHECK)
+    logger.info("reputation.check: store=%d processing=%d", store_id, len(raw_reviews))
 
     client = get_client()
 
@@ -904,7 +941,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
                 "confidence": ra.correlation.confidence,
             },
         }
-        if review_db.save_review_finding(store_id, run_id, store_name, raw, ai_summary):
+        if review_db.save_review_finding(store_id, run_id, store_name, raw, ai_summary) == "new":
             new_count += 1
 
     status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
@@ -952,6 +989,109 @@ def run_reputation_check_all() -> None:
             logger.info("reputation.cron_check: store=%d result=%r", store_id, result[:120])
         except Exception as exc:
             logger.error("reputation.cron_check: store=%d failed: %s", store_id, exc)
+
+
+_SENTIMENT_FILTERS = ("positive", "negative", "neutral")
+_STATUS_FILTERS = ("pending", "posted", "ignored")
+
+
+def _classify_review_query(text: str) -> tuple[str | None, str | None]:
+    """(sentiment, status) filter this message is asking to see/list, or
+    (None, None) if it isn't a list request at all (general question,
+    small talk, etc -- falls through to _chat_about_reviews instead).
+
+    Deliberately a small, separate LLM classification call (same pattern
+    as the staff router's own intent classifier in gateway/internal.py)
+    rather than folding this into _chat_about_reviews' free-form answer:
+    _chat_about_reviews only ever sees a handful of recent reviews, so
+    asking it to accurately filter/count/list across everything scraped
+    (now unbounded, previously 300+) isn't reliable -- LLMs are prone to
+    miscounting or missing items over a long list embedded in a prompt.
+    Classifying intent here and then querying the DB directly (list_reviews)
+    keeps the actual filtering deterministic and exact."""
+    try:
+        from app.core.llm import get_client, get_fast_model
+        client = get_client()
+        resp = client.chat.completions.create(
+            model=get_fast_model(),
+            messages=[
+                {"role": "system", "content": (
+                    "Classify whether this WhatsApp message from a restaurant owner is "
+                    "asking to SEE or LIST a specific set of reviews, and if so which "
+                    "filter. Reply with EXACTLY one line in the format sentiment,status "
+                    "-- using 'none' for whichever axis isn't specified.\n"
+                    "sentiment is one of: positive, negative, neutral, none\n"
+                    "status is one of: pending, posted, ignored, none\n"
+                    "If the message is NOT asking to see/list reviews (a general "
+                    "question, a command, small talk), reply exactly: none,none\n\n"
+                    "Examples:\n"
+                    "'show me positive reviews' -> positive,none\n"
+                    "'what are the bad ones' -> negative,none\n"
+                    "'list ignored reviews' -> none,ignored\n"
+                    "'what did we already post' -> none,posted\n"
+                    "'how is our rating trending' -> none,none\n"
+                    "'check reviews' -> none,none"
+                )},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=10,
+            timeout=8.0,
+        )
+        result = resp.choices[0].message.content.strip().lower()
+        sentiment, _, status = result.partition(",")
+        sentiment, status = sentiment.strip(), status.strip()
+        return (
+            sentiment if sentiment in _SENTIMENT_FILTERS else None,
+            status if status in _STATUS_FILTERS else None,
+        )
+    except Exception as exc:
+        logger.warning("reputation._classify_review_query: failed (%s) -- keyword fallback", exc)
+        return _classify_review_query_fallback(text)
+
+
+def _classify_review_query_fallback(text: str) -> tuple[str | None, str | None]:
+    lower = text.lower()
+    sentiment = None
+    if re.search(r"\b(positive|good|great|happy)\b", lower):
+        sentiment = "positive"
+    elif re.search(r"\b(negative|bad|worst|complain\w*|unhapp\w*)\b", lower):
+        sentiment = "negative"
+    status = None
+    if re.search(r"\bignored?\b", lower):
+        status = "ignored"
+    elif re.search(r"\bposted?\b", lower):
+        status = "posted"
+    elif re.search(r"\bpending\b", lower):
+        status = "pending"
+    return sentiment, status
+
+
+def _filter_label(sentiment: str | None, status: str | None) -> str:
+    parts = [p for p in (sentiment, status) if p]
+    return " ".join(parts) if parts else "all"
+
+
+def _list_reviews_reply(
+    store_id: int, store_name: str, sentiment: str | None, status: str | None,
+) -> str:
+    from app.review_sources import db as review_db
+
+    label = _filter_label(sentiment, status)
+    matches, total = review_db.list_reviews(store_id, sentiment=sentiment, status=status, limit=15)
+    if not matches:
+        return f"*{store_name}* - No {label} reviews found."
+
+    lines = [f"*{store_name}* - {label.capitalize()} reviews ({total} total):\n"]
+    for i, m in enumerate(matches, 1):
+        rating = m.get("rating")
+        stars = f"{rating}/5" if rating else "no rating"
+        platform = "Instagram" if (m.get("source_platform") or "").startswith("Instagram") else "Google Maps"
+        excerpt = (m.get("content_text") or "")[:120]
+        lines.append(f"{i}. [{platform}, {stars}] {excerpt}")
+    if total > len(matches):
+        lines.append(f"\n...and {total - len(matches)} more.")
+    return "\n".join(lines)
 
 
 def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
