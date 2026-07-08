@@ -203,7 +203,11 @@ def list_reviews(
     limit: int = 15,
 ) -> tuple[list[dict], int]:
     """Reviews matching sentiment (positive/negative/neutral/mixed) and/or
-    status (pending/posted/ignored/auto_closed), most recent first.
+    status (pending/posted/ignored/auto_closed), most recently POSTED first
+    (the review's own post_date, not when we happened to scrape/insert it --
+    those can drift apart, e.g. an older review surfacing in a later scrape).
+    NULLS LAST so reviews with no post_date (a handful, from sources that
+    don't reliably provide one) fall to the end rather than the front.
 
     ai_summary is a plain Text column holding a JSON string (not a native
     JSON/JSONB column), so filtering happens in Python after fetching --
@@ -217,7 +221,7 @@ def list_reviews(
         findings = (
             db.query(Finding)
             .filter(Finding.store_id == store_id, Finding.update_type == "review")
-            .order_by(Finding.id.desc())
+            .order_by(Finding.post_date.desc().nulls_last(), Finding.id.desc())
             .all()
         )
 

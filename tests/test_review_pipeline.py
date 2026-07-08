@@ -3,7 +3,7 @@ FoodPanda is fully gone (it never produced a single usable review across
 any store's history -- no official reviews API, and no Apify actor tried
 reliably extracted real review text).
 """
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -43,6 +43,7 @@ def test_run_pipeline_returns_three_tuple_with_no_sources_configured(monkeypatch
         "google_maps_terms": [],
         "google_maps_location": "",
         "instagram_usernames": [],
+        "store_name": "Test Cafe",
     })
     reviews, ok, failed = pipeline.run_pipeline(5)
     assert reviews == []
@@ -58,9 +59,10 @@ def test_run_pipeline_tracks_per_source_success_and_failure(monkeypatch):
         "google_maps_terms": ["Test Cafe"],
         "google_maps_location": "Islamabad",
         "instagram_usernames": ["testcafe"],
+        "store_name": "Test Cafe",
     })
     monkeypatch.setattr(pipeline, "fetch_maps",
-                        lambda key, terms, loc: [{"source": "Google Maps - Test", "text": "great food"}])
+                        lambda key, terms, loc, name: [{"source": "Google Maps - Test", "text": "great food"}])
     def _broken_instagram(key, usernames):
         raise RuntimeError("actor timed out")
     monkeypatch.setattr(pipeline, "fetch_instagram", _broken_instagram)
@@ -80,8 +82,9 @@ def test_run_pipeline_all_sources_succeed(monkeypatch):
         "google_maps_terms": ["Test Cafe"],
         "google_maps_location": "Islamabad",
         "instagram_usernames": ["testcafe"],
+        "store_name": "Test Cafe",
     })
-    monkeypatch.setattr(pipeline, "fetch_maps", lambda key, terms, loc: [{"source": "Google Maps"}])
+    monkeypatch.setattr(pipeline, "fetch_maps", lambda key, terms, loc, name: [{"source": "Google Maps"}])
     monkeypatch.setattr(pipeline, "fetch_instagram", lambda key, usernames: [{"source": "Instagram"}])
 
     reviews, ok, failed = pipeline.run_pipeline(5)
@@ -160,3 +163,64 @@ class TestInstagramCaptionsExcluded:
 
         assert "posts" in calls
         assert ("comments", ["https://instagram.com/p/xyz"]) in calls
+
+
+# ── Google Maps: business-name filter excludes unrelated places ─────────────
+#
+# Confirmed live: with maxCrawledPlacesPerSearch=5 and no name validation,
+# Google's search for an ambiguous term like "Anatummy F8" could return
+# other nearby places alongside (or instead of) the real business, and the
+# actor crawled all of them with zero validation. 52+ completely unrelated
+# businesses (a hotel, a Thai restaurant, several biryani spots) ended up
+# stored as Anatummy's own reviews. This filter is the second line of
+# defense (maxCrawledPlacesPerSearch=1 is the first) -- discard anything
+# whose title doesn't actually contain the store's own name.
+
+class TestGoogleMapsNameFilter:
+    def _mock_run(self, monkeypatch, items):
+        from app.review_sources import google_maps as gm
+
+        mock_client = MagicMock()
+        mock_client.actor.return_value.call.return_value = {"defaultDatasetId": "ds1"}
+        mock_client.dataset.return_value.iterate_items.return_value = iter(items)
+        monkeypatch.setattr(gm, "ApifyClient", lambda api_key: mock_client)
+        return mock_client
+
+    def test_discards_places_not_matching_business_name(self, monkeypatch):
+        from app.review_sources.google_maps import fetch_reviews
+        self._mock_run(monkeypatch, [
+            {"title": "Anatummy F8", "reviews": [{"text": "Great burgers", "stars": 5}]},
+            {"title": "Hotel One Super, Islamabad", "reviews": [{"text": "Nice stay", "stars": 5}]},
+            {"title": "Tiger Temple", "reviews": [{"text": "Best thai food", "stars": 5}]},
+        ])
+        results = fetch_reviews("fake-key", ["Anatummy"], "Islamabad", business_name="Anatummy")
+        assert len(results) == 1
+        assert results[0]["source"] == "Google Maps - Anatummy F8"
+
+    def test_case_insensitive_match(self, monkeypatch):
+        from app.review_sources.google_maps import fetch_reviews
+        self._mock_run(monkeypatch, [
+            {"title": "ANATUMMY Beverly Centre", "reviews": [{"text": "Loved it", "stars": 5}]},
+        ])
+        results = fetch_reviews("fake-key", ["Anatummy"], "Islamabad", business_name="Anatummy")
+        assert len(results) == 1
+
+    def test_no_business_name_skips_filtering(self, monkeypatch):
+        """Backward compatible -- callers that don't pass business_name get
+        the old unfiltered behavior rather than everything being discarded."""
+        from app.review_sources.google_maps import fetch_reviews
+        self._mock_run(monkeypatch, [
+            {"title": "Some Place", "reviews": [{"text": "hello", "stars": 5}]},
+        ])
+        results = fetch_reviews("fake-key", ["Some Place"], "Islamabad")
+        assert len(results) == 1
+
+    def test_max_crawled_places_per_search_is_one(self, monkeypatch):
+        """The primary defense -- only the single best match per search
+        term should ever be requested from the actor."""
+        from app.review_sources.google_maps import fetch_reviews
+        mock_client = self._mock_run(monkeypatch, [])
+        fetch_reviews("fake-key", ["Anatummy"], "Islamabad", business_name="Anatummy")
+        call_kwargs = mock_client.actor.return_value.call.call_args
+        run_input = call_kwargs.kwargs.get("run_input") or call_kwargs.args[0]
+        assert run_input["maxCrawledPlacesPerSearch"] == 1

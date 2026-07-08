@@ -1245,8 +1245,10 @@ def _list_reviews_page(
         rating = m.get("rating")
         stars = f"{rating}/5" if rating else "no rating"
         platform = "Instagram" if (m.get("source_platform") or "").startswith("Instagram") else "Google Maps"
+        post_date = m.get("post_date")
+        date_str = post_date[:10] if post_date else "date unknown"
         excerpt = (m.get("content_text") or "")[:120]
-        lines.append(f"{i}. [{platform}, {stars}] {excerpt}")
+        lines.append(f"{i}. [{platform}, {stars}, {date_str}] {excerpt}")
 
     next_offset = offset + len(matches)
     if next_offset < total:

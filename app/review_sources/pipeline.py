@@ -13,10 +13,12 @@ log = logging.getLogger("review_sources.pipeline")
 
 def _load_config_from_db(store_id: int) -> dict:
     """Fetch per-store scraping config from ReputationConfig table."""
-    from app.core.db import SessionLocal, ReputationConfig
+    from app.core.db import SessionLocal, ReputationConfig, Store
 
     with SessionLocal() as db:
         rc = db.query(ReputationConfig).filter(ReputationConfig.store_id == store_id).first()
+        store = db.query(Store).filter(Store.id == store_id).first()
+        store_name = store.name if store else None
 
     if rc is None:
         log.warning("No ReputationConfig for store %d — reviews cannot be scraped", store_id)
@@ -25,6 +27,7 @@ def _load_config_from_db(store_id: int) -> dict:
             "google_maps_terms": [],
             "google_maps_location": "",
             "instagram_usernames": [],
+            "store_name": store_name,
         }
 
     return {
@@ -32,6 +35,7 @@ def _load_config_from_db(store_id: int) -> dict:
         "google_maps_terms": rc.google_maps_terms or [],
         "google_maps_location": rc.google_maps_location or "",
         "instagram_usernames": rc.instagram_usernames or [],
+        "store_name": store_name,
     }
 
 
@@ -62,7 +66,7 @@ def run_pipeline(store_id: int | None = None) -> tuple[list[dict], list[str], li
     tasks: dict[str, object] = {}
     if key and cfg["google_maps_terms"]:
         tasks["google_maps"] = lambda: fetch_maps(
-            key, cfg["google_maps_terms"], cfg["google_maps_location"]
+            key, cfg["google_maps_terms"], cfg["google_maps_location"], cfg["store_name"],
         )
     if key and cfg["instagram_usernames"]:
         tasks["instagram"] = lambda: fetch_instagram(key, cfg["instagram_usernames"])

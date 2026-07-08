@@ -276,6 +276,49 @@ class TestListReviews:
         assert len(matches) == 15
         assert total == 20
 
+    def test_sorted_by_post_date_not_insertion_order(self, store_id):
+        """The real bug: previously sorted by DB id (scrape/insertion
+        order), not the review's actual post date -- an old review
+        scraped in a later run would jump to the front. Deliberately
+        insert out of chronological order to prove the fix."""
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        reviews = [
+            ("oldest", "2025-01-01"),
+            ("newest", "2026-06-01"),
+            ("middle", "2025-06-15"),
+        ]
+        # Inserted oldest-id-first in a DELIBERATELY non-chronological
+        # order relative to post_date, so id order and date order disagree.
+        for hash_, date in reviews:
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe",
+                {"source": "Google Maps", "text": f"review {hash_}", "rating": 5.0,
+                 "hash": hash_, "url": "", "review_date": date},
+                {"status": "auto_closed"},
+            )
+        matches, total = review_db.list_reviews(store_id)
+        assert total == 3
+        assert [m["content_hash"] for m in matches] == ["newest", "middle", "oldest"]
+
+    def test_reviews_with_no_post_date_sort_last(self, store_id):
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "has a date", "rating": 5.0,
+             "hash": "dated", "url": "", "review_date": "2026-01-01"},
+            {"status": "auto_closed"},
+        )
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "no date", "rating": 5.0,
+             "hash": "undated", "url": "", "review_date": ""},
+            {"status": "auto_closed"},
+        )
+        matches, total = review_db.list_reviews(store_id)
+        assert [m["content_hash"] for m in matches] == ["dated", "undated"]
+
 
 # ── _classify_review_query ────────────────────────────────────────────────────
 
@@ -330,6 +373,30 @@ class TestListReviewsPage:
         reply = _list_reviews_page(store_id, "Review Dedup Cafe", "+923001234567", "positive", None)
         assert "of 1" in reply
         assert "Loved it!" in reply
+
+    def test_each_line_shows_the_review_date(self, store_id):
+        from app.agents.reputation import _list_reviews_page
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "Great food", "rating": 5.0,
+             "hash": "dated1", "url": "", "review_date": "2026-05-15"},
+            {"status": "auto_closed", "sentiment": "positive"},
+        )
+        reply = _list_reviews_page(store_id, "Cafe", "+923001234567", "positive", None)
+        assert "2026-05-15" in reply
+
+    def test_missing_date_shows_placeholder_not_error(self, store_id):
+        from app.agents.reputation import _list_reviews_page
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe", _raw_review("nodate1", rating=5.0, text="Good"),
+            {"status": "auto_closed", "sentiment": "positive"},
+        )
+        reply = _list_reviews_page(store_id, "Cafe", "+923001234567", "positive", None)
+        assert "date unknown" in reply
 
     def test_no_matches_says_so_clearly(self, store_id):
         from app.agents.reputation import _list_reviews_page
