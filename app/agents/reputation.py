@@ -1336,7 +1336,14 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     try:
         client = get_client()
         resp = client.chat.completions.create(
-            timeout=20.0,
+            # Confirmed live (docs/agent_test_results.md): this exact call
+            # took 20-45s even before semantic search was added -- 20s was
+            # already marginal. _detect_sentiment_lean above adds its own
+            # latency before this call even starts, on top of that
+            # existing variance. Matches revenue/scout's more generous
+            # final-answer timeouts (25s/90s) rather than a classification
+            # call's tight one.
+            timeout=45.0,
             model=get_model(),
             max_tokens=500,
             messages=[
