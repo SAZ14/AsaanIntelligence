@@ -512,6 +512,80 @@ class TestListReviews:
         matches, total = review_db.list_reviews(store_id)
         assert [m["content_hash"] for m in matches] == ["dated", "undated"]
 
+    def test_days_back_filters_out_older_reviews(self, store_id):
+        from app.review_sources import db as review_db
+        from datetime import datetime, timedelta
+        run_id = _seed_run(store_id)
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        two_weeks_ago = (datetime.utcnow() - timedelta(days=14)).strftime("%Y-%m-%d")
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "recent", "rating": 5.0,
+             "hash": "recent1", "url": "", "review_date": today},
+            {"status": "auto_closed"},
+        )
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "old", "rating": 5.0,
+             "hash": "old1", "url": "", "review_date": two_weeks_ago},
+            {"status": "auto_closed"},
+        )
+        matches, total = review_db.list_reviews(store_id, days_back=7)
+        assert total == 1
+        assert matches[0]["content_hash"] == "recent1"
+
+    def test_days_back_excludes_reviews_with_no_post_date(self, store_id):
+        """No date to compare against a window means it can't honestly
+        be said to fall within it either way -- excluded, not assumed."""
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe", _raw_review("nodate1", rating=5.0, text="undated"),
+            {"status": "auto_closed"},
+        )
+        matches, total = review_db.list_reviews(store_id, days_back=7)
+        assert total == 0
+
+    def test_no_days_back_includes_everything_regardless_of_age(self, store_id):
+        from app.review_sources import db as review_db
+        from datetime import datetime, timedelta
+        run_id = _seed_run(store_id)
+        very_old = (datetime.utcnow() - timedelta(days=400)).strftime("%Y-%m-%d")
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "ancient", "rating": 5.0,
+             "hash": "ancient1", "url": "", "review_date": very_old},
+            {"status": "auto_closed"},
+        )
+        matches, total = review_db.list_reviews(store_id, days_back=None)
+        assert total == 1
+
+    def test_days_back_is_midnight_aligned_not_a_precise_24h_multiple(self):
+        """Confirmed live: post_date is always stored at midnight (see
+        save_review_finding), so a cutoff of "now minus N days" is a
+        precise timestamp including the current time of day -- a review
+        posted "yesterday" (midnight) fell BEFORE "now minus 1 day" any
+        time after midnight today, since yesterday's midnight is earlier
+        in the day than right now. days_back=2 must include a review
+        from exactly yesterday's calendar date regardless of what time
+        of day "now" is when the query runs."""
+        from app.review_sources import db as review_db
+        from datetime import datetime, timedelta
+        chain_id = seed_chain("Midnight Align Chain")
+        store_id = seed_store(chain_id, name="Midnight Align Cafe")
+        run_id = _seed_run(store_id)
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps", "text": "posted yesterday", "rating": 5.0,
+             "hash": "yesterday1", "url": "", "review_date": yesterday},
+            {"status": "auto_closed"},
+        )
+        # days_back=2 is meant to mean "today + yesterday" -- must find it
+        # regardless of what time of day this test happens to run at.
+        matches, total = review_db.list_reviews(store_id, days_back=2)
+        assert total == 1
+
 
 # ── _classify_review_query ────────────────────────────────────────────────────
 
@@ -753,29 +827,44 @@ class TestReviewListRouting:
         assert reply == "chatted"
 
 
-# ── gateway/internal.py: router passes the canonical command through ────────
+# ── gateway/internal.py: router dispatch for reputation ──────────────────────
 
 class TestInternalRoutingForReviewListing:
-    def test_router_positive_command_passed_through_verbatim(self, store_id):
+    def test_router_positive_command_passes_original_text_not_canonical_word(self, store_id):
+        """Used to canonicalize down to the bare word "positive" --
+        changed because that silently discarded a time modifier the
+        original phrasing might carry ("show me LAST WEEK'S positive
+        reviews"), with no way to recover it downstream once reputation.py
+        only saw the bare word. Original text now always passed through
+        for positive/negative/reviews (only "check" still canonicalizes)."""
         from app.gateway.internal import handle_internal_for_store
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "positive")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "show me the good reviews", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "positive")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "show me the good reviews")
 
-    def test_router_negative_command_passed_through_verbatim(self, store_id):
+    def test_router_negative_command_passes_original_text_not_canonical_word(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "negative")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "what are people complaining about", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "negative")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "what are people complaining about")
 
-    def test_router_reviews_command_passed_through_verbatim(self, store_id):
+    def test_router_reviews_command_passes_original_text_not_canonical_word(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "reviews")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "show me all the reviews", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "reviews")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "show me all the reviews")
+
+    def test_router_check_command_still_canonicalizes(self, store_id):
+        """check has no useful modifiers, so it still canonicalizes to the
+        bare command word for reputation.py's instant exact-match path."""
+        from app.gateway.internal import handle_internal_for_store
+        with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "check")), \
+             patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
+            handle_internal_for_store("+923001234567", "can you check our google reviews", store_id)
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "check")
 
     def test_router_chat_command_still_passes_original_text(self, store_id):
         from app.gateway.internal import handle_internal_for_store
@@ -983,6 +1072,53 @@ class TestDetectSentimentLean:
         # conftest.py already sets ZAI_API_KEY="" -- get_client() itself
         # will raise/misbehave without a key, confirming the except path works.
         assert _detect_sentiment_lean("complaints about the branch") is None
+
+
+class TestDetectTimeRange:
+    """Structural correctness with a mocked LLM response -- tests run
+    with ZAI_API_KEY="" (conftest.py disables live calls by default).
+    Real-model accuracy verified separately, live."""
+
+    def _mock_response(self, content):
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = content
+        return mock_client
+
+    def test_parses_a_valid_day_count(self):
+        from app.agents.reputation import _detect_time_range
+        with patch("app.core.llm.get_client", return_value=self._mock_response("7")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_time_range("last week's positive reviews") == 7
+
+    def test_returns_none_when_llm_says_none(self):
+        from app.agents.reputation import _detect_time_range
+        with patch("app.core.llm.get_client", return_value=self._mock_response("none")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_time_range("positive reviews") is None
+
+    def test_non_integer_answer_falls_back_to_none(self):
+        """Untrusted output -- anything that doesn't parse as a positive
+        integer must degrade to no time filter, not an error."""
+        from app.agents.reputation import _detect_time_range
+        with patch("app.core.llm.get_client", return_value=self._mock_response("a week")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_time_range("last week") is None
+
+    def test_zero_or_negative_falls_back_to_none(self):
+        from app.agents.reputation import _detect_time_range
+        with patch("app.core.llm.get_client", return_value=self._mock_response("0")), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            assert _detect_time_range("today") is None
+
+    def test_empty_text_returns_none_without_calling_llm(self):
+        from app.agents.reputation import _detect_time_range
+        assert _detect_time_range("") is None
+        assert _detect_time_range("   ") is None
+
+    def test_no_api_key_returns_none_without_erroring(self):
+        from app.agents.reputation import _detect_time_range
+        assert _detect_time_range("last week's reviews") is None
 
 
 class TestChatAboutReviewsBlending:

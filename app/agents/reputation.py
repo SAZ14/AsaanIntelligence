@@ -805,6 +805,7 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         return _list_reviews_page(
             store_id, store_name, from_phone,
             state.get("sentiment"), state.get("status"), state.get("offset", 0),
+            state.get("days_back"),
         )
 
     # Real commands (not just free-form chat) -- also what the LLM router
@@ -821,13 +822,21 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         return _list_reviews_page(store_id, store_name, from_phone, None, None)
 
     # Anything else natural-language-shaped that still asks to see a
-    # filtered set ("what did we ignore", "what have we posted") --
-    # answered from the same direct, deterministic DB query rather than
-    # the general chat LLM guessing from a small recent-reviews sample.
-    # See _classify_review_query's docstring for why.
+    # filtered set ("what did we ignore", "what have we posted", "show
+    # me last week's positive reviews only") -- answered from the same
+    # direct, deterministic DB query rather than the general chat LLM
+    # guessing from a small recent-reviews sample. See
+    # _classify_review_query's docstring for why. days_back is detected
+    # separately from sentiment/status (_detect_time_range, a genuinely
+    # different question -- "is there a time range" vs "is this a list
+    # request at all") and only applied when this IS a list request, so
+    # a time phrase alone ("what happened last week") without any
+    # sentiment/status signal still falls through to general chat rather
+    # than being misread as a list request.
     sentiment_filter, status_filter = _classify_review_query(text)
     if sentiment_filter or status_filter:
-        return _list_reviews_page(store_id, store_name, from_phone, sentiment_filter, status_filter)
+        days_back = _detect_time_range(text)
+        return _list_reviews_page(store_id, store_name, from_phone, sentiment_filter, status_filter, days_back=days_back)
 
     return _chat_about_reviews(store_id, store_name, text)
 
@@ -1207,9 +1216,19 @@ def _classify_review_query_fallback(text: str) -> tuple[str | None, str | None]:
     return sentiment, status
 
 
-def _filter_label(sentiment: str | None, status: str | None) -> str:
+def _filter_label(sentiment: str | None, status: str | None, days_back: int | None = None) -> str:
     parts = [p for p in (sentiment, status) if p]
-    return " ".join(parts) if parts else "all"
+    label = " ".join(parts) if parts else "all"
+    if days_back:
+        if days_back == 1:
+            label += " (last day)"
+        elif days_back == 7:
+            label += " (last week)"
+        elif days_back % 7 == 0:
+            label += f" (last {days_back // 7} weeks)"
+        else:
+            label += f" (last {days_back} days)"
+    return label
 
 
 def _detect_sentiment_lean(text: str) -> str | None:
@@ -1266,6 +1285,65 @@ def _detect_sentiment_lean(text: str) -> str | None:
         return None
 
 
+def _detect_time_range(text: str) -> int | None:
+    """How many days back this message asks to filter reviews by (e.g.
+    "last week" -> 7), or None if no time range is specified at all. A
+    rolling window in CALENDAR DATES, not a precise 24h-multiple
+    timestamp -- N covers today plus the previous N-1 dates (see
+    list_reviews' days_back handling: post_date is always stored at
+    midnight, so the cutoff is midnight-aligned too, otherwise a review
+    posted "yesterday" could fall outside a naive "now minus 1 day"
+    window depending on what time of day "now" happens to be, confirmed
+    live). "yesterday" maps to 2 (today+yesterday), not 1 -- a rolling
+    day-COUNT can't precisely express "yesterday only, excluding today"
+    the way calendar boundaries could; better to include one extra day
+    than to silently exclude the day actually being asked about.
+
+    Needs "today" as context to resolve relative phrases at all, so the
+    prompt includes the actual current date rather than asking the model
+    to guess what "now" means."""
+    if not text or not text.strip():
+        return None
+    try:
+        from app.core.llm import get_client, get_fast_model
+        client = get_client()
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        resp = client.chat.completions.create(
+            model=get_fast_model(),
+            messages=[
+                {"role": "system", "content": (
+                    f"Today's date is {today}. Does this message ask for "
+                    "reviews from a SPECIFIC recent time range? If so, reply "
+                    "with EXACTLY one integer: how many days back that range "
+                    "covers. If no time range is mentioned at all, reply "
+                    "exactly: none\n\n"
+                    "Examples:\n"
+                    "'last week' -> 7\n"
+                    "'yesterday' -> 2\n"
+                    "'today' -> 1\n"
+                    "'last 3 days' -> 3\n"
+                    "'this month' -> 30\n"
+                    "'last month' -> 30\n"
+                    "'this week' -> 7\n"
+                    "'positive reviews' -> none\n"
+                    "'what are people complaining about' -> none"
+                )},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=5,
+            timeout=8.0,
+        )
+        answer = resp.choices[0].message.content.strip().lower()
+        if answer == "none":
+            return None
+        days = int(answer)
+        return days if days > 0 else None
+    except Exception as exc:
+        logger.warning("reputation._detect_time_range: failed (%s)", exc)
+        return None
+
+
 REVIEW_PAGE_SIZE = 10
 REVIEW_PAGE_STATE_TTL = 1800  # 30 min -- long enough to page through, short enough not to linger
 
@@ -1274,11 +1352,14 @@ def _review_page_key(store_id: int, from_phone: str) -> str:
     return f"reputation:review_page:{store_id}:{from_phone}"
 
 
-def _save_review_page_state(store_id: int, from_phone: str, sentiment: str | None, status: str | None, offset: int) -> None:
+def _save_review_page_state(
+    store_id: int, from_phone: str, sentiment: str | None, status: str | None, offset: int,
+    days_back: int | None = None,
+) -> None:
     from app.core import cache as _cache
     _cache.set(
         _review_page_key(store_id, from_phone),
-        {"sentiment": sentiment, "status": status, "offset": offset},
+        {"sentiment": sentiment, "status": status, "offset": offset, "days_back": days_back},
         ttl=REVIEW_PAGE_STATE_TTL,
     )
 
@@ -1296,19 +1377,22 @@ def _clear_review_page_state(store_id: int, from_phone: str) -> None:
 def _list_reviews_page(
     store_id: int, store_name: str, from_phone: str,
     sentiment: str | None, status: str | None, offset: int = 0,
+    days_back: int | None = None,
 ) -> str:
-    """One page (REVIEW_PAGE_SIZE reviews) of a sentiment/status-filtered
-    review list, with NEXT-based pagination. Pagination state (which
-    filter, how far in) is stored in Redis -- the same connection already
-    used for rate limits/cooldowns/the job queue/freshness caches -- keyed
-    per store+phone so two staff members paging through different filters
-    at once don't collide. Fails open if Redis is down: NEXT will just say
-    there's nothing to continue rather than erroring."""
+    """One page (REVIEW_PAGE_SIZE reviews) of a sentiment/status/time-
+    filtered review list, with NEXT-based pagination. Pagination state
+    (which filters, how far in) is stored in Redis -- the same connection
+    already used for rate limits/cooldowns/the job queue/freshness caches
+    -- keyed per store+phone so two staff members paging through
+    different filters at once don't collide. Fails open if Redis is
+    down: NEXT will just say there's nothing to continue rather than
+    erroring."""
     from app.review_sources import db as review_db
 
-    label = _filter_label(sentiment, status)
+    label = _filter_label(sentiment, status, days_back)
     matches, total = review_db.list_reviews(
         store_id, sentiment=sentiment, status=status, offset=offset, limit=REVIEW_PAGE_SIZE,
+        days_back=days_back,
     )
     if not matches:
         if offset == 0:
@@ -1336,7 +1420,7 @@ def _list_reviews_page(
     if next_offset < total:
         from app.core import cache as _cache
         if _cache.available():
-            _save_review_page_state(store_id, from_phone, sentiment, status, next_offset)
+            _save_review_page_state(store_id, from_phone, sentiment, status, next_offset, days_back)
             lines.append(f"\nType *NEXT* for more ({total - next_offset} remaining).")
         # Redis down: no point offering NEXT if there's nowhere to persist
         # which page comes next -- silently omit the hint rather than

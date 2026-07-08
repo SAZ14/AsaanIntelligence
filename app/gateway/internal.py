@@ -292,12 +292,22 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         return _revenue(store_id, from_number, text)
 
     if agent == "reputation":
-        # check/positive/negative/reviews are real commands (reputation.py
-        # matches these exact keywords) -- pass the canonical keyword
-        # through so e.g. "show me the good reviews" reaches reputation.py
-        # as "positive", not the original phrasing. Anything else (chat)
-        # passes the original text through to the general Q&A fallback.
-        if command in ("check", "positive", "negative", "reviews"):
+        # "check" is the one command with no useful modifiers -- always
+        # canonicalize it so any check-shaped phrasing reaches
+        # reputation.py's exact-match fast path reliably. positive/
+        # negative/reviews used to get canonicalized the same way, but
+        # that silently discarded a time modifier the original phrasing
+        # might carry ("show me LAST WEEK'S positive reviews") -- by the
+        # time reputation.py saw just the bare word "positive", the "last
+        # week" was already gone with no way to recover it downstream.
+        # Passing the original text through instead means simple phrasings
+        # that don't exactly match reputation.py's own trigger set (e.g.
+        # "show me the good reviews") take its slightly slower
+        # _classify_review_query fallback path instead of the instant
+        # exact-match one -- an acceptable trade since that fallback is
+        # already relied on for everything else and handles time-range
+        # detection too.
+        if command == "check":
             body_to_send = command
         else:
             body_to_send = text

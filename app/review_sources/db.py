@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.core.db import SessionLocal, Finding, ScoutRun
@@ -201,6 +201,7 @@ def list_reviews(
     status: str | None = None,
     offset: int = 0,
     limit: int = 15,
+    days_back: int | None = None,
 ) -> tuple[list[dict], int]:
     """Reviews matching sentiment (positive/negative/neutral/mixed) and/or
     status (pending/posted/ignored/auto_closed), most recently POSTED first
@@ -208,6 +209,13 @@ def list_reviews(
     those can drift apart, e.g. an older review surfacing in a later scrape).
     NULLS LAST so reviews with no post_date (a handful, from sources that
     don't reliably provide one) fall to the end rather than the front.
+
+    days_back, if given, further restricts to reviews posted within that
+    many days of now (e.g. 7 for "last week") -- a real SQL-level filter,
+    since post_date is a proper DateTime column unlike sentiment/status
+    (see below). A review with no post_date at all is excluded when a
+    days_back filter is active -- there's no date to compare, so it can't
+    honestly be said to fall within the requested window either way.
 
     ai_summary is a plain Text column holding a JSON string (not a native
     JSON/JSONB column), so filtering happens in Python after fetching --
@@ -218,12 +226,22 @@ def list_reviews(
     truncating or re-fetching from the start each time.
     """
     with SessionLocal() as db:
-        findings = (
-            db.query(Finding)
-            .filter(Finding.store_id == store_id, Finding.update_type == "review")
-            .order_by(Finding.post_date.desc().nulls_last(), Finding.id.desc())
-            .all()
-        )
+        query = db.query(Finding).filter(Finding.store_id == store_id, Finding.update_type == "review")
+        if days_back is not None:
+            # post_date is always stored at midnight (see save_review_finding
+            # -- it parses only the date portion, no time-of-day). A cutoff
+            # of "now minus N days" is a precise timestamp that includes
+            # the current time of day, not just N -- confirmed live: a
+            # review posted "yesterday" (midnight) fell BEFORE "now minus
+            # 1 day" any time after midnight today, since yesterday's
+            # midnight is earlier in the day than right now. Aligning the
+            # cutoff to midnight too makes "N days back" cleanly mean N
+            # calendar dates (today + the previous N-1) regardless of what
+            # time of day "now" happens to be.
+            today_midnight = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            cutoff = today_midnight - timedelta(days=days_back - 1)
+            query = query.filter(Finding.post_date.isnot(None), Finding.post_date >= cutoff)
+        findings = query.order_by(Finding.post_date.desc().nulls_last(), Finding.id.desc()).all()
 
     matches: list[dict] = []
     for f in findings:
