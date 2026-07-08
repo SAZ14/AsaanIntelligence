@@ -46,6 +46,8 @@ def staff_help_text(store_name: str) -> str:
         "  scout: scrape rivals (cached 24h)\n\n"
         "*Reputation*: Review management\n"
         "  check: scrape latest reviews (cached 24h)\n"
+        "  positive reviews / negative reviews / all reviews: list reviews, 10 at a time\n"
+        "  next: see the next 10\n"
         "  post: mark suggested reply as replied (post it yourself first)\n"
         "  ignore: skip current review\n"
         "  edit <text>: rewrite suggested reply\n\n"
@@ -63,7 +65,7 @@ def _get_store_name(store_id: int) -> str:
         return store.name if store else "your restaurant"
 
 
-_REPUTATION_EXACT = {"post", "ignore"}
+_REPUTATION_EXACT = {"post", "ignore", "next"}
 
 # Documented Revenue Advisor shorthand commands (see staff_help_text). These bypass
 # the LLM classifier entirely -- bare words like "revenue" and "sales" sound
@@ -113,13 +115,18 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             "integrity/free_form – any other POS or financial data question not covered above\n"
             "revenue/general     – growth strategy, upsell tips, campaigns, how to sell more, business advice\n"
             "reputation/check    – SCRAPE new reviews right now: 'check reviews', 'get latest reviews'\n"
-            "reputation/chat     – questions ABOUT existing reviews: ratings, complaints, what are customers saying, Google/Foodpanda/Instagram\n"
+            "reputation/positive – SHOW/LIST positive reviews specifically: 'show good reviews', 'what are people happy about'\n"
+            "reputation/negative – SHOW/LIST negative/bad reviews specifically: 'show bad reviews', 'what are people complaining about'\n"
+            "reputation/reviews  – SHOW/LIST reviews with no sentiment filter: 'show all reviews', 'list reviews'\n"
+            "reputation/chat     – other questions ABOUT reviews that aren't a show/list request: trends, ratings over time, general \"how are we doing on reviews\"\n"
             "scout/scout         – competitor intelligence, rival restaurants, what competitors are doing\n\n"
             "DISAMBIGUATION RULES (apply these when in doubt):\n"
             "• 'how much did we make/sell today/this week' → integrity/daily or integrity/weekly — POS data query, NOT strategy\n"
             "• 'how to increase sales' / 'grow revenue' / 'new campaign' / 'marketing' → revenue/general\n"
             "• 'check reviews' / 'get new reviews' / 'review lao' / 'koi naye reviews' → reputation/check\n"
-            "• 'what are customers saying' / 'bad reviews' / 'our rating' / 'log kya bol rahe' → reputation/chat\n"
+            "• asking to SEE/LIST/SHOW reviews of a specific sentiment ('good reviews', 'bad reviews', 'positive feedback', 'complaints', 'acha kya bola', 'bura kya bola') → reputation/positive or reputation/negative, NOT reputation/chat\n"
+            "• asking to SEE/LIST/SHOW reviews with no sentiment specified ('show reviews', 'list reviews') → reputation/reviews\n"
+            "• a general question ABOUT reviews that isn't asking to see a list ('how is our rating trending', 'log kya bol rahe hain', 'are people happy overall') → reputation/chat\n"
             "• mentions competitors / rival restaurants → scout/scout\n"
             "• 'chor' / 'theft' / 'missing money' / 'suspicious' / 'void' → integrity/leakage\n"
             "• 'profit' or 'margin' or 'COGS' → integrity/profit\n"
@@ -131,7 +138,12 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             "  'koi chor hai kya' → integrity/leakage\n"
             "  'staff mein koi masla' → integrity/staff\n"
             "  'reviews check karo' → reputation/check\n"
+            "  'show me positive reviews' → reputation/positive\n"
+            "  'what are the bad reviews' → reputation/negative\n"
+            "  'acha kya bola logon ne' → reputation/positive\n"
+            "  'show me all reviews' → reputation/reviews\n"
             "  'log kya bol rahe hain' → reputation/chat\n"
+            "  'how is our rating trending' → reputation/chat\n"
             "  'how do we upsell desserts' → revenue/general\n"
             "  'what are competitors offering' → scout/scout\n"
             "  'profit margin kya hai' → integrity/profit\n"
@@ -267,8 +279,15 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         return _revenue(store_id, from_number, text)
 
     if agent == "reputation":
-        # "check" command → pass "check"; chat → pass original text
-        body_to_send = "check" if command == "check" else text
+        # check/positive/negative/reviews are real commands (reputation.py
+        # matches these exact keywords) -- pass the canonical keyword
+        # through so e.g. "show me the good reviews" reaches reputation.py
+        # as "positive", not the original phrasing. Anything else (chat)
+        # passes the original text through to the general Q&A fallback.
+        if command in ("check", "positive", "negative", "reviews"):
+            body_to_send = command
+        else:
+            body_to_send = text
         return _reputation(store_id, from_number, body_to_send)
 
     # integrity (default)

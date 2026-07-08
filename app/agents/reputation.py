@@ -722,13 +722,39 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
     if any(kw in text_lower for kw in ("check", "scrape", "crawl", "sync")):
         return _check_reviews(store_id, store_name)
 
-    # "show me positive/negative reviews", "what did we ignore", etc --
-    # answered from a direct, deterministic DB query, not the general chat
-    # LLM guessing from a small recent-reviews sample. See
-    # _classify_review_query's docstring for why.
+    if text_lower == "next":
+        state = _get_review_page_state(store_id, from_phone)
+        if not state:
+            return (
+                f"*{store_name}* - Nothing to continue. Try *positive reviews*, "
+                "*negative reviews*, or *all reviews*."
+            )
+        return _list_reviews_page(
+            store_id, store_name, from_phone,
+            state.get("sentiment"), state.get("status"), state.get("offset", 0),
+        )
+
+    # Real commands (not just free-form chat) -- also what the LLM router
+    # in gateway/internal.py routes matching natural language to
+    # (reputation/positive, reputation/negative, reputation/reviews), so
+    # this fires the same way whether the user typed the phrase directly
+    # or the router normalized something like "show me the good reviews"
+    # down to it.
+    if text_lower in _POSITIVE_REVIEW_TRIGGERS:
+        return _list_reviews_page(store_id, store_name, from_phone, "positive", None)
+    if text_lower in _NEGATIVE_REVIEW_TRIGGERS:
+        return _list_reviews_page(store_id, store_name, from_phone, "negative", None)
+    if text_lower in _ALL_REVIEW_TRIGGERS:
+        return _list_reviews_page(store_id, store_name, from_phone, None, None)
+
+    # Anything else natural-language-shaped that still asks to see a
+    # filtered set ("what did we ignore", "what have we posted") --
+    # answered from the same direct, deterministic DB query rather than
+    # the general chat LLM guessing from a small recent-reviews sample.
+    # See _classify_review_query's docstring for why.
     sentiment_filter, status_filter = _classify_review_query(text)
     if sentiment_filter or status_filter:
-        return _list_reviews_reply(store_id, store_name, sentiment_filter, status_filter)
+        return _list_reviews_page(store_id, store_name, from_phone, sentiment_filter, status_filter)
 
     return _chat_about_reviews(store_id, store_name, text)
 
@@ -994,6 +1020,24 @@ def run_reputation_check_all() -> None:
 _SENTIMENT_FILTERS = ("positive", "negative", "neutral")
 _STATUS_FILTERS = ("pending", "posted", "ignored")
 
+# Exact/near-exact trigger phrases for the review-listing commands.
+# Matched both against what a staff member literally types AND against
+# the canonical command keyword the LLM router (gateway/internal.py)
+# normalizes natural language down to (e.g. "show me the good reviews"
+# -> agent=reputation command=positive -> body_to_send="positive").
+_POSITIVE_REVIEW_TRIGGERS = {
+    "positive", "positive reviews", "good reviews", "show positive reviews",
+    "show me positive reviews", "list positive reviews",
+}
+_NEGATIVE_REVIEW_TRIGGERS = {
+    "negative", "negative reviews", "bad reviews", "show negative reviews",
+    "show me negative reviews", "list negative reviews",
+}
+_ALL_REVIEW_TRIGGERS = {
+    "reviews", "all reviews", "list reviews", "show reviews",
+    "show all reviews", "list all reviews",
+}
+
 
 def _classify_review_query(text: str) -> tuple[str | None, str | None]:
     """(sentiment, status) filter this message is asking to see/list, or
@@ -1072,25 +1116,77 @@ def _filter_label(sentiment: str | None, status: str | None) -> str:
     return " ".join(parts) if parts else "all"
 
 
-def _list_reviews_reply(
-    store_id: int, store_name: str, sentiment: str | None, status: str | None,
+REVIEW_PAGE_SIZE = 10
+REVIEW_PAGE_STATE_TTL = 1800  # 30 min -- long enough to page through, short enough not to linger
+
+
+def _review_page_key(store_id: int, from_phone: str) -> str:
+    return f"reputation:review_page:{store_id}:{from_phone}"
+
+
+def _save_review_page_state(store_id: int, from_phone: str, sentiment: str | None, status: str | None, offset: int) -> None:
+    from app.core import cache as _cache
+    _cache.set(
+        _review_page_key(store_id, from_phone),
+        {"sentiment": sentiment, "status": status, "offset": offset},
+        ttl=REVIEW_PAGE_STATE_TTL,
+    )
+
+
+def _get_review_page_state(store_id: int, from_phone: str) -> dict | None:
+    from app.core import cache as _cache
+    return _cache.get(_review_page_key(store_id, from_phone))
+
+
+def _clear_review_page_state(store_id: int, from_phone: str) -> None:
+    from app.core import cache as _cache
+    _cache.delete(_review_page_key(store_id, from_phone))
+
+
+def _list_reviews_page(
+    store_id: int, store_name: str, from_phone: str,
+    sentiment: str | None, status: str | None, offset: int = 0,
 ) -> str:
+    """One page (REVIEW_PAGE_SIZE reviews) of a sentiment/status-filtered
+    review list, with NEXT-based pagination. Pagination state (which
+    filter, how far in) is stored in Redis -- the same connection already
+    used for rate limits/cooldowns/the job queue/freshness caches -- keyed
+    per store+phone so two staff members paging through different filters
+    at once don't collide. Fails open if Redis is down: NEXT will just say
+    there's nothing to continue rather than erroring."""
     from app.review_sources import db as review_db
 
     label = _filter_label(sentiment, status)
-    matches, total = review_db.list_reviews(store_id, sentiment=sentiment, status=status, limit=15)
+    matches, total = review_db.list_reviews(
+        store_id, sentiment=sentiment, status=status, offset=offset, limit=REVIEW_PAGE_SIZE,
+    )
     if not matches:
-        return f"*{store_name}* - No {label} reviews found."
+        if offset == 0:
+            return f"*{store_name}* - No {label} reviews found."
+        _clear_review_page_state(store_id, from_phone)
+        return f"*{store_name}* - No more {label} reviews."
 
-    lines = [f"*{store_name}* - {label.capitalize()} reviews ({total} total):\n"]
-    for i, m in enumerate(matches, 1):
+    start = offset + 1
+    end = offset + len(matches)
+    lines = [f"*{store_name}* - {label.capitalize()} reviews ({start}-{end} of {total}):\n"]
+    for i, m in enumerate(matches, start):
         rating = m.get("rating")
         stars = f"{rating}/5" if rating else "no rating"
         platform = "Instagram" if (m.get("source_platform") or "").startswith("Instagram") else "Google Maps"
         excerpt = (m.get("content_text") or "")[:120]
         lines.append(f"{i}. [{platform}, {stars}] {excerpt}")
-    if total > len(matches):
-        lines.append(f"\n...and {total - len(matches)} more.")
+
+    next_offset = offset + len(matches)
+    if next_offset < total:
+        from app.core import cache as _cache
+        if _cache.available():
+            _save_review_page_state(store_id, from_phone, sentiment, status, next_offset)
+            lines.append(f"\nType *NEXT* for more ({total - next_offset} remaining).")
+        # Redis down: no point offering NEXT if there's nowhere to persist
+        # which page comes next -- silently omit the hint rather than
+        # promise something that won't work.
+    else:
+        _clear_review_page_state(store_id, from_phone)
     return "\n".join(lines)
 
 
@@ -1129,7 +1225,9 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
         "Commands: *POST* (mark draft as replied -- owner still has to post it "
         "on the actual platform themselves, we can't publish it for them), "
         "*EDIT <text>* (revise draft), "
-        "*IGNORE* (skip), *CHECK* (scrape new reviews).\n\n"
+        "*IGNORE* (skip), *CHECK* (scrape new reviews), "
+        "*POSITIVE REVIEWS* / *NEGATIVE REVIEWS* / *ALL REVIEWS* (list reviews "
+        "10 at a time), *NEXT* (see the next 10).\n\n"
         "WhatsApp format: no markdown, no em-dashes (use a comma or colon instead), "
         "no emojis, use *word* for bold, short paragraphs.\n\n"
         f"{pending_ctx}\n{recent_ctx}"
@@ -1155,5 +1253,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
             "*POST* - mark draft as replied (post it on the platform yourself first)\n"
             "*EDIT <text>* - revise the draft\n"
             "*IGNORE* - skip this review\n"
-            "*CHECK* - scrape new reviews"
+            "*CHECK* - scrape new reviews\n"
+            "*POSITIVE REVIEWS* / *NEGATIVE REVIEWS* / *ALL REVIEWS* - list reviews, 10 at a time\n"
+            "*NEXT* - see the next 10"
         )

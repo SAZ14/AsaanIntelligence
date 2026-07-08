@@ -176,6 +176,7 @@ def list_reviews(
     store_id: int,
     sentiment: str | None = None,
     status: str | None = None,
+    offset: int = 0,
     limit: int = 15,
 ) -> tuple[list[dict], int]:
     """Reviews matching sentiment (positive/negative/neutral/mixed) and/or
@@ -184,9 +185,10 @@ def list_reviews(
     ai_summary is a plain Text column holding a JSON string (not a native
     JSON/JSONB column), so filtering happens in Python after fetching --
     there's no cross-DB-compatible way to filter on it in SQL directly
-    (production is Postgres, tests run on SQLite). Returns (matches capped
-    to limit, total match count) so a caller can say "showing 15 of 47"
-    rather than silently truncating.
+    (production is Postgres, tests run on SQLite). Returns (one page of
+    matches starting at offset, total match count) so a caller can say
+    "showing 11-20 of 47" and page through with NEXT rather than silently
+    truncating or re-fetching from the start each time.
     """
     with SessionLocal() as db:
         findings = (
@@ -219,7 +221,7 @@ def list_reviews(
             "ai_summary": summary,
         })
 
-    return matches[:limit], len(matches)
+    return matches[offset:offset + limit], len(matches)
 
 
 def get_recent_reviews(store_id: int, limit: int = 50) -> list[dict]:

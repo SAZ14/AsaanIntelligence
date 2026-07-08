@@ -30,6 +30,18 @@ def store_id():
     return seed_store(chain_id, name="Review Dedup Cafe", location="F-7, Islamabad")
 
 
+@pytest.fixture(autouse=True)
+def fake_redis(monkeypatch):
+    """Pagination state lives in Redis (app/core/cache.py) -- without a
+    real or fake connection, cache.get/set are no-ops and NEXT would always
+    report "nothing to continue" regardless of whether a list request was
+    just made. Same fixture pattern as test_guards.py/test_freshness_cache.py."""
+    fakeredis = pytest.importorskip("fakeredis")
+    import app.core.cache as cache
+    monkeypatch.setattr(cache, "_client", fakeredis.FakeRedis(decode_responses=True))
+    monkeypatch.setattr(cache, "_unavailable", False)
+
+
 def _seed_run(store_id):
     from app.core.db import ScoutRun
     with TestSession() as db:
@@ -244,26 +256,119 @@ class TestClassifyReviewQuery:
         assert sentiment == "negative"
 
 
-# ── _list_reviews_reply ────────────────────────────────────────────────────────
+# ── _list_reviews_page (formatting + pagination) ─────────────────────────────
 
-class TestListReviewsReply:
+class TestListReviewsPage:
     def test_formats_matches_with_count(self, store_id):
-        from app.agents.reputation import _list_reviews_reply
+        from app.agents.reputation import _list_reviews_page
         from app.review_sources import db as review_db
         run_id = _seed_run(store_id)
         review_db.save_review_finding(
             store_id, run_id, "Cafe", _raw_review("p1", rating=5.0, text="Loved it!"),
             {"status": "auto_closed", "sentiment": "positive"},
         )
-        reply = _list_reviews_reply(store_id, "Review Dedup Cafe", "positive", None)
-        assert "1 total" in reply
+        reply = _list_reviews_page(store_id, "Review Dedup Cafe", "+923001234567", "positive", None)
+        assert "of 1" in reply
         assert "Loved it!" in reply
 
     def test_no_matches_says_so_clearly(self, store_id):
-        from app.agents.reputation import _list_reviews_reply
-        reply = _list_reviews_reply(store_id, "Review Dedup Cafe", "negative", None)
+        from app.agents.reputation import _list_reviews_page
+        reply = _list_reviews_page(store_id, "Review Dedup Cafe", "+923001234567", "negative", None)
         assert "no" in reply.lower()
         assert "negative" in reply.lower()
+
+    def test_more_than_one_page_offers_next(self, store_id):
+        from app.agents.reputation import _list_reviews_page
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        for i in range(15):
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"p{i}", rating=5.0),
+                {"status": "auto_closed", "sentiment": "positive"},
+            )
+        reply = _list_reviews_page(store_id, "Review Dedup Cafe", "+923001234567", "positive", None)
+        assert "1-10 of 15" in reply
+        assert "NEXT" in reply
+        assert "5 remaining" in reply
+
+    def test_exactly_one_page_does_not_offer_next(self, store_id):
+        from app.agents.reputation import _list_reviews_page
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        for i in range(10):
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"p{i}", rating=5.0),
+                {"status": "auto_closed", "sentiment": "positive"},
+            )
+        reply = _list_reviews_page(store_id, "Review Dedup Cafe", "+923001234567", "positive", None)
+        assert "1-10 of 10" in reply
+        assert "NEXT" not in reply
+
+    def test_next_command_advances_to_the_second_page(self, store_id):
+        from app.agents.reputation import process_reputation_owner_reply
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        for i in range(15):
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"p{i}", rating=5.0, text=f"review number {i}"),
+                {"status": "auto_closed", "sentiment": "positive"},
+            )
+        process_reputation_owner_reply("+923001234567", "positive reviews", store_id=store_id)
+        second_page = process_reputation_owner_reply("+923001234567", "next", store_id=store_id)
+        assert "11-15 of 15" in second_page
+        assert "NEXT" not in second_page  # exhausted, no more pages
+
+    def test_next_without_prior_list_request_says_so(self, store_id):
+        from app.agents.reputation import process_reputation_owner_reply
+        reply = process_reputation_owner_reply("+923001234567", "next", store_id=store_id)
+        assert "nothing to continue" in reply.lower()
+
+    def test_degrades_gracefully_without_redis(self, store_id, monkeypatch):
+        """Fails open the same way every other Redis-backed guard in this
+        codebase does: NEXT just says there's nothing to continue rather
+        than erroring, instead of silently pretending to paginate with no
+        real state behind it."""
+        import app.core.cache as cache
+        monkeypatch.setattr(cache, "_client", None)
+        monkeypatch.setattr(cache, "_unavailable", True)
+
+        from app.agents.reputation import process_reputation_owner_reply
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        for i in range(15):
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"p{i}", rating=5.0),
+                {"status": "auto_closed", "sentiment": "positive"},
+            )
+        first_page = process_reputation_owner_reply("+923001234567", "positive reviews", store_id=store_id)
+        assert "1-10 of 15" in first_page  # the page itself still works, just no NEXT
+        assert "NEXT" not in first_page
+
+        reply = process_reputation_owner_reply("+923001234567", "next", store_id=store_id)
+        assert "nothing to continue" in reply.lower()
+
+    def test_pagination_state_is_scoped_per_phone_number(self, store_id):
+        """Two staff members paging through different filters at once must
+        not collide."""
+        from app.agents.reputation import process_reputation_owner_reply
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        for i in range(15):
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"p{i}", rating=5.0),
+                {"status": "auto_closed", "sentiment": "positive"},
+            )
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"n{i}", rating=1.0),
+                {"status": "auto_closed", "sentiment": "negative"},
+            )
+        process_reputation_owner_reply("+923001111111", "positive reviews", store_id=store_id)
+        process_reputation_owner_reply("+923002222222", "negative reviews", store_id=store_id)
+
+        page2_a = process_reputation_owner_reply("+923001111111", "next", store_id=store_id)
+        page2_b = process_reputation_owner_reply("+923002222222", "next", store_id=store_id)
+        assert "positive" in page2_a.lower()
+        assert "negative" in page2_b.lower()
 
 
 # ── Routing: list requests bypass the general chat entirely ─────────────────
@@ -272,12 +377,20 @@ class TestReviewListRouting:
     def test_list_request_never_reaches_general_chat(self, store_id):
         from app.agents.reputation import process_reputation_owner_reply
         with patch("app.agents.reputation._classify_review_query", return_value=("positive", None)), \
-             patch("app.agents.reputation._list_reviews_reply", return_value="listed") as mock_list, \
+             patch("app.agents.reputation._list_reviews_page", return_value="listed") as mock_list, \
              patch("app.agents.reputation._chat_about_reviews") as mock_chat:
-            reply = process_reputation_owner_reply("+923001234567", "show me positive reviews", store_id=store_id)
+            reply = process_reputation_owner_reply("+923001234567", "show me positive reviews perhaps", store_id=store_id)
         mock_list.assert_called_once()
         mock_chat.assert_not_called()
         assert reply == "listed"
+
+    def test_exact_trigger_phrase_bypasses_classifier_entirely(self, store_id):
+        from app.agents.reputation import process_reputation_owner_reply
+        with patch("app.agents.reputation._classify_review_query") as mock_classify, \
+             patch("app.agents.reputation._list_reviews_page", return_value="listed") as mock_list:
+            process_reputation_owner_reply("+923001234567", "positive reviews", store_id=store_id)
+        mock_classify.assert_not_called()
+        mock_list.assert_called_once_with(store_id, "Review Dedup Cafe", "+923001234567", "positive", None)
 
     def test_non_list_question_still_reaches_general_chat(self, store_id):
         from app.agents.reputation import process_reputation_owner_reply
@@ -286,3 +399,50 @@ class TestReviewListRouting:
             reply = process_reputation_owner_reply("+923001234567", "how is our rating trending", store_id=store_id)
         mock_chat.assert_called_once()
         assert reply == "chatted"
+
+
+# ── gateway/internal.py: router passes the canonical command through ────────
+
+class TestInternalRoutingForReviewListing:
+    def test_router_positive_command_passed_through_verbatim(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "positive")), \
+             patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
+            handle_internal_for_store("+923001234567", "show me the good reviews", store_id)
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "positive")
+
+    def test_router_negative_command_passed_through_verbatim(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "negative")), \
+             patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
+            handle_internal_for_store("+923001234567", "what are people complaining about", store_id)
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "negative")
+
+    def test_router_reviews_command_passed_through_verbatim(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "reviews")), \
+             patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
+            handle_internal_for_store("+923001234567", "show me all the reviews", store_id)
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "reviews")
+
+    def test_router_chat_command_still_passes_original_text(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "chat")), \
+             patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
+            handle_internal_for_store("+923001234567", "how is our rating trending", store_id)
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "how is our rating trending")
+
+    def test_next_bypasses_llm_classifier_entirely(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        with patch("app.gateway.internal._classify_with_llm") as mock_classify, \
+             patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
+            handle_internal_for_store("+923001234567", "next", store_id)
+        mock_classify.assert_not_called()
+        mock_rep.assert_called_once()
+
+    def test_staff_help_text_lists_the_new_commands(self):
+        from app.gateway.internal import staff_help_text
+        text = staff_help_text("Test Cafe").lower()
+        assert "positive reviews" in text
+        assert "negative reviews" in text
+        assert "next" in text
