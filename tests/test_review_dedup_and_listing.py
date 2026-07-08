@@ -398,6 +398,38 @@ class TestListReviewsPage:
         reply = _list_reviews_page(store_id, "Cafe", "+923001234567", "positive", None)
         assert "date unknown" in reply
 
+    def test_instagram_reviews_dont_show_no_rating(self, store_id):
+        """Instagram content (posts/comments) never has a star rating --
+        that's not a data gap worth flagging on every single line the
+        way a genuinely missing Google Maps rating would be."""
+        from app.agents.reputation import _list_reviews_page
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Instagram - anatummyisb comment", "text": "so good", "rating": None,
+             "hash": "ig1", "url": "", "review_date": "2026-07-01"},
+            {"status": "auto_closed", "sentiment": "positive"},
+        )
+        reply = _list_reviews_page(store_id, "Cafe", "+923001234567", "positive", None)
+        assert "no rating" not in reply.lower()
+        assert "[Instagram, 2026-07-01]" in reply
+
+    def test_google_maps_review_still_shows_no_rating_when_missing(self, store_id):
+        """Unlike Instagram, a Google Maps review missing its rating IS
+        a real gap -- still worth showing."""
+        from app.agents.reputation import _list_reviews_page
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            {"source": "Google Maps - Anatummy", "text": "decent", "rating": None,
+             "hash": "gm1", "url": "", "review_date": "2026-07-01"},
+            {"status": "auto_closed", "sentiment": "positive"},
+        )
+        reply = _list_reviews_page(store_id, "Cafe", "+923001234567", "positive", None)
+        assert "no rating" in reply.lower()
+
     def test_no_matches_says_so_clearly(self, store_id):
         from app.agents.reputation import _list_reviews_page
         reply = _list_reviews_page(store_id, "Review Dedup Cafe", "+923001234567", "negative", None)
@@ -573,6 +605,38 @@ class TestInternalRoutingForReviewListing:
         assert "positive reviews" in text
         assert "negative reviews" in text
         assert "next" in text
+
+
+# ── _format_pending: same Instagram-rating fix ───────────────────────────────
+
+class TestFormatPendingRatingDisplay:
+    def test_instagram_pending_does_not_say_no_rating(self):
+        from app.agents.reputation import _format_pending
+        pending = {
+            "rating": None, "source_platform": "Instagram - anatummyisb comment",
+            "content_text": "so good", "ai_summary": {"draft_reply": "Thanks!"},
+        }
+        result = _format_pending(pending)
+        assert "no rating" not in result.lower()
+        assert "*Instagram*" in result
+
+    def test_google_maps_pending_still_says_no_rating_when_missing(self):
+        from app.agents.reputation import _format_pending
+        pending = {
+            "rating": None, "source_platform": "Google Maps - Anatummy",
+            "content_text": "decent", "ai_summary": {"draft_reply": "Thanks!"},
+        }
+        result = _format_pending(pending)
+        assert "no rating" in result.lower()
+
+    def test_rated_review_shows_stars_regardless_of_platform(self):
+        from app.agents.reputation import _format_pending
+        pending = {
+            "rating": 5.0, "source_platform": "Google Maps - Anatummy",
+            "content_text": "great", "ai_summary": {"draft_reply": "Thanks!"},
+        }
+        result = _format_pending(pending)
+        assert "5.0/5" in result
 
 
 # ── search_reviews_semantic: real embeddings, real similarity ───────────────

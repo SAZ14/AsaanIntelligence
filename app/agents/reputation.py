@@ -630,7 +630,16 @@ def _format_pending(pending: dict) -> str:
     summary = pending["ai_summary"]
     rating = pending.get("rating")
     stars = "⭐" * int(rating) if rating else ""
-    rating_str = f"{stars} {rating}/5" if rating is not None else "no rating"
+    is_instagram = (pending.get("source_platform") or "").startswith("Instagram")
+    if rating is not None:
+        rating_str = f"{stars} {rating}/5"
+    elif is_instagram:
+        # Instagram content never has a star rating -- not a data gap,
+        # nothing to flag here the way a genuinely missing Google Maps
+        # rating would be.
+        rating_str = "Instagram"
+    else:
+        rating_str = "no rating"
     excerpt = (pending.get("content_text") or "")[:150]
     draft = summary.get("draft_reply", "")
     return (
@@ -1243,12 +1252,16 @@ def _list_reviews_page(
     lines = [f"*{store_name}* - {label.capitalize()} reviews ({start}-{end} of {total}):\n"]
     for i, m in enumerate(matches, start):
         rating = m.get("rating")
-        stars = f"{rating}/5" if rating else "no rating"
         platform = "Instagram" if (m.get("source_platform") or "").startswith("Instagram") else "Google Maps"
+        # Instagram content (posts/comments) never has a star rating --
+        # showing "no rating" on every single line was just noise, not a
+        # real gap in the data. Google Maps reviews do have one, so still
+        # show it there (including the rare Google Maps row missing one).
+        rating_part = f", {rating}/5" if rating else (", no rating" if platform == "Google Maps" else "")
         post_date = m.get("post_date")
         date_str = post_date[:10] if post_date else "date unknown"
         excerpt = (m.get("content_text") or "")[:120]
-        lines.append(f"{i}. [{platform}, {stars}, {date_str}] {excerpt}")
+        lines.append(f"{i}. [{platform}{rating_part}, {date_str}] {excerpt}")
 
     next_offset = offset + len(matches)
     if next_offset < total:
