@@ -1,0 +1,37 @@
+/opt/venv/bin/python - << 'PYEOF'
+import time, json
+from app.gateway.customer import handle_customer_for_store
+
+STORE_ID = 5
+PHONE = "whatsapp:+15559988013"
+
+tests = [
+    ("New visitor greeting", "hi"),
+    ("Name registration",    "ZaidTest"),
+    ("Menu question",        "what burgers do you have and what are the prices?"),
+    ("Cheapest item",        "what's the cheapest thing I can get?"),
+    ("Location",             "where are you located?"),
+    ("Hours",                "what time do you open and close?"),
+    ("Delivery",             "do you guys deliver?"),
+    ("Stamp check",          "my stamps"),
+    ("Leaderboard",          "leaderboard"),
+    ("Random chat",          "what makes anatummy different from other burger places?"),
+]
+
+results = []
+SEP = "=" * 60
+
+for label, msg in tests:
+    print(f"\n{SEP}\n[{label}]\nUSER: {msg}", flush=True)
+    t0 = time.time()
+    reply = handle_customer_for_store(PHONE, msg, STORE_ID)
+    elapsed = time.time() - t0
+    print(f"BOT ({elapsed:.1f}s):\n{reply}", flush=True)
+    results.append({"label": label, "msg": msg, "reply": reply, "elapsed": round(elapsed, 1)})
+
+# Write to file so it can be read externally
+with open("/tmp/customer_test_results.json", "w") as f:
+    json.dump(results, f, indent=2)
+
+print(f"\n{SEP}\nResults saved to /tmp/customer_test_results.json")
+PYEOF

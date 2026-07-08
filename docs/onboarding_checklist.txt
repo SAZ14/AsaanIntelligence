@@ -1,0 +1,100 @@
+Hi! To get your restaurant fully set up on AsaanIntelligence, we need the following info. Please fill in as much as you can:
+
+---
+
+BASIC INFO
+1. Restaurant name:
+2. Your WhatsApp number (for owner/manager access):
+3. Any other staff WhatsApp numbers that need access:
+
+---
+
+LOYALTY PROGRAM (Customer Chatbot)
+4. How many stamps should a customer collect to earn a reward? (e.g. 5 or 10):
+5. What is the reward? (e.g. "a free dessert", "a free drink", "50% off next order"):
+6. How many days before we send a "we miss you" message to inactive customers? (e.g. 7 days):
+7. What should the QR code at checkout say? (e.g. "Scan to join Anatummy rewards and earn a free dessert!"):
+
+---
+
+MENU (Customer Chatbot)
+Please list all your items with prices, grouped by category. Example format:
+
+Burgers:
+- Classic Smash Burger - PKR 650
+- Double Smash Burger - PKR 950
+
+Sides:
+- Loaded Fries - PKR 450
+- Regular Fries - PKR 250
+
+Desserts:
+- Nutella Brownie - PKR 350
+
+Drinks:
+- Milkshake - PKR 400
+- Soft Drink - PKR 120
+
+(Add all your categories and items here)
+
+---
+
+LOCATION & HOURS (Customer Chatbot)
+8. Branch addresses (list all branches):
+   - Branch 1:
+   - Branch 2:
+   - Branch 3:
+
+9. Opening hours (if same for all branches):
+   - Days open:
+   - Opening time:
+   - Closing time:
+
+---
+
+CUSTOMER FAQS (Customer Chatbot)
+10. Do you offer delivery? If yes, how? (e.g. FoodPanda, own delivery):
+11. Do you take reservations? If yes, how?
+12. Any common allergen info customers ask about?
+13. Do you offer catering? Any details?
+14. Anything else customers frequently ask:
+
+---
+
+REVIEWS & REPUTATION
+15. Your restaurant name as it appears on Google Maps (may differ from trading name):
+16. Any location-specific Google search terms (e.g. "Anatummy F8", "Anatummy Beverly Centre"):
+17. Your FoodPanda restaurant page URL:
+18. Your Instagram username:
+
+---
+
+COMPETITORS (Competitive Scout)
+Please list your main competitors. For each one:
+
+Competitor 1:
+- Name:
+- Category (e.g. burgers, bakery, ice cream):
+- Instagram handle:
+- Website:
+
+Competitor 2:
+- Name:
+- Category:
+- Instagram handle:
+- Website:
+
+(Add as many as you like — the more the better)
+
+---
+
+POS DATA (Sales Analysis & Integrity Checks)
+19. Which POS system do you use? (e.g. Lightspeed, Square, custom):
+20. Please export and send 3 CSV files from your POS:
+    a. Sales/transactions (needs: order ID, item name, quantity, price, staff ID, date/time, payment method)
+    b. Menu (needs: item SKU/ID, name, price, cost price/COGS, category)
+    c. Staff (needs: staff ID, name, role)
+
+---
+
+That's everything! Once we have this we can have your full system live within 24 hours.

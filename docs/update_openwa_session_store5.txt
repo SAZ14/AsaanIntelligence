@@ -1,0 +1,16 @@
+/opt/venv/bin/python - << 'PYEOF'
+from app.core.db import SessionLocal, StoreOpenWASession
+
+with SessionLocal() as db:
+    row = db.query(StoreOpenWASession).filter(StoreOpenWASession.store_id == 5).first()
+    if row:
+        old = row.session_id
+        row.session_id = "NEW_SESSION_ID"
+        row.phone_number = "+923131778866"
+        db.commit()
+        print(f"Updated: {old} → {row.session_id}")
+    else:
+        db.add(StoreOpenWASession(store_id=5, session_id="NEW_SESSION_ID", phone_number="+923131778866"))
+        db.commit()
+        print("Inserted new session for store 5")
+PYEOF

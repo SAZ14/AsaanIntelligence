@@ -1,0 +1,12 @@
+/opt/venv/bin/python - << 'EOF'
+from app.core.db import SessionLocal, Store
+
+with SessionLocal() as db:
+    store = db.query(Store).filter(Store.id == 5).first()
+    old = store.location
+    store.location = "Skyline Tower, New Blue Area, Islamabad"
+    db.commit()
+    print(f"Updated Store.location")
+    print(f"  old: {old}")
+    print(f"  new: {store.location}")
+EOF

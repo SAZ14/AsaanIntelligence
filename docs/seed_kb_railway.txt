@@ -1,0 +1,60 @@
+/opt/venv/bin/python - << 'EOF'
+from app.core.db import SessionLocal, Competitor
+from sqlalchemy import text
+
+STORE_ID = 5
+
+# ── 1. Add city column if it doesn't exist ────────────────────────────────────
+with SessionLocal() as db:
+    db.execute(text("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS city VARCHAR"))
+    db.commit()
+    print("competitors.city column: ok")
+
+# ── 2. Remove junk/duplicate/wrong-city entries ───────────────────────────────
+REMOVE = {
+    "Meg",
+    "TBC (The Burger Co.)",
+    "Brim",
+    "Spread Lahore",
+    "Cravy Lahore",
+    "Tot Lahore",
+    "Global Trend: Burgers",
+    "Global Trend: Smash Burgers",
+    "Global Trend: Crispy Chicken",
+    "Global Trend: Loaded Fries",
+    "Global Trend: Fast Food",
+    "Faizan Hayat Khan",
+    "The Burgers (",
+    "Street Burger (",
+}
+
+with SessionLocal() as db:
+    rows = db.query(Competitor).filter(Competitor.store_id == STORE_ID).all()
+    removed, marked_primary, tagged_city = [], [], []
+
+    for r in rows:
+        if r.name in REMOVE:
+            db.delete(r)
+            removed.append(r.name)
+        else:
+            if r.name in ("TBC", "MEG"):
+                r.source = "primary"
+                marked_primary.append(r.name)
+            # Tag all remaining as Islamabad (store operates in Islamabad)
+            if not r.city:
+                r.city = "Islamabad"
+                tagged_city.append(r.name)
+
+    db.commit()
+    print(f"Removed ({len(removed)}): {removed}")
+    print(f"Marked primary: {marked_primary}")
+    print(f"Tagged city=Islamabad: {tagged_city}")
+
+    remaining = db.query(Competitor).filter(Competitor.store_id == STORE_ID).order_by(
+        Competitor.id
+    ).all()
+    print(f"\nFinal competitor list ({len(remaining)}):")
+    for c in remaining:
+        flag = " *PRIMARY*" if c.source == "primary" else ""
+        print(f"  [{c.city or '?':12}] {c.name}{flag}")
+EOF
