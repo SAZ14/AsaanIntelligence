@@ -29,8 +29,8 @@ def test_all_four_jobs_registered_with_expected_triggers():
     finally:
         scheduler.shutdown(wait=False)
 
-    assert jobs["scout_hourly_poll"] == "interval[1:00:00]"
-    assert jobs["reputation_check_hourly_poll"] == "interval[1:00:00]"
+    assert jobs["scout_10min_poll"] == "interval[0:10:00]"
+    assert jobs["reputation_check_10min_poll"] == "interval[0:10:00]"
     # existing jobs must survive the addition, not get clobbered
     assert "winback_daily" in jobs
     assert "leaderboard_sunday" in jobs

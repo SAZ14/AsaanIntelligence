@@ -1065,13 +1065,15 @@ def _classify_review_query(text: str) -> tuple[str | None, str | None]:
                     "filter. Reply with EXACTLY one line in the format sentiment,status "
                     "-- using 'none' for whichever axis isn't specified.\n"
                     "sentiment is one of: positive, negative, neutral, none\n"
-                    "status is one of: pending, posted, ignored, none\n"
+                    "status is one of: pending, posted, ignored, none -- 'ignored' also "
+                    "covers 'skip'/'skipped'/'what did we skip'\n"
                     "If the message is NOT asking to see/list reviews (a general "
                     "question, a command, small talk), reply exactly: none,none\n\n"
                     "Examples:\n"
                     "'show me positive reviews' -> positive,none\n"
                     "'what are the bad ones' -> negative,none\n"
                     "'list ignored reviews' -> none,ignored\n"
+                    "'what did we skip' -> none,ignored\n"
                     "'what did we already post' -> none,posted\n"
                     "'how is our rating trending' -> none,none\n"
                     "'check reviews' -> none,none"
@@ -1102,7 +1104,7 @@ def _classify_review_query_fallback(text: str) -> tuple[str | None, str | None]:
     elif re.search(r"\b(negative|bad|worst|complain\w*|unhapp\w*)\b", lower):
         sentiment = "negative"
     status = None
-    if re.search(r"\bignored?\b", lower):
+    if re.search(r"\b(ignored?|skipp?ed?)\b", lower):
         status = "ignored"
     elif re.search(r"\bposted?\b", lower):
         status = "posted"

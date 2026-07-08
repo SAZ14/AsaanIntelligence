@@ -39,29 +39,31 @@ def _start_scheduler() -> BackgroundScheduler:
         trigger="cron", day_of_week="sun", hour=18, minute=0,
         id="leaderboard_sunday", replace_existing=True,
     )
-    # Scout & reputation: poll hourly rather than on a fixed clock schedule.
-    # Both target functions check actual cache staleness themselves
-    # (run_scout_all via _is_scout_fresh, run_reputation_check_all via
-    # _check_reviews' own cache check) and no-op cheaply (a DB query, no
-    # Apify cost) when the cache is still warm -- so this fires every hour
-    # but only actually scrapes once a store's cache has genuinely gone
-    # stale. A fixed 3x/day cron drifted out of sync with real usage: e.g.
-    # a staff member's manual check at 14:16 left the 8h cache fresh until
-    # 22:16, but the fixed 22:00 slot landed 16 minutes early (wasted, cache
-    # hit) and the next slot wasn't until 06:00 the next day -- an 8h+ gap
-    # where the cache sat stale with nothing refreshing it. Polling hourly
-    # and checking real staleness syncs the next scrape to "last real
-    # scrape + freshness window" regardless of who triggered that scrape or
-    # what the clock says.
+    # Scout & reputation: poll every 10 minutes rather than on a fixed
+    # clock schedule. Both target functions check actual cache staleness
+    # themselves (run_scout_all via _is_scout_fresh, run_reputation_check_all
+    # via _check_reviews' own cache check, both Redis-backed and cheap on a
+    # hit) and no-op with zero Apify/LLM cost when the cache is still warm --
+    # so this fires every 10 min but only actually scrapes once a store's
+    # cache has genuinely gone stale. A fixed 3x/day cron drifted out of
+    # sync with real usage: e.g. a staff member's manual check at 14:16 left
+    # the 8h cache fresh until 22:16, but the fixed 22:00 slot landed 16
+    # minutes early (wasted, cache hit) and the next slot wasn't until 06:00
+    # the next day -- an 8h+ gap where the cache sat stale with nothing
+    # refreshing it. An earlier hourly poll narrowed that gap to up to ~60
+    # min after the cache actually went stale; 10 min narrows it further to
+    # ~10 min, still at negligible added cost since the poll itself is just
+    # a cheap Redis/DB staleness check regardless of frequency -- the
+    # expensive work only fires on a genuine miss, unchanged either way.
     scheduler.add_job(
         run_scout_all,
-        trigger="interval", hours=1,
-        id="scout_hourly_poll", replace_existing=True,
+        trigger="interval", minutes=10,
+        id="scout_10min_poll", replace_existing=True,
     )
     scheduler.add_job(
         run_reputation_check_all,
-        trigger="interval", hours=1,
-        id="reputation_check_hourly_poll", replace_existing=True,
+        trigger="interval", minutes=10,
+        id="reputation_check_10min_poll", replace_existing=True,
     )
     scheduler.start()
     return scheduler
