@@ -358,12 +358,13 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
     from datetime import datetime, timedelta
     from app.core.db import SessionLocal, ScoutRun as Run
     from app.gateway.main import _scout_rate_ok
+    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
 
     if not _scout_rate_ok(from_number):
         return "You've sent too many scout requests. Limit is 3 per hour, please wait before trying again."
 
     with SessionLocal() as db:
-        cutoff = datetime.utcnow() - timedelta(minutes=15)
+        cutoff = datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES)
         in_flight = db.query(Run).filter(
             Run.store_id == store_id,
             Run.status == "running",

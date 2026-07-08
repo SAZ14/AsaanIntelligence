@@ -399,3 +399,65 @@ def test_pipeline_store_name_unknown_store_returns_restaurant():
     from app.agents.scout.pipeline import _store_info
     name, category = _store_info(999999)
     assert name == "the restaurant"
+
+
+# ── In-flight guard: must cover the confirmed live scrape duration ──────────
+# A live scout run has been confirmed live to take 7-45 minutes. The
+# "is a run already in flight for this store" guard (gateway/internal.py's
+# _scout(), and its two twins in gateway/main.py) used to cut off at 15
+# minutes -- shorter than the observed max, meaning a genuinely still-
+# running scrape stopped being recognized as in flight partway through,
+# letting a second trigger start a duplicate concurrent scrape and waste
+# Apify credits. RUN_IN_FLIGHT_MINUTES (app/agents/scout/config.py) fixes
+# this; these tests pin its value and confirm the guard actually uses it.
+
+def test_run_in_flight_minutes_covers_the_confirmed_worst_case_duration():
+    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+    CONFIRMED_MAX_LIVE_SCRAPE_MINUTES = 45
+    assert RUN_IN_FLIGHT_MINUTES > CONFIRMED_MAX_LIVE_SCRAPE_MINUTES
+
+
+def test_scout_still_recognizes_a_scrape_running_20_minutes_as_in_flight(store_id):
+    """20 minutes in is past the old, too-short 15-minute cutoff but well
+    within a real scrape's confirmed 7-45 minute range -- must still be
+    treated as in flight, not double-triggered."""
+    from datetime import datetime, timedelta
+    from app.core.db import ScoutRun
+    from app.gateway.internal import _scout
+
+    with TestSession() as db:
+        db.add(ScoutRun(
+            store_id=store_id, command="scout", status="running",
+            started_at=datetime.utcnow() - timedelta(minutes=20),
+        ))
+        db.commit()
+
+    with patch("app.gateway.main._scout_rate_ok", return_value=True), \
+         patch("app.agents.scout.pipeline.run") as mock_run:
+        reply = _scout(store_id, "+923001234567", "what are competitors doing")
+
+    mock_run.assert_not_called()
+    assert "already running" in reply.lower()
+
+
+def test_scout_allows_a_fresh_attempt_after_a_run_is_truly_orphaned(store_id):
+    """A "running" row from 90 minutes ago is long past any real scrape
+    duration -- almost certainly an orphaned row from a crashed process,
+    not genuine ongoing work. Must not block forever."""
+    from datetime import datetime, timedelta
+    from app.core.db import ScoutRun
+    from app.gateway.internal import _scout
+
+    with TestSession() as db:
+        db.add(ScoutRun(
+            store_id=store_id, command="scout", status="running",
+            started_at=datetime.utcnow() - timedelta(minutes=90),
+        ))
+        db.commit()
+
+    with patch("app.gateway.main._scout_rate_ok", return_value=True), \
+         patch("app.agents.scout.pipeline.run", return_value="fresh report") as mock_run:
+        reply = _scout(store_id, "+923001234567", "what are competitors doing")
+
+    mock_run.assert_called_once()
+    assert reply == "fresh report"

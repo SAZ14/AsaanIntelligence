@@ -23,6 +23,18 @@ FRESHNESS_MINUTES = 1440            # use cached run if last scout was < 24 hour
 IG_POSTS_PER_PROFILE = 6           # posts scraped per Instagram profile
 MAX_NEW_COMPETITORS = 10            # max auto-discovered competitors added per run
 
+# A live run has been confirmed live to take anywhere from 7 to 45 minutes
+# (many Apify actors fanned out per store). The "is a run already in
+# flight for this store" guards (gateway/main.py x2, gateway/internal.py's
+# _scout()) use this to decide whether a "running" row still represents
+# real, ongoing work or a crashed/orphaned process that should no longer
+# block a fresh attempt. Must stay comfortably above the observed max
+# duration -- a cutoff shorter than that (previously 15 min, confirmed too
+# short) stops recognizing a genuinely still-running scrape as in flight
+# partway through, letting a second trigger start a duplicate concurrent
+# scrape for the same store and waste Apify credits.
+RUN_IN_FLIGHT_MINUTES = 60
+
 # --- Cost/relevance ceilings ---
 # Without these, a live run's cost scales unbounded with however many
 # competitors have accumulated (discovery only ever adds, never removes) and

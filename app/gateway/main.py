@@ -810,10 +810,11 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     if current_mode == MODE_INTERNAL:
         logger.info("gateway.webhook: store=%d mode=internal from=%s", store_id, from_number)
 
-        # Scout is long-running (2-10 min) — dispatch async, return immediate ack
+        # Scout is long-running (7-45 min, confirmed live) — dispatch async, return immediate ack
         if _is_scout_message(body):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
+            from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
 
             # 1. Per-user rate limit (3 per hour)
             if not _scout_rate_ok(from_number):
@@ -824,7 +825,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
             with SessionLocal() as _db:
                 # 2. Block if a run is already in flight for this store
-                cutoff_running = datetime.utcnow() - timedelta(minutes=15)
+                cutoff_running = datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES)
                 in_flight = _db.query(Run).filter(
                     Run.store_id == store_id,
                     Run.status == "running",
@@ -1008,6 +1009,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
         if _is_scout_message(body_text):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
+            from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
 
             if not _scout_rate_ok(from_number):
                 background_tasks.add_task(
@@ -1017,7 +1019,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
                 return "ok"
 
             with SessionLocal() as _db:
-                cutoff_running = datetime.utcnow() - timedelta(minutes=15)
+                cutoff_running = datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES)
                 in_flight = _db.query(Run).filter(
                     Run.store_id == store_id,
                     Run.status == "running",
