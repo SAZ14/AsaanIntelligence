@@ -506,3 +506,105 @@ class TestInternalRoutingForReviewListing:
         assert "positive reviews" in text
         assert "negative reviews" in text
         assert "next" in text
+
+
+# ── search_reviews_semantic: real embeddings, real similarity ───────────────
+# Fixes a real gap: _chat_about_reviews used to only ever see the 10 most
+# recent reviews (get_recent_reviews), so a free-form question about
+# something an OLDER review mentioned (confirmed live: stores accumulate
+# 300+ reviews) would never find it. This searches review TEXT content
+# by meaning, not recency. Uses the real sentence-transformers model
+# (already a project dependency) -- no mocking, since the whole point is
+# verifying genuine semantic relevance, not just that a function returns
+# something.
+
+class TestSearchReviewsSemantic:
+    def test_finds_the_semantically_relevant_review_not_just_keyword_match(self, store_id):
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        reviews = [
+            ("parking", "Could not find anywhere to park, took forever."),
+            ("coffee", "Best coffee in town, staff are lovely."),
+            ("wifi", "The wifi kept dropping the whole time I was working."),
+            ("cake", "The chocolate cake was rich and fresh."),
+        ]
+        for hash_, txt in reviews:
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(hash_, text=txt, rating=3.0), {"status": "auto_closed"},
+            )
+
+        # Deliberately no shared words with the "wifi" review's text --
+        # a keyword/LIKE search would miss this, semantic search shouldn't.
+        results = review_db.search_reviews_semantic(store_id, "internet connectivity problems", top_k=2)
+        assert results
+        assert results[0]["hash"] == "wifi"
+
+    def test_irrelevant_query_returns_nothing_forced(self, store_id):
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe", _raw_review("h1", text="Great ambiance and friendly staff.", rating=5.0),
+            {"status": "auto_closed"},
+        )
+        results = review_db.search_reviews_semantic(store_id, "staff uniform colors", top_k=5, min_similarity=0.5)
+        assert results == []
+
+    def test_finds_an_old_review_not_in_the_recent_sample(self, store_id):
+        """The actual bug being fixed: an old review outside get_recent_
+        reviews(limit=10)'s window must still be findable by content."""
+        from app.review_sources import db as review_db
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe",
+            _raw_review("old_parking", text="Parking was impossible to find nearby.", rating=2.0),
+            {"status": "auto_closed"},
+        )
+        # 12 newer reviews pushing the parking one out of a limit=10 recency window
+        for i in range(12):
+            review_db.save_review_finding(
+                store_id, run_id, "Cafe", _raw_review(f"newer{i}", text=f"Nice visit number {i}.", rating=4.0),
+                {"status": "auto_closed"},
+            )
+        recent = review_db.get_recent_reviews(store_id, limit=10)
+        assert "old_parking" not in {r["hash"] for r in recent}  # confirms the gap exists
+
+        results = review_db.search_reviews_semantic(store_id, "parking availability", top_k=3)
+        assert any(r["hash"] == "old_parking" for r in results)
+
+    def test_no_query_or_no_reviews_returns_empty_not_error(self, store_id):
+        from app.review_sources import db as review_db
+        assert review_db.search_reviews_semantic(store_id, "", top_k=5) == []
+        assert review_db.search_reviews_semantic(store_id, "anything", top_k=5) == []  # no reviews seeded
+
+
+class TestChatAboutReviewsBlending:
+    def test_relevant_and_recent_are_merged_without_duplicates(self, store_id):
+        from app.agents.reputation import _chat_about_reviews
+        from app.review_sources import db as review_db
+        from unittest.mock import MagicMock
+        run_id = _seed_run(store_id)
+        review_db.save_review_finding(
+            store_id, run_id, "Cafe", _raw_review("parking", text="No parking spots ever available.", rating=2.0),
+            {"status": "auto_closed"},
+        )
+
+        captured = {}
+        def fake_create(*args, **kwargs):
+            captured["messages"] = kwargs.get("messages")
+            resp = MagicMock()
+            resp.choices[0].message.content = "answer"
+            return resp
+
+        with patch("app.core.llm.get_client") as mock_get_client, \
+             patch("app.core.llm.get_model", return_value="glm-4.7"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.side_effect = fake_create
+            mock_get_client.return_value = mock_client
+            _chat_about_reviews(store_id, "Cafe", "any complaints about parking?")
+
+        system_msg = captured["messages"][0]["content"]
+        assert "MOST RELEVANT TO THE QUESTION" in system_msg
+        assert "No parking spots ever available" in system_msg
+        # Must appear exactly once, not duplicated across the relevant/recent sections
+        assert system_msg.count("No parking spots ever available") == 1

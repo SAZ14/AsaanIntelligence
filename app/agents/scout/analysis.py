@@ -277,6 +277,53 @@ def classify_intent(
     return "scout"
 
 
+def classify_target_competitor(message: str, competitor_names: list[str]) -> str | None:
+    """Which single competitor (if any) this free-form question is about,
+    or None for a general/multi-competitor question.
+
+    A different problem from classify_intent above (which command bucket)
+    -- this decides WHICH competitor, so pipeline.run() can fetch that
+    competitor's full finding history instead of the normal report
+    selection's REPORT_FINDINGS_PER_COMPETITOR=4 cap, which exists to
+    keep a many-competitor report balanced but is exactly the wrong
+    limit when a staff member asked about one specific competitor and
+    wants everything known about them, not four data points."""
+    if not competitor_names or not _cfg.ZAI_API_KEY:
+        return None
+    try:
+        from app.core.llm import get_fast_model
+        client = _get_client()
+        numbered = "\n".join(f"{i+1}. {name}" for i, name in enumerate(competitor_names))
+        system = (
+            "A restaurant owner is asking a question about their competitors. "
+            "Here is the exact list of competitors being tracked:\n"
+            f"{numbered}\n\n"
+            "If the question is asking about ONE SPECIFIC competitor from this list "
+            "(by name, a close/partial match, or an obvious nickname), reply with "
+            "EXACTLY that competitor's name as written above, nothing else.\n"
+            "If the question is general (asks about competitors overall, multiple "
+            "competitors, or doesn't clearly name one from the list), reply with "
+            "exactly: NONE\n"
+            "No punctuation, no explanation, just the name or NONE."
+        )
+        resp = client.chat.completions.create(
+            timeout=8.0,
+            model=get_fast_model(),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": message},
+            ],
+            temperature=0,
+            max_tokens=30,
+        )
+        answer = resp.choices[0].message.content.strip()
+        if answer in competitor_names:
+            return answer
+    except Exception as exc:
+        logger.warning("classify_target_competitor failed: %s", exc)
+    return None
+
+
 # Applied to every command instruction except "help". Confirmed live: with
 # the old flat "write 1-2 lines per competitor" instruction, a run that
 # processed 1500+ findings produced a report with a single throwaway

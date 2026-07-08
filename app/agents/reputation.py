@@ -1213,7 +1213,21 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
     from app.core.llm import get_client, get_model, nothink_kwargs
 
     pending = review_db.get_pending_finding(store_id)
-    recent_reviews = review_db.get_recent_reviews(store_id, limit=10)
+
+    # Two complementary sources instead of just "10 most recent": a store
+    # can accumulate hundreds of reviews (confirmed live: 300+), and a
+    # question like "has anyone complained about parking" needs to find
+    # that review regardless of how old it is -- recency alone would miss
+    # it entirely if it's not in the newest 10. Semantic search (matching
+    # against the actual review TEXT, same embedding pattern as the
+    # customer agent's KB search) surfaces what's relevant to THIS
+    # question; a small recent sample stays alongside it so general
+    # "how are we doing overall"-type questions -- where similarity to
+    # the question itself isn't meaningful -- still have something to go on.
+    relevant_reviews = review_db.search_reviews_semantic(store_id, text, top_k=15)
+    recent_reviews = review_db.get_recent_reviews(store_id, limit=5)
+    seen_ids = {r["id"] for r in relevant_reviews}
+    recent_reviews = [r for r in recent_reviews if r["id"] not in seen_ids]
 
     pending_ctx = ""
     if pending:
@@ -1227,19 +1241,32 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
             f"- Served by: {corr.get('matched_staff_name') or 'unknown'}\n"
         )
 
-    recent_ctx = "RECENT REVIEWS:\n"
-    if recent_reviews:
-        for i, r in enumerate(recent_reviews, 1):
-            recent_ctx += (
+    def _format_review_list(reviews: list[dict]) -> str:
+        lines = []
+        for i, r in enumerate(reviews, 1):
+            lines.append(
                 f"{i}. [{r.get('source')}] {r.get('rating') or 'N/A'}/5: "
-                f"\"{(r.get('text') or '')[:100]}\"\n"
+                f"\"{(r.get('text') or '')[:150]}\""
             )
+        return "\n".join(lines)
+
+    recent_ctx = "RECENT REVIEWS (general context):\n"
+    if relevant_reviews or recent_reviews:
+        if relevant_reviews:
+            recent_ctx = (
+                "REVIEWS MOST RELEVANT TO THE QUESTION BELOW (search the "
+                "actual review text, not just recency):\n"
+                + _format_review_list(relevant_reviews) + "\n\n"
+            )
+        if recent_reviews:
+            recent_ctx += "ALSO RECENT (general context):\n" + _format_review_list(recent_reviews) + "\n"
     else:
         recent_ctx += "(None, type CHECK to scrape new reviews)\n"
 
     system = (
         f"You assist the owner of '{store_name}' with review management on WhatsApp. "
-        "Be brief, direct and conversational.\n"
+        "Be brief, direct and conversational. If the reviews below don't "
+        "cover what's being asked, say so plainly instead of guessing.\n"
         "Commands: *POST* (mark draft as replied -- owner still has to post it "
         "on the actual platform themselves, we can't publish it for them), "
         "*EDIT <text>* (revise draft), "

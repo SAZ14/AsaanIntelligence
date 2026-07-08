@@ -4,7 +4,7 @@ Tests competitor seeding/isolation, discovery helpers, keyword routing,
 and _extract_business_name without hitting any external API.
 """
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from tests.conftest import seed_chain, seed_store, TestSession
 from app.agents.scout.config import COMPETITORS
@@ -501,3 +501,166 @@ def test_runs_own_lock_blocks_a_concurrent_call_and_releases_when_done(store_id,
     # Once released, a fresh attempt can proceed and re-acquire it.
     _cache.release_lock(key)
     assert _cache.try_lock(key, ttl_seconds=60) is True
+
+
+# ── Targeted competitor findings: real data, not the report-capped subset ───
+# Fixes a real gap: _select_report_findings deliberately caps each
+# competitor to REPORT_FINDINGS_PER_COMPETITOR=4 (to keep a many-
+# competitor report balanced), and build_report only ever sees the LATEST
+# run's findings anyway. A staff member asking specifically about one
+# named competitor should get everything on record for them across all
+# runs, not a 4-item, single-run slice.
+
+def _seed_scout_run(store_id, status="ok"):
+    from app.core.db import ScoutRun
+    with TestSession() as db:
+        run = ScoutRun(store_id=store_id, command="scout", status=status)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run.id
+
+
+def _seed_finding(store_id, run_id, competitor_name, text, update_type="post"):
+    from app.core.db import Finding
+    with TestSession() as db:
+        db.add(Finding(
+            store_id=store_id, run_id=run_id, competitor_name=competitor_name,
+            source_platform="Instagram", update_type=update_type,
+            content_text=text, content_hash=f"{competitor_name}-{text[:10]}-{run_id}",
+        ))
+        db.commit()
+
+
+class TestTargetedCompetitorFindings:
+    def test_fetches_across_all_runs_not_just_latest(self, store_id):
+        from app.agents.scout.pipeline import _get_all_findings_for_competitor
+        run1 = _seed_scout_run(store_id)
+        run2 = _seed_scout_run(store_id)
+        _seed_finding(store_id, run1, "Burger Lab", "Old 20% discount finding.")
+        _seed_finding(store_id, run2, "Burger Lab", "New loaded fries launch.")
+        _seed_finding(store_id, run2, "Rival Cafe", "Unrelated competitor's finding.")
+
+        results = _get_all_findings_for_competitor(store_id, "Burger Lab")
+        texts = {f.content_text for f in results}
+        assert "Old 20% discount finding." in texts
+        assert "New loaded fries launch." in texts
+        assert "Unrelated competitor's finding." not in texts
+
+    def test_excludes_review_type_findings(self, store_id):
+        """The findings table is shared with reputation -- a competitor
+        fetch must never accidentally pull in the store's OWN reviews
+        (competitor_name is set to the store's own name for those)."""
+        from app.agents.scout.pipeline import _get_all_findings_for_competitor
+        run_id = _seed_scout_run(store_id)
+        _seed_finding(store_id, run_id, "Sugar Rush", "5 star review text", update_type="review")
+        _seed_finding(store_id, run_id, "Sugar Rush", "A real competitor finding about Sugar Rush's namesake rival")
+
+        results = _get_all_findings_for_competitor(store_id, "Sugar Rush")
+        assert len(results) == 1
+        assert results[0].update_type != "review"
+
+    def test_respects_the_cap(self, store_id):
+        from app.agents.scout.pipeline import _get_all_findings_for_competitor, TARGETED_COMPETITOR_FINDINGS_LIMIT
+        run_id = _seed_scout_run(store_id)
+        for i in range(TARGETED_COMPETITOR_FINDINGS_LIMIT + 10):
+            _seed_finding(store_id, run_id, "Burger Lab", f"finding {i}")
+        results = _get_all_findings_for_competitor(store_id, "Burger Lab")
+        assert len(results) == TARGETED_COMPETITOR_FINDINGS_LIMIT
+
+
+class TestMaybeTargetCompetitor:
+    def test_no_user_message_leaves_findings_unchanged(self, store_id):
+        from app.agents.scout.pipeline import _maybe_target_competitor
+        sentinel = ["unchanged"]
+        assert _maybe_target_competitor(store_id, None, sentinel) is sentinel
+
+    def test_general_question_leaves_findings_unchanged(self, store_id):
+        from app.agents.scout.pipeline import _maybe_target_competitor
+        with patch("app.agents.scout.discovery.get_all_competitors",
+                    return_value=[{"name": "Burger Lab"}, {"name": "Rival Cafe"}]), \
+             patch("app.agents.scout.analysis.classify_target_competitor", return_value=None):
+            sentinel = ["unchanged"]
+            result = _maybe_target_competitor(store_id, "what are competitors doing overall", sentinel)
+        assert result is sentinel
+
+    def test_named_competitor_swaps_in_the_targeted_fetch(self, store_id):
+        from app.agents.scout.pipeline import _maybe_target_competitor
+        run1 = _seed_scout_run(store_id)
+        run2 = _seed_scout_run(store_id)
+        _seed_finding(store_id, run1, "Burger Lab", "Old finding about Burger Lab.")
+        _seed_finding(store_id, run2, "Burger Lab", "Newer finding about Burger Lab.")
+        _seed_finding(store_id, run2, "Rival Cafe", "Finding about a different competitor.")
+
+        with patch("app.agents.scout.discovery.get_all_competitors",
+                    return_value=[{"name": "Burger Lab"}, {"name": "Rival Cafe"}]), \
+             patch("app.agents.scout.analysis.classify_target_competitor", return_value="Burger Lab"):
+            result = _maybe_target_competitor(store_id, "what has Burger Lab been up to", ["placeholder"])
+
+        texts = {f.content_text for f in result}
+        assert "Old finding about Burger Lab." in texts
+        assert "Newer finding about Burger Lab." in texts
+        assert "Finding about a different competitor." not in texts
+
+    def test_errors_fall_back_to_original_findings(self, store_id):
+        from app.agents.scout.pipeline import _maybe_target_competitor
+        with patch("app.agents.scout.discovery.get_all_competitors", side_effect=RuntimeError("db down")):
+            sentinel = ["unchanged"]
+            result = _maybe_target_competitor(store_id, "what about Burger Lab", sentinel)
+        assert result is sentinel
+
+
+class TestClassifyTargetCompetitor:
+    """Structural correctness with a mocked LLM response -- tests run with
+    ZAI_API_KEY="" (conftest.py disables live calls by default, same as
+    the rest of this suite). Real-model accuracy is verified separately,
+    live, the same way other router/classifier prompts in this codebase
+    are (scratchpad scripts against the real API, not the committed
+    suite -- see this session's routing test scripts)."""
+
+    def _names(self):
+        return ["Burger Lab", "Cheezious", "OPTP", "Salt'n Pepper"]
+
+    def test_returns_the_llm_answer_when_it_matches_a_known_name(self):
+        from app.agents.scout import analysis
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = "Burger Lab"
+        with patch.object(analysis._cfg, "ZAI_API_KEY", "fake-key-for-test"), \
+             patch.object(analysis, "_get_client", return_value=mock_client), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            result = analysis.classify_target_competitor("what has Burger Lab been doing lately", self._names())
+        assert result == "Burger Lab"
+
+    def test_rejects_a_hallucinated_name_not_in_the_candidate_list(self):
+        """The LLM must be treated as untrusted here -- if it returns
+        something that isn't literally one of the known competitor names
+        (a hallucination, a typo, extra punctuation), fall back to None
+        (general question) rather than querying the DB for a competitor
+        that was never actually given as an option."""
+        from app.agents.scout import analysis
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = "Some Made Up Place"
+        with patch.object(analysis._cfg, "ZAI_API_KEY", "fake-key-for-test"), \
+             patch.object(analysis, "_get_client", return_value=mock_client), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            result = analysis.classify_target_competitor("tell me about them", self._names())
+        assert result is None
+
+    def test_none_answer_from_llm_means_general_question(self):
+        from app.agents.scout import analysis
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = "NONE"
+        with patch.object(analysis._cfg, "ZAI_API_KEY", "fake-key-for-test"), \
+             patch.object(analysis, "_get_client", return_value=mock_client), \
+             patch("app.core.llm.get_fast_model", return_value="glm-4-plus"):
+            result = analysis.classify_target_competitor("what are competitors doing this week", self._names())
+        assert result is None
+
+    def test_no_competitors_returns_none_without_calling_llm(self):
+        from app.agents.scout.analysis import classify_target_competitor
+        assert classify_target_competitor("what about Burger Lab", []) is None
+
+    def test_no_api_key_returns_none_without_calling_llm(self):
+        from app.agents.scout import analysis
+        with patch.object(analysis._cfg, "ZAI_API_KEY", ""):
+            assert analysis.classify_target_competitor("what about Burger Lab", self._names()) is None

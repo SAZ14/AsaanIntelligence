@@ -200,6 +200,16 @@ class Finding(Base):
     ai_summary = Column(Text, nullable=True)
     relevance_score = Column(Integer, nullable=True)
     content_hash = Column(String, nullable=False)
+    # JSON-encoded list[float] (all-MiniLM-L6-v2, 384-dim), not a native
+    # vector column -- unlike the KB's pgvector setup (a DB-native addition
+    # outside this repo's tracked schema), this stays plain Text so it
+    # works identically on SQLite (tests) and Postgres (prod) with no
+    # extension dependency. Similarity is computed in Python (same pattern
+    # as app/agents/customer/community/intent.py's menu-intent matching),
+    # not in SQL -- fine at the scale reviews/findings actually reach
+    # (hundreds, not millions) per store. NULL until backfilled/computed at
+    # write time; rows without one are simply skipped by semantic search.
+    content_embedding = Column(Text, nullable=True)
 
 
 class ScoutReport(Base):

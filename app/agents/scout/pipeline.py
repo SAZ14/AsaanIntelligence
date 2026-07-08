@@ -106,6 +106,67 @@ def _get_latest_run(store_id: int) -> tuple[Run | None, list[DBFinding]]:
         return run, findings
 
 
+TARGETED_COMPETITOR_FINDINGS_LIMIT = 30
+
+
+def _get_all_findings_for_competitor(store_id: int, competitor_name: str) -> list[DBFinding]:
+    """Every finding on record for ONE competitor, across all runs, most
+    recent first -- not the single latest run's already-report-capped
+    subset (_select_report_findings in analysis.py deliberately caps each
+    competitor to REPORT_FINDINGS_PER_COMPETITOR=4 to keep a many-
+    competitor report balanced, which is exactly the wrong limit when a
+    staff member asked about one specific competitor by name and wants
+    everything known about them). Findings are deduped by content_hash at
+    collection time (clean_findings' seen_hashes), so an old finding here
+    isn't accumulated noise -- it's a real historical signal, just capped
+    at TARGETED_COMPETITOR_FINDINGS_LIMIT so one very-tracked competitor
+    can't blow out the report context unboundedly."""
+    with SessionLocal() as db:
+        findings = (
+            db.query(DBFinding)
+            .filter(
+                DBFinding.store_id == store_id,
+                DBFinding.competitor_name == competitor_name,
+                DBFinding.update_type != "review",
+            )
+            .order_by(DBFinding.collected_at.desc(), DBFinding.id.desc())
+            .limit(TARGETED_COMPETITOR_FINDINGS_LIMIT)
+            .all()
+        )
+        db.expunge_all()
+        return findings
+
+
+def _maybe_target_competitor(
+    store_id: int, user_message: str | None, findings: list[FindingSchema],
+) -> list[FindingSchema]:
+    """If user_message clearly asks about one specific tracked competitor,
+    replace the normal (report-capped, spread-across-all-competitors)
+    findings with that competitor's full history instead. Falls through
+    to the original findings unchanged for general questions, when no
+    user_message is present, or when nothing matches -- never errors."""
+    if not user_message:
+        return findings
+    try:
+        from app.agents.scout.discovery import get_all_competitors
+        from app.agents.scout.analysis import classify_target_competitor
+        names = [c["name"] for c in get_all_competitors(store_id)]
+        target = classify_target_competitor(user_message, names)
+        if not target:
+            return findings
+        db_findings = _get_all_findings_for_competitor(store_id, target)
+        if not db_findings:
+            return findings
+        logger.info(
+            "scout.pipeline: targeted_competitor store=%d competitor=%r findings=%d",
+            store_id, target, len(db_findings),
+        )
+        return _findings_from_db(db_findings)
+    except Exception as exc:
+        logger.warning("scout.pipeline: _maybe_target_competitor failed: %s", exc)
+        return findings
+
+
 def _findings_from_db(db_findings: list[DBFinding]) -> list[FindingSchema]:
     results = []
     for f in db_findings:
@@ -265,6 +326,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
         if age < timedelta(minutes=freshness_minutes):
             logger.info("scout.pipeline: cache_hit run_id=%d age_min=%d", latest_run.id, int(age.total_seconds() / 60))
             findings = _findings_from_db(db_findings)
+            findings = _maybe_target_competitor(store_id, user_message, findings)
             freshness_note = _build_freshness_note(latest_run, is_live=False)
             enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
             return build_report(command, enriched, freshness_note, user_message=user_message,
@@ -359,7 +421,11 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
         if sources_failed:
             freshness_note += f" (partial, {', '.join(sources_failed)} failed)"
 
-        report_text = build_report(command, enriched, freshness_note, user_message=user_message,
+        # Storage/counting above uses the real freshly-scraped `enriched`
+        # unconditionally -- only what feeds the report itself swaps to a
+        # specific competitor's full history when the question asks for one.
+        report_findings = _maybe_target_competitor(store_id, user_message, enriched)
+        report_text = build_report(command, report_findings, freshness_note, user_message=user_message,
                                    store_name=store_name, store_category=store_category)
 
         with SessionLocal() as db:

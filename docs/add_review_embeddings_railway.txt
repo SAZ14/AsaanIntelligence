@@ -1,0 +1,39 @@
+/opt/venv/bin/python - << 'PYEOF'
+from app.core.db import SessionLocal, Finding
+from sqlalchemy import text
+import json
+
+# ── 1. Add content_embedding column if it doesn't exist ───────────────────────
+with SessionLocal() as db:
+    db.execute(text("ALTER TABLE findings ADD COLUMN IF NOT EXISTS content_embedding TEXT"))
+    db.commit()
+    print("findings.content_embedding column: ok")
+
+# ── 2. Backfill embeddings for existing reviews that don't have one yet ──────
+from app.core.embeddings import embedding_model
+model = embedding_model()
+if model is None:
+    print("ERROR: sentence_transformers model failed to load, cannot backfill. "
+          "New reviews will still get embeddings going forward once this works.")
+else:
+    with SessionLocal() as db:
+        rows = db.query(Finding).filter(
+            Finding.update_type == "review",
+            Finding.content_embedding.is_(None),
+        ).all()
+        print(f"Backfilling {len(rows)} review(s) without an embedding...")
+        done = 0
+        for f in rows:
+            if not f.content_text or not f.content_text.strip():
+                continue
+            try:
+                f.content_embedding = json.dumps(model.encode(f.content_text).tolist())
+                done += 1
+                if done % 50 == 0:
+                    db.commit()
+                    print(f"  ...{done} done")
+            except Exception as exc:
+                print(f"  skipped finding {f.id}: {exc}")
+        db.commit()
+        print(f"Backfill complete: {done}/{len(rows)} reviews now have embeddings.")
+PYEOF
