@@ -1904,7 +1904,7 @@ async def debug_freshness_cache_clear(store_id: int) -> JSONResponse:
 
 
 @app.post("/admin/debug/backfill_review_embeddings")
-async def debug_backfill_review_embeddings() -> JSONResponse:
+async def debug_backfill_review_embeddings(batch_size: int = 32) -> JSONResponse:
     """TEMPORARY — one-time backfill of Finding.content_embedding for
     existing reviews (added for reputation's semantic review search,
     app/review_sources/db.py's search_reviews_semantic). New reviews get
@@ -1912,7 +1912,13 @@ async def debug_backfill_review_embeddings() -> JSONResponse:
     Runs inside the actual web process, not a bare SSH shell -- the
     sentence-transformers model has a real, confirmed environment
     dependency (libstdc++/nix store dynamic linking) that only resolves
-    correctly in the deployed process's own runtime. Remove after use."""
+    correctly in the deployed process's own runtime. Remove after use.
+
+    Batch-encodes (one model.encode() call per batch_size texts, not one
+    call per review) and commits after each batch -- confirmed live that
+    one-encode-call-per-review takes 2-6s each, which would make a few
+    hundred reviews take many minutes and risk a killed/timed-out request
+    losing all progress since nothing had committed yet."""
     import json
     from app.core.db import SessionLocal, Finding
     from app.core.embeddings import embedding_model
@@ -1927,18 +1933,19 @@ async def debug_backfill_review_embeddings() -> JSONResponse:
             Finding.content_embedding.is_(None),
         ).all()
         total = len(rows)
+        embeddable = [f for f in rows if f.content_text and f.content_text.strip()]
+        skipped = total - len(embeddable)
         done = 0
-        skipped = 0
-        for f in rows:
-            if not f.content_text or not f.content_text.strip():
-                skipped += 1
-                continue
+        for i in range(0, len(embeddable), batch_size):
+            batch = embeddable[i:i + batch_size]
             try:
-                f.content_embedding = json.dumps(model.encode(f.content_text).tolist())
-                done += 1
+                vectors = model.encode([f.content_text for f in batch])
+                for f, vec in zip(batch, vectors):
+                    f.content_embedding = json.dumps(vec.tolist())
+                    done += 1
             except Exception:
-                skipped += 1
-        db.commit()
+                skipped += len(batch)
+            db.commit()
 
     return JSONResponse({"status": "ok", "total": total, "embedded": done, "skipped": skipped})
 
