@@ -440,12 +440,22 @@ def handle_customer_message(
             reply = _llm_generate(text, ctx, member, history, venue_name=config.venue_name)
         except Exception as exc:
             # LLM timed out or errored — answer from the KB directly rather
-            # than leaving the customer with no reply at all.
+            # than leaving the customer with no reply at all. Prefer the
+            # intent-specific docs (ALL menu/hours/location/delivery chunks
+            # that matched this query, not a vector-search top-k) over a
+            # `docs[:2]` slice -- confirmed live: for "show me ur whole
+            # menu" that slice landed on just 2 of 6 menu categories
+            # (STARTERS + DRINKS), silently passing off a partial menu as
+            # complete. Same fallback docs already used below for the
+            # price-grounding failure case.
             import logging as _logging
             _logging.getLogger(__name__).warning(
                 "customer.llm_generate failed store=%d: %s — serving KB fallback", store_id, exc
             )
-            if docs:
+            fallback_docs = [d for cat_docs in intent_docs.values() for d in cat_docs]
+            if fallback_docs:
+                reply = "\n\n".join(d["content"] for d in fallback_docs)
+            elif docs:
                 reply = "\n\n".join(d["content"] for d in docs[:2])
             else:
                 reply = f"Sorry {member.name}, I'm having trouble right now, please try again in a moment 🙏"

@@ -274,6 +274,49 @@ def test_no_llm_key_returns_help_fallback(monkeypatch):
     assert "receipt" in reply.body.lower() or "stamp" in reply.body.lower() or "hi" in reply.body.lower()
 
 
+def test_llm_timeout_fallback_serves_full_menu_not_two_chunks():
+    """When _llm_generate raises (e.g. a real 20s API timeout), the fallback
+    used to join docs[:2] -- an arbitrary vector-search-adjacent slice.
+    Confirmed live: for a "show me ur whole menu" query this landed on just
+    2 of 6 menu category chunks (STARTERS + DRINKS), silently passing off a
+    partial menu as the full one. The fallback must use ALL intent-matched
+    docs (here, every menu-category chunk) instead."""
+    menu_docs = [
+        {"content": "STARTERS — Burrhole Rs. 400"},
+        {"content": "DRINKS & SHAKES — Milkshakes Rs. 520"},
+        {"content": "CHICKEN BURGERS — Crispy Cure Rs. 700"},
+        {"content": "FRIES — Flatline Fries Rs. 300"},
+        {"content": "BEEF BURGERS — Prescription Patty Rs. 670"},
+        {"content": "WRAPS — Recovery Wrap Rs. 720"},
+    ]
+    with (
+        patch("app.agents.customer.agents.community_customer.load_venue_config",
+              return_value=DEFAULT_CONFIG),
+        patch("app.agents.customer.agents.community_customer.load_members",
+              return_value={PHONE: _member()}),
+        patch("app.agents.customer.agents.community_customer.load_onboarding_sessions",
+              return_value={}),
+        patch("app.agents.customer.agents.community_customer.load_chat_session",
+              return_value=[]),
+        patch("app.agents.customer.agents.community_customer.save_chat_session"),
+        patch("app.agents.customer.agents.community_customer._get_client",
+              return_value=MagicMock()),
+        patch("app.agents.customer.agents.community_customer._fetch_kb_by_category",
+              side_effect=lambda store_id, cat: menu_docs if cat == "menu" else []),
+        patch("app.agents.customer.agents.community_customer.search_knowledge_base",
+              return_value=[{"content": "Anatummy is a doctor-themed restaurant."}]),
+        patch("app.agents.customer.community.menu_context.build_menu_context",
+              return_value=""),
+        patch("app.agents.customer.community.intent.is_menu_intent", return_value=True),
+        patch("app.agents.customer.agents.community_customer._llm_generate",
+              side_effect=TimeoutError("simulated 20s API timeout")),
+    ):
+        reply = handle_customer_message(FROM_PHONE, "show me ur whole menu", STORE_ID)
+
+    for doc in menu_docs:
+        assert doc["content"] in reply.body
+
+
 # ── Stamp logic unit tests ────────────────────────────────────────────────────
 
 def test_apply_stamp_increments_counts():
