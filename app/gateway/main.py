@@ -835,31 +835,36 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                     "Scout is already running, your report will arrive in a few minutes. Please wait."
                 )
 
+            from app.core.db import ScoutReport
             with SessionLocal() as _db:
                 # 3. Return cached report if last successful run was recent (< 24h)
                 # ScoutRun maps to the "runs" table, shared with reputation
                 # (its checks write command="whatsapp_check" rows here too) --
                 # exclude those or a fresher reputation run gets mistaken for
-                # scout's own, finds no matching ScoutReport, and falls
-                # through to an unnecessary live scrape (confirmed live).
+                # scout's own. Also require a matching ScoutReport: pipeline.py's
+                # run() commits Run.status="ok" BEFORE build_report()/Report are
+                # saved, so a run interrupted in that gap (deploy restart, LLM
+                # timeout) is permanently "ok" with no report -- picking that
+                # over an older run that DOES have one falls through to an
+                # unnecessary live scrape (confirmed live).
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
-                cached_run = _db.query(Run).filter(
-                    Run.store_id == store_id,
-                    Run.status.in_(["ok", "partial"]),
-                    Run.command != "whatsapp_check",
-                    Run.finished_at >= cutoff_cache,
-                ).order_by(Run.finished_at.desc()).first()
+                cached_run, saved = (
+                    _db.query(Run, ScoutReport)
+                    .join(ScoutReport, ScoutReport.run_id == Run.id)
+                    .filter(
+                        Run.store_id == store_id,
+                        Run.status.in_(["ok", "partial"]),
+                        Run.command != "whatsapp_check",
+                        Run.finished_at >= cutoff_cache,
+                    )
+                    .order_by(Run.finished_at.desc())
+                    .first()
+                ) or (None, None)
+                cached_text = saved.report_text if saved else None
 
             if cached_run:
                 age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
                 logger.info("gateway.webhook: scout_cache_hit store=%d age_min=%d", store_id, age_min)
-                from app.core.db import ScoutReport
-                with SessionLocal() as _db:
-                    saved = _db.query(ScoutReport).filter(
-                        ScoutReport.store_id == store_id,
-                        ScoutReport.run_id == cached_run.id,
-                    ).order_by(ScoutReport.id.desc()).first()
-                    cached_text = saved.report_text if saved else None
                 if cached_text:
                     logger.info("gateway.webhook: scout_cache_serve store=%d chunks=%d", store_id, len(cached_text) // 1500 + 1)
                     return _twiml_chunks(cached_text)
@@ -1032,30 +1037,35 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
                 )
                 return "ok"
 
+            from app.core.db import ScoutReport
             with SessionLocal() as _db:
                 # ScoutRun maps to the "runs" table, shared with reputation
                 # (its checks write command="whatsapp_check" rows here too) --
                 # exclude those or a fresher reputation run gets mistaken for
-                # scout's own, finds no matching ScoutReport, and falls
-                # through to an unnecessary live scrape (confirmed live).
+                # scout's own. Also require a matching ScoutReport: pipeline.py's
+                # run() commits Run.status="ok" BEFORE build_report()/Report are
+                # saved, so a run interrupted in that gap (deploy restart, LLM
+                # timeout) is permanently "ok" with no report -- picking that
+                # over an older run that DOES have one falls through to an
+                # unnecessary live scrape (confirmed live).
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
-                cached_run = _db.query(Run).filter(
-                    Run.store_id == store_id,
-                    Run.status.in_(["ok", "partial"]),
-                    Run.command != "whatsapp_check",
-                    Run.finished_at >= cutoff_cache,
-                ).order_by(Run.finished_at.desc()).first()
+                cached_run, saved = (
+                    _db.query(Run, ScoutReport)
+                    .join(ScoutReport, ScoutReport.run_id == Run.id)
+                    .filter(
+                        Run.store_id == store_id,
+                        Run.status.in_(["ok", "partial"]),
+                        Run.command != "whatsapp_check",
+                        Run.finished_at >= cutoff_cache,
+                    )
+                    .order_by(Run.finished_at.desc())
+                    .first()
+                ) or (None, None)
+                cached_text = saved.report_text if saved else None
 
             if cached_run:
                 age_min = int((datetime.utcnow() - cached_run.finished_at).total_seconds() / 60)
                 logger.info("%s: scout_cache_hit store=%d age_min=%d", log_prefix, store_id, age_min)
-                from app.core.db import ScoutReport
-                with SessionLocal() as _db:
-                    saved = _db.query(ScoutReport).filter(
-                        ScoutReport.store_id == store_id,
-                        ScoutReport.run_id == cached_run.id,
-                    ).order_by(ScoutReport.id.desc()).first()
-                    cached_text = saved.report_text if saved else None
                 if cached_text:
                     logger.info("%s: scout_cache_serve store=%d", log_prefix, store_id)
                     background_tasks.add_task(send_fn, cached_text)

@@ -228,6 +228,48 @@ def test_scout_cache_hit_not_confused_by_fresher_reputation_run(client, db_state
     assert "Cached scout report from earlier today." in body
 
 
+def test_scout_cache_hit_falls_back_past_reportless_run(client, db_state):
+    """pipeline.py's run() commits Run.status="ok" before build_report() and
+    the ScoutReport are saved. A run interrupted in that gap (deploy restart,
+    LLM timeout) leaves a permanently "ok" run with no report. The cache-hit
+    query must skip that run and fall back to an older run that DOES have a
+    report, rather than treating "most recent ok run" and "most recent
+    servable report" as the same thing (confirmed live in production)."""
+    from datetime import datetime, timedelta
+    from app.core.db import ScoutRun, ScoutReport
+
+    store_id = db_state["store_a"]
+    now = datetime.utcnow()
+    with TestSession() as db:
+        older_run = ScoutRun(
+            store_id=store_id, command="scout", status="ok",
+            started_at=now - timedelta(hours=10, minutes=5),
+            finished_at=now - timedelta(hours=10),
+        )
+        db.add(older_run)
+        db.commit()
+        db.refresh(older_run)
+        db.add(ScoutReport(
+            store_id=store_id, run_id=older_run.id, command="scout",
+            report_text="Older but complete scout report.",
+        ))
+        # Newer run, marked "ok", but interrupted before its report was saved.
+        db.add(ScoutRun(
+            store_id=store_id, command="scout", status="ok",
+            started_at=now - timedelta(minutes=20),
+            finished_at=now - timedelta(minutes=18),
+        ))
+        db.commit()
+
+    _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")  # enter internal mode
+    with patch("app.gateway.main._bg_scout") as mock_bg:
+        r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "scout")
+
+    mock_bg.assert_not_called()
+    body = _body(r)
+    assert "Older but complete scout report." in body
+
+
 def test_staff_internal_revenue_message_routed(client, db_state):
     _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")
     with (
