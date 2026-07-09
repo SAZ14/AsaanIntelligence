@@ -569,6 +569,34 @@ class TestTargetedCompetitorFindings:
         assert len(results) == TARGETED_COMPETITOR_FINDINGS_LIMIT
 
 
+class TestAllContentHashes:
+    """seen_hashes used to be seeded only from _get_latest_run()'s single
+    most recent run, so content unchanged since two-runs-ago looked "new"
+    again on every scrape and got re-stored as a duplicate row -- confirmed
+    live: 371 duplicate content_hash groups, some competitor reviews stored
+    6 times. _all_content_hashes must return hashes across ALL runs."""
+
+    def test_includes_hashes_from_every_run_not_just_latest(self, store_id):
+        from app.agents.scout.pipeline import _all_content_hashes
+        run1 = _seed_scout_run(store_id)
+        run2 = _seed_scout_run(store_id)
+        _seed_finding(store_id, run1, "Burger Lab", "Old review text one.")
+        _seed_finding(store_id, run2, "Burger Lab", "Newer review text two.")
+
+        hashes = _all_content_hashes(store_id)
+        assert f"Burger Lab-Old review-{run1}" in hashes
+        assert f"Burger Lab-Newer revi-{run2}" in hashes
+
+    def test_scoped_to_the_store(self, two_store_ids):
+        from app.agents.scout.pipeline import _all_content_hashes
+        store_a, store_b = two_store_ids
+        run_a = _seed_scout_run(store_a)
+        _seed_finding(store_a, run_a, "Burger Lab", "Store A only finding.")
+
+        hashes_b = _all_content_hashes(store_b)
+        assert f"Burger Lab-Store A on-{run_a}" not in hashes_b
+
+
 class TestMaybeTargetCompetitor:
     def test_no_user_message_leaves_findings_unchanged(self, store_id):
         from app.agents.scout.pipeline import _maybe_target_competitor

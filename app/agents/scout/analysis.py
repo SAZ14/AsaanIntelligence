@@ -255,19 +255,21 @@ def classify_intent(
     if not _cfg.ZAI_API_KEY:
         return "scout"
     try:
-        from app.core.llm import get_fast_model
+        from app.core.llm import get_fast_model, nothink_kwargs
         client = _get_client()
+        fast_model = get_fast_model()
         # 10-token classification — fast non-reasoning model, not the
         # thinking model used for report generation in _chat().
         resp = client.chat.completions.create(
             timeout=8.0,
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {"role": "system", "content": _intent_system(store_name, store_category)},
                 {"role": "user", "content": message},
             ],
             temperature=0,
             max_tokens=10,
+            **nothink_kwargs(fast_model),
         )
         intent = resp.choices[0].message.content.strip().lower()
         if intent in _VALID_INTENTS:
@@ -291,8 +293,9 @@ def classify_target_competitor(message: str, competitor_names: list[str]) -> str
     if not competitor_names or not _cfg.ZAI_API_KEY:
         return None
     try:
-        from app.core.llm import get_fast_model
+        from app.core.llm import get_fast_model, nothink_kwargs
         client = _get_client()
+        fast_model = get_fast_model()
         numbered = "\n".join(f"{i+1}. {name}" for i, name in enumerate(competitor_names))
         system = (
             "A restaurant owner is asking a question about their competitors. "
@@ -308,13 +311,14 @@ def classify_target_competitor(message: str, competitor_names: list[str]) -> str
         )
         resp = client.chat.completions.create(
             timeout=8.0,
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": message},
             ],
             temperature=0,
             max_tokens=30,
+            **nothink_kwargs(fast_model),
         )
         answer = resp.choices[0].message.content.strip()
         if answer in competitor_names:

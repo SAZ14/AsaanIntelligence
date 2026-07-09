@@ -1157,10 +1157,11 @@ def _classify_review_query(text: str) -> tuple[str | None, str | None]:
     Classifying intent here and then querying the DB directly (list_reviews)
     keeps the actual filtering deterministic and exact."""
     try:
-        from app.core.llm import get_client, get_fast_model
+        from app.core.llm import get_client, get_fast_model, nothink_kwargs
         client = get_client()
+        fast_model = get_fast_model()
         resp = client.chat.completions.create(
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {"role": "system", "content": (
                     "Classify whether this WhatsApp message from a restaurant owner is "
@@ -1186,6 +1187,7 @@ def _classify_review_query(text: str) -> tuple[str | None, str | None]:
             temperature=0,
             max_tokens=10,
             timeout=8.0,
+            **nothink_kwargs(fast_model),
         )
         result = resp.choices[0].message.content.strip().lower()
         sentiment, _, status = result.partition(",")
@@ -1260,10 +1262,11 @@ def _detect_sentiment_lean(text: str) -> str | None:
     that by excluding the wrong-polarity matches entirely rather than
     just topically-adjacent ones."""
     try:
-        from app.core.llm import get_client, get_fast_model
+        from app.core.llm import get_client, get_fast_model, nothink_kwargs
         client = get_client()
+        fast_model = get_fast_model()
         resp = client.chat.completions.create(
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {"role": "system", "content": (
                     "A restaurant owner is asking a free-form question about their "
@@ -1289,6 +1292,7 @@ def _detect_sentiment_lean(text: str) -> str | None:
             temperature=0,
             max_tokens=5,
             timeout=8.0,
+            **nothink_kwargs(fast_model),
         )
         answer = resp.choices[0].message.content.strip().lower()
         return answer if answer in ("positive", "negative") else None
@@ -1317,11 +1321,12 @@ def _detect_time_range(text: str) -> int | None:
     if not text or not text.strip():
         return None
     try:
-        from app.core.llm import get_client, get_fast_model
+        from app.core.llm import get_client, get_fast_model, nothink_kwargs
         client = get_client()
+        fast_model = get_fast_model()
         today = datetime.utcnow().strftime("%Y-%m-%d")
         resp = client.chat.completions.create(
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {"role": "system", "content": (
                     f"Today's date is {today}. Does this message ask for "
@@ -1345,6 +1350,7 @@ def _detect_time_range(text: str) -> int | None:
             temperature=0,
             max_tokens=5,
             timeout=8.0,
+            **nothink_kwargs(fast_model),
         )
         answer = resp.choices[0].message.content.strip().lower()
         if answer == "none":

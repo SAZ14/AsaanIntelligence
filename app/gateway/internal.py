@@ -96,8 +96,9 @@ def _is_shorthand(text: str) -> bool:
 def _classify_with_llm(text: str) -> tuple[str, str]:
     """Return (agent, command) via ZAI. Falls back to keyword routing."""
     try:
-        from app.core.llm import get_client, get_fast_model
+        from app.core.llm import get_client, get_fast_model, nothink_kwargs
         client = get_client()
+        fast_model = get_fast_model()
 
         # FIX: hardcoded system prompt for message router -> store in module or config
         system = (
@@ -171,7 +172,7 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
         # API stalls, the keyword fallback below routes instead of making
         # staff wait out an API hiccup.
         resp = client.chat.completions.create(
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": text},
@@ -179,6 +180,7 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
             temperature=0,
             max_tokens=25,
             timeout=8.0,
+            **nothink_kwargs(fast_model),
         )
         result = resp.choices[0].message.content.strip().lower()
         if "/" in result:
@@ -201,7 +203,7 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
 def _adapt_response(original_query: str, raw_response: str) -> str:
     """Reframe the raw agent output as a direct conversational answer."""
     try:
-        from app.core.llm import get_client, get_fast_model
+        from app.core.llm import get_client, get_fast_model, nothink_kwargs
         try:
             client = get_client()
         except RuntimeError:
@@ -210,9 +212,10 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
         # numbers intact just as reliably (1.5s vs 17.7s measured live).
         # Timeout: the raw agent reply is already a complete answer, so a
         # stalled rewrite is never worth waiting for.
+        fast_model = get_fast_model()
         resp = client.chat.completions.create(
             timeout=12.0,
-            model=get_fast_model(),
+            model=fast_model,
             messages=[
                 {
                     "role": "system",
@@ -233,6 +236,7 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
             ],
             temperature=0.3,
             max_tokens=700,
+            **nothink_kwargs(fast_model),
         )
         adapted = resp.choices[0].message.content.strip()
         logger.info("internal.adapt_response: adapted %d chars -> %d chars", len(raw_response), len(adapted))

@@ -76,6 +76,22 @@ def _dump_raw(run_id: int, source: str, data: object) -> None:
         logger.warning("Failed to dump raw data to %s: %s", path, exc)
 
 
+def _all_content_hashes(store_id: int) -> set[str]:
+    """Every content_hash ever stored for this store, across ALL scout runs
+    -- not just the latest one. Used to seed dedup so the same unchanged
+    competitor review/post doesn't get re-stored as a "new" finding on
+    every scrape cycle. Confirmed live: seeding dedup from only the single
+    latest run's findings (via _get_latest_run) left content unchanged
+    since two-runs-ago looking "new" again each time, accumulating up to 6
+    duplicate copies of the same review across the store's run history
+    (371 duplicate content_hash groups found on audit). Mirrors
+    review_sources/db.py's existing_content_hashes(), which reputation's
+    own pipeline already does correctly for the same reason."""
+    with SessionLocal() as db:
+        rows = db.query(DBFinding.content_hash).filter(DBFinding.store_id == store_id).all()
+        return {r[0] for r in rows}
+
+
 def _get_latest_run(store_id: int) -> tuple[Run | None, list[DBFinding]]:
     """The "runs" table is shared with the reputation agent (its own review
     checks write command="whatsapp_check" rows to the exact same table).
@@ -390,10 +406,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             store_id, sources_ok, sources_failed, len(raw_findings),
         )
 
-        seen_hashes: set[str] = set()
-        if latest_run:
-            for dbf in db_findings:
-                seen_hashes.add(dbf.content_hash)
+        seen_hashes = _all_content_hashes(store_id)
 
         cleaned = clean_findings(raw_findings, seen_hashes=seen_hashes)
         logger.info("scout.pipeline: dedup store=%d raw=%d cleaned=%d", store_id, len(raw_findings), len(cleaned))
