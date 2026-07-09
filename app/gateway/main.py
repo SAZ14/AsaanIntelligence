@@ -837,10 +837,16 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
             with SessionLocal() as _db:
                 # 3. Return cached report if last successful run was recent (< 24h)
+                # ScoutRun maps to the "runs" table, shared with reputation
+                # (its checks write command="whatsapp_check" rows here too) --
+                # exclude those or a fresher reputation run gets mistaken for
+                # scout's own, finds no matching ScoutReport, and falls
+                # through to an unnecessary live scrape (confirmed live).
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
                 cached_run = _db.query(Run).filter(
                     Run.store_id == store_id,
                     Run.status.in_(["ok", "partial"]),
+                    Run.command != "whatsapp_check",
                     Run.finished_at >= cutoff_cache,
                 ).order_by(Run.finished_at.desc()).first()
 
@@ -1027,10 +1033,16 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
                 return "ok"
 
             with SessionLocal() as _db:
+                # ScoutRun maps to the "runs" table, shared with reputation
+                # (its checks write command="whatsapp_check" rows here too) --
+                # exclude those or a fresher reputation run gets mistaken for
+                # scout's own, finds no matching ScoutReport, and falls
+                # through to an unnecessary live scrape (confirmed live).
                 cutoff_cache = datetime.utcnow() - timedelta(hours=24)
                 cached_run = _db.query(Run).filter(
                     Run.store_id == store_id,
                     Run.status.in_(["ok", "partial"]),
+                    Run.command != "whatsapp_check",
                     Run.finished_at >= cutoff_cache,
                 ).order_by(Run.finished_at.desc()).first()
 

@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from tests.conftest import seed_chain, seed_store, seed_twilio, seed_member
+from tests.conftest import seed_chain, seed_store, seed_twilio, seed_member, TestSession
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -182,6 +182,50 @@ def test_staff_internal_scout_message_routed(client, db_state):
     # Immediate reply should mention the wait time
     body = _body(r)
     assert "7-10" in body or "minutes" in body or "competitors" in body.lower()
+
+
+def test_scout_cache_hit_not_confused_by_fresher_reputation_run(client, db_state):
+    """The "runs" table is shared: reputation's own checks write
+    command="whatsapp_check" rows to it too. If a reputation check completes
+    more recently than scout's last run, the cache-hit query must not pick
+    up that reputation run as if it were scout's own — it has no matching
+    ScoutReport, which used to make the handler wrongly fall through to a
+    live re-scrape even though scout's real cache was still fresh
+    (confirmed live in production)."""
+    from datetime import datetime, timedelta
+    from app.core.db import ScoutRun, ScoutReport
+
+    store_id = db_state["store_a"]
+    now = datetime.utcnow()
+    with TestSession() as db:
+        scout_run = ScoutRun(
+            store_id=store_id, command="scout", status="ok",
+            started_at=now - timedelta(hours=9, minutes=20),
+            finished_at=now - timedelta(hours=9, minutes=18),
+        )
+        db.add(scout_run)
+        db.commit()
+        db.refresh(scout_run)
+        db.add(ScoutReport(
+            store_id=store_id, run_id=scout_run.id, command="scout",
+            report_text="Cached scout report from earlier today.",
+        ))
+        # Reputation's own run, more recent than scout's, same shared table.
+        db.add(ScoutRun(
+            store_id=store_id, command="whatsapp_check", status="ok",
+            started_at=now - timedelta(minutes=345),
+            finished_at=now - timedelta(minutes=343),
+        ))
+        db.commit()
+
+    _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")  # enter internal mode
+    with patch("app.gateway.main._bg_scout") as mock_bg:
+        r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "scout")
+
+    # Should serve the cached scout report instantly, not dispatch a live scan.
+    mock_bg.assert_not_called()
+    body = _body(r)
+    assert "Cached scout report from earlier today." in body
 
 
 def test_staff_internal_revenue_message_routed(client, db_state):
