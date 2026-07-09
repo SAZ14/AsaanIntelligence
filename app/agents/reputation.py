@@ -696,7 +696,7 @@ def _format_pending(pending: dict) -> str:
         rating_str = "Instagram"
     else:
         rating_str = "no rating"
-    excerpt = (pending.get("content_text") or "")[:150]
+    excerpt = _excerpt(pending.get("content_text") or "", 200)
     draft = summary.get("draft_reply", "")
     return (
         f"*{rating_str}*\n"
@@ -1216,6 +1216,18 @@ def _classify_review_query_fallback(text: str) -> tuple[str | None, str | None]:
     return sentiment, status
 
 
+def _excerpt(text: str, limit: int) -> str:
+    """Truncate for display, but say so -- confirmed live: the old hard
+    cut with no marker made a review stop mid-sentence with no
+    indication anything was cut, reading as missing/corrupted data
+    (the actual stored text was always complete; this was purely a
+    display issue, not an Apify scraping gap)."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
 def _filter_label(sentiment: str | None, status: str | None, days_back: int | None = None) -> str:
     parts = [p for p in (sentiment, status) if p]
     label = " ".join(parts) if parts else "all"
@@ -1413,7 +1425,7 @@ def _list_reviews_page(
         rating_part = f", {rating}/5" if rating else (", no rating" if platform == "Google Maps" else "")
         post_date = m.get("post_date")
         date_str = post_date[:10] if post_date else "date unknown"
-        excerpt = (m.get("content_text") or "")[:120]
+        excerpt = _excerpt(m.get("content_text") or "", 200)
         lines.append(f"{i}. [{platform}{rating_part}, {date_str}] {excerpt}")
 
     next_offset = offset + len(matches)

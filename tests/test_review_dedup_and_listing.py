@@ -626,6 +626,36 @@ class TestClassifyReviewQuery:
         assert sentiment == "negative"
 
 
+# ── _excerpt: truncate but say so ────────────────────────────────────────────
+# Confirmed live: the old hard [:120]/[:150] cut with no marker at all made
+# a long review just stop mid-sentence -- "...were " with nothing after it
+# -- which read as missing/corrupted data even though the full text was
+# always intact in the DB (confirmed: not an Apify scraping gap, purely a
+# display issue). 45 of 198 real Anatummy reviews exceeded the old cutoff.
+
+class TestExcerpt:
+    def test_short_text_returned_unchanged(self):
+        from app.agents.reputation import _excerpt
+        assert _excerpt("short text", 120) == "short text"
+
+    def test_long_text_gets_ellipsis_marker(self):
+        from app.agents.reputation import _excerpt
+        long_text = "a" * 300
+        result = _excerpt(long_text, 120)
+        assert result.endswith("...")
+        assert len(result) == 123  # 120 chars + "..."
+
+    def test_exactly_at_limit_not_truncated(self):
+        from app.agents.reputation import _excerpt
+        text = "a" * 120
+        assert _excerpt(text, 120) == text
+
+    def test_empty_text_returns_empty(self):
+        from app.agents.reputation import _excerpt
+        assert _excerpt("", 120) == ""
+        assert _excerpt(None, 120) == ""
+
+
 # ── _list_reviews_page (formatting + pagination) ─────────────────────────────
 
 class TestListReviewsPage:
