@@ -323,6 +323,37 @@ def _store_info(store_id: int) -> tuple[str, str]:
         return name, category
 
 
+def answer_from_cache(store_id: int, user_message: str) -> str:
+    """Answer a natural-language scout question using only what's already
+    stored -- NEVER dispatches a live Apify scrape, no matter how stale the
+    cache is. A live scrape is expensive (7-45 min, real Apify credits) and
+    reserved for the explicit "scout" command and the scheduled cron; a
+    free-form question like "what's Burger Lab been up to" should always
+    answer instantly from cache instead. This also sidesteps a real bug a
+    live natural-language run used to cause: run()'s live path saves a new
+    Run + ScoutReport row under command="scout", so a targeted question's
+    narrow, single-competitor answer became the most recent "scout" report
+    -- overwriting what a plain "scout" request would serve next, even
+    though it never actually re-scraped everything. Since this path never
+    calls run()'s live branch, it never writes a Run/Report row at all, so
+    there's nothing for a later plain "scout" to collide with.
+
+    If the message names one specific tracked competitor, answers from
+    that competitor's full history (_maybe_target_competitor); otherwise
+    uses the latest run's findings, however old they are."""
+    store_name, store_category = _store_info(store_id)
+    latest_run, db_findings = _get_latest_run(store_id)
+    if latest_run is None:
+        return build_report("scout", [], "Data: no scan yet", user_message=user_message,
+                            store_name=store_name, store_category=store_category)
+    findings = _findings_from_db(db_findings)
+    findings = _maybe_target_competitor(store_id, user_message, findings)
+    freshness_note = _build_freshness_note(latest_run, is_live=False)
+    enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
+    return build_report("scout", enriched, freshness_note, user_message=user_message,
+                        store_name=store_name, store_category=store_category)
+
+
 def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINUTES,
         user_message: str | None = None) -> str:
     t0 = time.monotonic()

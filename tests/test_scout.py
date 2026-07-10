@@ -423,10 +423,10 @@ def test_pipeline_store_name_unknown_store_returns_restaurant():
 # callers whose checks landed within the same window could both decide
 # to proceed independently, since the check and the row write weren't
 # atomic). Replaced with an atomic Redis lock (SET NX -- cache.try_lock),
-# checked identically by every caller: the cron poll, gateway/main.py's
-# two dispatch sites, and gateway/internal.py's _scout() fallback tested
-# here. These tests cover the lock mechanism directly and confirm _scout()
-# honors it regardless of who (cron or another staff message) is holding it.
+# checked by every caller that can still trigger a LIVE scrape: the cron
+# poll and gateway/main.py's two keyword-dispatch sites. gateway/internal.py's
+# _scout() fallback (natural-language questions) no longer participates in
+# this lock at all -- see the answer_from_cache tests below for why.
 
 def test_run_in_flight_minutes_covers_the_confirmed_worst_case_duration():
     from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
@@ -434,35 +434,67 @@ def test_run_in_flight_minutes_covers_the_confirmed_worst_case_duration():
     assert RUN_IN_FLIGHT_MINUTES > CONFIRMED_MAX_LIVE_SCRAPE_MINUTES
 
 
-def test_scout_recognizes_a_lock_held_by_someone_else_as_in_flight(store_id, fake_redis):
-    """Simulates the exact scenario asked about: the cron job's own
-    run_scout_all() (or another staff message) already holds the lock --
-    a staff message arriving here must see "already running", not start
-    a second concurrent scrape, regardless of who/what acquired the lock."""
+# ── Natural-language scout questions: cache-only, never a live scrape ──────
+# Confirmed live: internal._scout() used to call run("scout", ...) directly,
+# which is unconditionally live -- every free-form question ("what's Burger
+# Lab been up to") blocked the staff member for 7-45 min and spent real
+# Apify credits just to answer one question. Also confirmed live: since that
+# live call used command="scout", a targeted single-competitor answer got
+# saved as the most recent command="scout" ScoutReport, so a later plain
+# "scout" request served that narrow answer instead of the real
+# all-competitors report. answer_from_cache() fixes both: it only ever
+# reads existing findings (no live fetch, no lock, no new Run/Report row),
+# so a natural-language question can never block on or collide with the
+# real scout command.
+
+def test_scout_never_calls_run_regardless_of_lock_state(store_id, fake_redis):
     from app.core import cache as _cache
     from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
     from app.agents.scout.pipeline import scout_live_lock_key
     from app.gateway.internal import _scout
 
-    assert _cache.try_lock(scout_live_lock_key(store_id), ttl_seconds=RUN_IN_FLIGHT_MINUTES * 60)
+    # Lock held by someone else (e.g. the cron's own live run) must make no
+    # difference -- _scout() doesn't touch the lock at all anymore.
+    _cache.try_lock(scout_live_lock_key(store_id), ttl_seconds=RUN_IN_FLIGHT_MINUTES * 60)
 
-    with patch("app.gateway.main._scout_rate_ok", return_value=True), \
-         patch("app.agents.scout.pipeline.run") as mock_run:
+    with (
+        patch("app.agents.scout.pipeline.run") as mock_run,
+        patch("app.agents.scout.pipeline.answer_from_cache", return_value="cached answer") as mock_cache,
+    ):
         reply = _scout(store_id, "+923001234567", "what are competitors doing")
 
     mock_run.assert_not_called()
-    assert "already running" in reply.lower()
+    mock_cache.assert_called_once_with(store_id, "what are competitors doing")
+    assert reply == "cached answer"
 
 
-def test_scout_proceeds_once_the_lock_is_free(store_id, fake_redis):
-    from app.gateway.internal import _scout
+def test_answer_from_cache_never_scrapes_even_when_stale(store_id):
+    """The freshness threshold that makes run("competitors", ...) fall
+    through to a live scrape when the cache is stale must NOT apply here --
+    answer_from_cache serves whatever's cached, however old, unconditionally."""
+    from app.agents.scout.pipeline import answer_from_cache
+    from datetime import datetime, timedelta
+    run_id = _seed_scout_run(store_id)
+    with TestSession() as db:
+        from app.core.db import ScoutRun
+        r = db.query(ScoutRun).filter(ScoutRun.id == run_id).first()
+        r.finished_at = datetime.utcnow() - timedelta(days=30)  # very stale
+        db.commit()
+    _seed_finding(store_id, run_id, "Burger Lab", "Old cached finding.")
 
-    with patch("app.gateway.main._scout_rate_ok", return_value=True), \
-         patch("app.agents.scout.pipeline.run", return_value="fresh report") as mock_run:
-        reply = _scout(store_id, "+923001234567", "what are competitors doing")
+    with patch("app.agents.scout.pipeline._fetch_all_sources") as mock_fetch:
+        reply = answer_from_cache(store_id, "what are competitors doing")
 
-    mock_run.assert_called_once()
-    assert reply == "fresh report"
+    mock_fetch.assert_not_called()
+    assert "1 raw findings" in reply  # the stale seeded finding, served as-is
+
+
+def test_answer_from_cache_no_prior_run_reports_no_scan_yet(store_id):
+    from app.agents.scout.pipeline import answer_from_cache
+    with patch("app.agents.scout.pipeline._fetch_all_sources") as mock_fetch:
+        reply = answer_from_cache(store_id, "what are competitors doing")
+    mock_fetch.assert_not_called()
+    assert "no scan yet" in reply.lower() or "no competitor signals" in reply.lower()
 
 
 def test_only_one_of_two_simultaneous_callers_acquires_the_lock(store_id, fake_redis):

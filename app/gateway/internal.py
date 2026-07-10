@@ -364,28 +364,23 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
     async dispatch in gateway/main.py didn't catch -- e.g. natural-language
     queries like "what are other burger places doing" that contain none of
     _SCOUT_ASYNC_WORDS but still get classified as scout intent by the LLM
-    here. This used to just return a static "report coming in 7-10 min"
-    message with no pipeline ever running -- confirmed via live testing to
-    reliably promise a report that never arrives. Runs the real pipeline
-    directly; safe to block here since this only executes inside the
-    already-backgrounded _bg_internal task, not the webhook response itself.
+    here.
 
-    Reuses the same rate-limit (3/hour) and in-flight-run guards as the
-    keyword path so this fallback can't be used to bypass them.
+    Always answers from cache (answer_from_cache), never dispatches a live
+    Apify scrape -- confirmed live this needs to be a hard rule, not just
+    a freshness threshold: this used to call run("scout", ...) directly,
+    which is live unconditionally, so every natural-language question (no
+    matter how small) blocked the staff member for 7-45 min and spent real
+    Apify credits just to answer something like "what's Burger Lab been up
+    to". Live scraping is reserved for the explicit "scout" command (
+    gateway/main.py's keyword dispatch) and the scheduled cron. Since this
+    path never touches run()'s live branch, it also never writes a new
+    Run/ScoutReport row, so a targeted single-competitor answer can no
+    longer overwrite what a later plain "scout" request serves.
     """
-    from app.gateway.main import _scout_rate_ok
-    from app.core import cache as _cache
-    from app.agents.scout.pipeline import scout_live_lock_key
-
-    if not _scout_rate_ok(from_number):
-        return "You've sent too many scout requests. Limit is 3 per hour, please wait before trying again."
-
-    if _cache.is_locked(scout_live_lock_key(store_id)):
-        return "Scout is already running, your report will arrive in a few minutes. Please wait."
-
     try:
-        from app.agents.scout.pipeline import run as scout_run
-        return scout_run("scout", store_id=store_id, user_message=text)
+        from app.agents.scout.pipeline import answer_from_cache
+        return answer_from_cache(store_id, text)
     except Exception as e:
         logger.error("internal._scout: store=%d error=%s", store_id, e)
         return "Scout report could not be completed. Please try again."
