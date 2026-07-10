@@ -193,6 +193,52 @@ def test_check_reviews_gives_honest_message_on_quota_outage(store_id, fake_redis
     assert _get_reputation_last_check(store_id) is None  # cache untouched, nothing to report as "checked"
 
 
+def test_check_reviews_serves_stale_cache_when_breaker_open_never_calls_apify(store_id, fake_redis):
+    """Confirmed live this needs to apply to a manual "check" command too,
+    not just the scheduled cron: with the breaker open, a stale (beyond
+    REPUTATION_CACHE_HOURS) but real prior check must still be served
+    instead of attempting (and failing) another live scrape."""
+    from datetime import datetime, timedelta
+    from app.core.db import ScoutRun
+    from app.core import apify_guard
+    from app.agents.reputation import _check_reviews, REPUTATION_CACHE_HOURS
+
+    with TestSession() as db:
+        db.add(ScoutRun(
+            store_id=store_id, command="whatsapp_check", status="ok",
+            finished_at=datetime.utcnow() - timedelta(hours=REPUTATION_CACHE_HOURS + 5),
+        ))
+        db.commit()
+
+    apify_guard.record_quota_failure("reputation")
+    apify_guard.record_quota_failure("reputation")
+    apify_guard.record_quota_failure("reputation")
+    assert apify_guard.breaker_open() is True
+
+    with patch("app.review_sources.pipeline.run_pipeline") as mock_pipeline:
+        reply = _check_reviews(store_id, "Outage Cafe")
+
+    mock_pipeline.assert_not_called()
+    assert "rate-limited" in reply.lower()
+    assert "780 min ago" in reply.lower()  # reports the real (stale) age, not "just now"
+
+
+def test_check_reviews_reports_no_data_when_breaker_open_and_nothing_on_record(store_id, fake_redis):
+    from app.core import apify_guard
+    from app.agents.reputation import _check_reviews
+
+    apify_guard.record_quota_failure("reputation")
+    apify_guard.record_quota_failure("reputation")
+    apify_guard.record_quota_failure("reputation")
+    assert apify_guard.breaker_open() is True
+
+    with patch("app.review_sources.pipeline.run_pipeline") as mock_pipeline:
+        reply = _check_reviews(store_id, "Outage Cafe")
+
+    mock_pipeline.assert_not_called()
+    assert "usage limit" in reply.lower()
+
+
 def test_run_reputation_check_all_skips_every_store_when_breaker_open(store_id, fake_redis):
     from app.core import apify_guard
     from app.agents.reputation import run_reputation_check_all

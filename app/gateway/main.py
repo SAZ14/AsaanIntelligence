@@ -499,6 +499,31 @@ def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | No
         send_fn("Scout report could not be completed. Please try again.")
 
 
+def _bg_scout_cached_only(store_id: int, from_number: str, send_fn, body: str, ack: str | None = None,
+                           _reraise: bool = False) -> None:
+    """Background task: serve the best available cached scout data without
+    ever touching Apify. Used when the shared circuit breaker
+    (app.core.apify_guard) is open -- confirmed live this needs to apply to
+    a manual "scout" command too, not just the scheduled cron: during a
+    known Apify outage, a staff member explicitly typing "scout" would
+    otherwise still trigger (and fail) a live scrape attempt, one more
+    guaranteed-fail call against an account that's already rate-limited.
+    answer_from_cache() serves whatever's on record however old, same as
+    the natural-language fallback in gateway/internal.py's _scout()."""
+    if ack:
+        send_fn(ack)
+    from app.agents.scout.pipeline import answer_from_cache
+    try:
+        report = answer_from_cache(store_id, body)
+        send_fn(report)
+        logger.info("bg_scout_cached_only: delivered store=%d", store_id)
+    except Exception as exc:
+        logger.error("bg_scout_cached_only: store=%d failed error=%s", store_id, exc)
+        if _reraise:
+            raise
+        send_fn("Scout report could not be completed. Please try again.")
+
+
 _INTEGRITY_SHORTHAND = {
     "summary", "audit", "overview", "leakage", "leak", "theft",
     "profit", "margin", "cogs", "staff", "daily", "weekly",
@@ -870,6 +895,18 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
                     return _twiml_chunks(cached_text)
                 # Report text missing in DB — fall through to fresh scan
 
+            from app.core import apify_guard
+            if apify_guard.breaker_open():
+                logger.info("gateway.webhook: scout_cache_only_dispatch store=%d from=%s (apify breaker open)", store_id, from_number)
+                _dispatch_durable(
+                    background_tasks, "scout", store_id, from_number, body,
+                    {"provider": "twilio", "to": from_number, "from_": to_number},
+                    _bg_scout_cached_only, _twilio_send_fn,
+                )
+                return _twiml(
+                    "Data provider is temporarily rate-limited — sending the most recent report on file shortly."
+                )
+
             logger.info("gateway.webhook: scout_async_dispatch store=%d from=%s", store_id, from_number)
             _dispatch_durable(
                 background_tasks, "scout", store_id, from_number, body,
@@ -1070,6 +1107,16 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
                     logger.info("%s: scout_cache_serve store=%d", log_prefix, store_id)
                     background_tasks.add_task(send_fn, cached_text)
                     return "ok"
+
+            from app.core import apify_guard
+            if apify_guard.breaker_open():
+                logger.info("%s: scout_cache_only_dispatch store=%d from=%s (apify breaker open)", log_prefix, store_id, from_number)
+                _dispatch_durable(
+                    background_tasks, "scout", store_id, from_number, body_text,
+                    reply_to, _bg_scout_cached_only, send_fn,
+                    ack="Data provider is temporarily rate-limited — sending the most recent report on file shortly.",
+                )
+                return "ok"
 
             logger.info("%s: scout_async_dispatch store=%d from=%s", log_prefix, store_id, from_number)
             scout_ack = (

@@ -893,6 +893,20 @@ def _get_reputation_last_check(store_id: int) -> datetime | None:
     return finished_at
 
 
+def _get_reputation_last_check_unbounded(store_id: int) -> datetime | None:
+    """Like _get_reputation_last_check but with no REPUTATION_CACHE_HOURS
+    cutoff -- used only when the Apify circuit breaker is open, to serve
+    whatever's on record however old rather than nothing at all."""
+    from app.core.db import SessionLocal, ScoutRun as Run
+    with SessionLocal() as db:
+        run = db.query(Run).filter(
+            Run.store_id == store_id,
+            Run.command == "whatsapp_check",
+            Run.status == "ok",
+        ).order_by(Run.finished_at.desc()).first()
+        return run.finished_at if run else None
+
+
 def _mark_reputation_checked(store_id: int, finished_at: datetime) -> None:
     from app.core import cache as _cache
     _cache.set(
@@ -949,6 +963,30 @@ def _check_reviews(store_id: int, store_name: str) -> str:
                 + _format_pending(pending)
             )
         return f"*{store_name}* - Reviews up to date ({age_str}). No pending replies."
+
+    # Circuit breaker open (app.core.apify_guard, shared with scout): don't
+    # attempt a live scrape at all, even for this manual "check" -- confirmed
+    # live this needs to apply here too, not just the scheduled cron. Serve
+    # whatever's on record however old rather than one more guaranteed-fail
+    # Apify call against an account that's already rate-limited.
+    from app.core import apify_guard
+    if apify_guard.breaker_open():
+        last_known = _get_reputation_last_check_unbounded(store_id)
+        if last_known is not None:
+            age_min = int((datetime.utcnow() - last_known).total_seconds() / 60)
+            age_str = f"{age_min} min ago" if age_min > 0 else "just now"
+            pending = review_db.get_pending_finding(store_id)
+            note = "Data provider is temporarily rate-limited, showing the last known status"
+            if pending:
+                return (
+                    f"*{store_name}* - {note} ({age_str}). Pending reply:\n\n"
+                    + _format_pending(pending)
+                )
+            return f"*{store_name}* - {note} ({age_str}). No pending replies."
+        return (
+            f"*{store_name}* - Review check unavailable (data provider usage limit "
+            f"reached) and no previous check is on record yet. Please try again later."
+        )
 
     # In-flight guard: atomic Redis lock (SET NX -- app/core/cache.py, same
     # connection as rate limits/cooldowns/the job queue), not a Postgres

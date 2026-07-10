@@ -36,6 +36,18 @@ def client():
         yield c
 
 
+@pytest.fixture
+def fake_redis(monkeypatch):
+    """apify_guard's circuit breaker is Redis-backed -- without a real or
+    fake connection, cache.get() fails open (None), so breaker_open() can
+    never be made to return True in a test. Same fixture pattern as
+    test_scout.py/test_apify_outage_handling.py."""
+    fakeredis = pytest.importorskip("fakeredis")
+    import app.core.cache as cache
+    monkeypatch.setattr(cache, "_client", fakeredis.FakeRedis(decode_responses=True))
+    monkeypatch.setattr(cache, "_unavailable", False)
+
+
 def _post(client, from_num, to_num, body):
     from urllib.parse import urlencode
     payload = urlencode({"From": from_num, "To": to_num, "Body": body})
@@ -182,6 +194,31 @@ def test_staff_internal_scout_message_routed(client, db_state):
     # Immediate reply should mention the wait time
     body = _body(r)
     assert "7-10" in body or "minutes" in body or "competitors" in body.lower()
+
+
+def test_scout_dispatch_serves_cache_only_when_apify_breaker_open(client, db_state, fake_redis):
+    """Confirmed live: during a real Apify outage, a manual "scout" command
+    was still dispatching a live scrape (and failing) even after the
+    circuit breaker tripped from repeated cron failures. When the breaker
+    is open, dispatch must go to the cache-only handler instead of the
+    live one, regardless of cache freshness."""
+    from app.core import apify_guard
+    apify_guard.record_quota_failure("scout")
+    apify_guard.record_quota_failure("scout")
+    apify_guard.record_quota_failure("scout")
+    assert apify_guard.breaker_open() is True
+
+    _post(client, STAFF_PHONE, STORE_NUMBER_A, "1")  # enter internal mode
+    with (
+        patch("app.gateway.main._bg_scout") as mock_bg_live,
+        patch("app.gateway.main._bg_scout_cached_only") as mock_bg_cached,
+    ):
+        r = _post(client, STAFF_PHONE, STORE_NUMBER_A, "scout")
+
+    mock_bg_live.assert_not_called()
+    mock_bg_cached.assert_called_once()
+    body = _body(r)
+    assert "rate-limited" in body.lower() or "usage limit" in body.lower()
 
 
 def test_scout_cache_hit_not_confused_by_fresher_reputation_run(client, db_state):
