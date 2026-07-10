@@ -39,21 +39,25 @@ def _load_config_from_db(store_id: int) -> dict:
     }
 
 
-def run_pipeline(store_id: int | None = None) -> tuple[list[dict], list[str], list[str]]:
+def run_pipeline(store_id: int | None = None) -> tuple[list[dict], list[str], list[str], bool]:
     """Run all review scrapers for one store in parallel.
 
     If store_id is provided, config is loaded from the ReputationConfig DB table.
     If omitted, returns no reviews and no sources (all per-store config must
     live in the DB).
 
-    Returns (reviews, sources_ok, sources_failed) -- callers need the latter
-    two to record what actually happened on this run rather than assuming
-    success (previously hardcoded to ["pipeline"], [] regardless of which
-    individual scrapers succeeded or failed).
+    Returns (reviews, sources_ok, sources_failed, quota_exceeded) -- callers
+    need sources_ok/sources_failed to record what actually happened on this
+    run rather than assuming success (previously hardcoded to ["pipeline"],
+    [] regardless of which individual scrapers succeeded or failed).
+    quota_exceeded is True if any source failed specifically due to Apify's
+    account-level usage limit, as opposed to a routine per-item failure --
+    callers use this to avoid overwriting good cached data with an empty
+    result during an outage (see app.core.apify_guard).
     """
     if store_id is None:
         log.warning("run_pipeline called without store_id — no reviews scraped")
-        return [], [], []
+        return [], [], [], False
 
     cfg = _load_config_from_db(store_id)
     key = cfg["apify_api_key"]
@@ -73,11 +77,14 @@ def run_pipeline(store_id: int | None = None) -> tuple[list[dict], list[str], li
 
     if not tasks:
         log.info("No scrape sources configured for store %d.", store_id)
-        return [], [], []
+        return [], [], [], False
+
+    from app.core.apify_errors import is_quota_error
 
     all_raw: list[dict] = []
     sources_ok: list[str] = []
     sources_failed: list[str] = []
+    quota_exceeded = False
     with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
         future_to_name = {executor.submit(fn): name for name, fn in tasks.items()}
         for future in as_completed(future_to_name):
@@ -90,9 +97,11 @@ def run_pipeline(store_id: int | None = None) -> tuple[list[dict], list[str], li
             except Exception as exc:
                 log.error("%s scrape failed: %s", name, exc)
                 sources_failed.append(name)
+                if is_quota_error(exc):
+                    quota_exceeded = True
 
     if not all_raw:
         log.info("No reviews found for store %d.", store_id)
-        return [], sources_ok, sources_failed
+        return [], sources_ok, sources_failed, quota_exceeded
 
-    return normalizer.normalize(all_raw), sources_ok, sources_failed
+    return normalizer.normalize(all_raw), sources_ok, sources_failed, quota_exceeded

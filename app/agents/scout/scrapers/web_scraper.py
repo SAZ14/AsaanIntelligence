@@ -90,6 +90,9 @@ def search(query: str, limit: int = 5) -> list[dict]:
         return results[:limit]
     except Exception as exc:
         logger.warning("Web search failed for %r: %s", query, exc)
+        from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
+        if is_quota_error(exc):
+            raise ApifyQuotaExceeded(str(exc)) from exc
         return []
 
 
@@ -122,6 +125,9 @@ def find_menu_and_offers(competitor: dict) -> list[FindingSchema]:
                 ))
         except Exception as exc:
             logger.warning("Website crawl failed for %s: %s", website, exc)
+            from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
+            if is_quota_error(exc):
+                raise ApifyQuotaExceeded(str(exc)) from exc
 
     for query in [
         f"{name} Islamabad new offer OR launch 2026",

@@ -206,20 +206,34 @@ def _findings_from_db(db_findings: list[DBFinding]) -> list[FindingSchema]:
     return results
 
 
-def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], list[str], list[str]]:
-    """Run all enabled scrapers in parallel. Returns (findings, sources_ok, sources_failed)."""
+def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], list[str], list[str], bool]:
+    """Run all enabled scrapers in parallel. Returns (findings, sources_ok,
+    sources_failed, quota_exceeded) -- quota_exceeded is True if any source
+    failed specifically due to Apify's account-level usage limit (as
+    opposed to a routine per-item failure), which callers use to avoid
+    treating a total-outage run like a normal empty one (see run())."""
     sources = enabled_sources()
 
     def _web() -> list[FindingSchema]:
         from app.agents.scout.scrapers.web_scraper import find_menu_and_offers
+        from app.core.apify_errors import ApifyQuotaExceeded
         results: list[FindingSchema] = []
+        quota_exc: ApifyQuotaExceeded | None = None
         with ThreadPoolExecutor(max_workers=min(len(competitors), 6)) as ex:
             futures = {ex.submit(find_menu_and_offers, comp): comp["name"] for comp in competitors}
             for future in as_completed(futures):
                 try:
                     results.extend(future.result())
+                except ApifyQuotaExceeded as exc:
+                    logger.error("web scraper failed for %s: %s", futures[future], exc)
+                    quota_exc = quota_exc or exc
                 except Exception as exc:
                     logger.error("web scraper failed for %s: %s", futures[future], exc)
+        # Only escalate to a full-source failure if NOTHING came back at all
+        # -- a quota error on one competitor's search alongside real results
+        # from others is still a partially useful run.
+        if quota_exc is not None and not results:
+            raise quota_exc
         return results
 
     def _instagram() -> list[FindingSchema]:
@@ -261,9 +275,12 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
     findings: list[FindingSchema] = []
     ok: list[str] = []
     failed: list[str] = []
+    quota_exceeded = False
 
     if not task_map:
-        return findings, ok, failed
+        return findings, ok, failed, quota_exceeded
+
+    from app.core.apify_errors import is_quota_error
 
     with ThreadPoolExecutor(max_workers=len(task_map)) as executor:
         future_to_name = {executor.submit(fn): name for name, fn in task_map.items()}
@@ -277,8 +294,10 @@ def _fetch_all_sources(competitors: list[dict]) -> tuple[list[FindingSchema], li
             except Exception as exc:
                 logger.error("%s scraper failed: %s", name, exc)
                 failed.append(name)
+                if is_quota_error(exc):
+                    quota_exceeded = True
 
-    return findings, ok, failed
+    return findings, ok, failed, quota_exceeded
 
 
 def _build_freshness_note(run: Run | None, is_live: bool) -> str:
@@ -430,7 +449,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             db.refresh(db_run)
             run_id = db_run.id
 
-        raw_findings, sources_ok, sources_failed = _fetch_all_sources(competitors)
+        raw_findings, sources_ok, sources_failed, quota_exceeded = _fetch_all_sources(competitors)
         _dump_raw(run_id, "all_raw", [f.model_dump() for f in raw_findings])
         logger.info(
             "scout.pipeline: sources_done store=%d ok=%s failed=%s raw_findings=%d",
@@ -458,8 +477,40 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
                 db_run.sources_failed = sources_failed
                 db_run.finding_count = len(enriched)
                 db.commit()
+        from app.core import apify_guard
         if status in ("ok", "partial"):
             _mark_scout_run_fresh(store_id, run_finished_at, freshness_minutes)
+            apify_guard.record_success()
+        elif quota_exceeded:
+            # Total failure specifically because Apify's account-level quota
+            # is exhausted -- every source failed the same way, not routine
+            # per-item noise. Do NOT save a new (empty) report over a
+            # perfectly good old one; serve whatever was last cached instead
+            # (confirmed live: this used to happen every ~1 min during an
+            # outage, each cycle overwriting the previous report with "No
+            # competitor signals found in this run").
+            apify_guard.record_quota_failure("scout")
+            from app.core.db import ScoutReport as _ScoutReport
+            with SessionLocal() as db:
+                prev = (
+                    db.query(_ScoutReport)
+                    .filter(_ScoutReport.store_id == store_id, _ScoutReport.command == command)
+                    .order_by(_ScoutReport.id.desc())
+                    .first()
+                )
+            logger.error(
+                "scout.pipeline: apify_quota_exceeded store=%d -- keeping previous cached report",
+                store_id,
+            )
+            if prev:
+                return (
+                    "⚠️ Live scan failed (data provider usage limit reached) -- "
+                    "showing the most recent report on file instead:\n\n" + prev.report_text
+                )
+            return (
+                "⚠️ Live scan failed (data provider usage limit reached) and no "
+                "previous report is available yet. Please try again later."
+            )
 
         freshness_note = _build_freshness_note(None, is_live=True)
         if sources_failed:
@@ -564,8 +615,20 @@ def run_scout_all() -> None:
     (confirmed live) and fans out many Apify actors internally per store;
     running several stores' scrapes concurrently would multiply that
     fan-out and risk Apify rate limits. Fine at today's store count;
-    worth revisiting if this needs to cover many stores."""
+    worth revisiting if this needs to cover many stores.
+
+    Also checks the shared Apify circuit breaker (app.core.apify_guard,
+    tripped after 3 consecutive account-level quota failures, shared with
+    reputation's cron) before touching any store -- confirmed live this
+    matters: without it, a 1-minute cron interval means an Apify outage
+    gets retried up to 1440 times a day, which risks Apify rate-limiting
+    or banning the account outright."""
     from app.core.db import SessionLocal, Store
+    from app.core import apify_guard
+
+    if apify_guard.breaker_open():
+        logger.warning("scout.cron: apify breaker open -- skipping all stores this cycle")
+        return
 
     with SessionLocal() as db:
         store_ids = [s.id for s in db.query(Store).all()]

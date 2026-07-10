@@ -135,7 +135,7 @@ class TestCheckReviewsDedup:
         )
 
         with patch("app.review_sources.pipeline.run_pipeline",
-                    return_value=([_raw_review("h1", rating=5.0)], ["google_maps"], [])), \
+                    return_value=([_raw_review("h1", rating=5.0)], ["google_maps"], [], False)), \
              patch("app.agents.reputation.classify_reviews_batch") as mock_classify, \
              patch("app.core.llm.get_client", return_value=MagicMock()):
             reply = _check_reviews(store_id, "Review Dedup Cafe")
@@ -147,7 +147,7 @@ class TestCheckReviewsDedup:
         from app.agents.reputation import _check_reviews
 
         with patch("app.review_sources.pipeline.run_pipeline",
-                    return_value=([_raw_review("new1", rating=5.0)], ["google_maps"], [])), \
+                    return_value=([_raw_review("new1", rating=5.0)], ["google_maps"], [], False)), \
              patch("app.agents.reputation.classify_reviews_batch") as mock_classify, \
              patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
              patch("app.core.llm.get_client", return_value=MagicMock()):
@@ -164,7 +164,7 @@ class TestCheckReviewsDedup:
 
         many_reviews = [_raw_review(f"new{i}", rating=4.0) for i in range(120)]
         with patch("app.review_sources.pipeline.run_pipeline",
-                    return_value=(many_reviews, ["google_maps"], [])), \
+                    return_value=(many_reviews, ["google_maps"], [], False)), \
              patch("app.agents.reputation.classify_reviews_batch") as mock_classify, \
              patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
              patch("app.core.llm.get_client", return_value=MagicMock()):
@@ -195,7 +195,7 @@ class TestNonReviewContentFiltering:
                     return_value=([
                         _raw_review("real1", rating=5.0, text="Great burgers, loved it!"),
                         _raw_review("wellwish1", rating=None, text="Good luck Anatummy!"),
-                    ], ["google_maps"], [])), \
+                    ], ["google_maps"], [], False)), \
              patch("app.agents.reputation.classify_reviews_batch", side_effect=fake_classify), \
              patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
              patch("app.core.llm.get_client", return_value=MagicMock()):
@@ -214,7 +214,7 @@ class TestNonReviewContentFiltering:
             return reviews
 
         with patch("app.review_sources.pipeline.run_pipeline",
-                    return_value=([_raw_review("q1", rating=None, text="do you deliver??")], ["google_maps"], [])), \
+                    return_value=([_raw_review("q1", rating=None, text="do you deliver??")], ["google_maps"], [], False)), \
              patch("app.agents.reputation.classify_reviews_batch", side_effect=fake_classify), \
              patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
              patch("app.core.llm.get_client", return_value=MagicMock()):
@@ -394,7 +394,7 @@ class TestCheckReviewsInFlightLock:
         from app.agents.reputation import _check_reviews, _reputation_live_lock_key
 
         with patch("app.review_sources.pipeline.run_pipeline",
-                    return_value=([_raw_review("new1", rating=5.0)], ["google_maps"], [])), \
+                    return_value=([_raw_review("new1", rating=5.0)], ["google_maps"], [], False)), \
              patch("app.agents.reputation.classify_reviews_batch"), \
              patch("app.agents.reputation.draft_replies", side_effect=lambda revs, *a, **kw: revs), \
              patch("app.core.llm.get_client", return_value=MagicMock()):

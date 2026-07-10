@@ -28,15 +28,16 @@ def test_config_loader_no_longer_returns_foodpanda_keys():
     assert "foodpanda_keyword" not in cfg
 
 
-def test_run_pipeline_returns_three_tuple_with_no_store_id():
+def test_run_pipeline_returns_four_tuple_with_no_store_id():
     from app.review_sources.pipeline import run_pipeline
-    reviews, ok, failed = run_pipeline(None)
+    reviews, ok, failed, quota_exceeded = run_pipeline(None)
     assert reviews == []
     assert ok == []
     assert failed == []
+    assert quota_exceeded is False
 
 
-def test_run_pipeline_returns_three_tuple_with_no_sources_configured(monkeypatch):
+def test_run_pipeline_returns_four_tuple_with_no_sources_configured(monkeypatch):
     from app.review_sources import pipeline
     monkeypatch.setattr(pipeline, "_load_config_from_db", lambda store_id: {
         "apify_api_key": "fake-key",
@@ -45,10 +46,11 @@ def test_run_pipeline_returns_three_tuple_with_no_sources_configured(monkeypatch
         "instagram_usernames": [],
         "store_name": "Test Cafe",
     })
-    reviews, ok, failed = pipeline.run_pipeline(5)
+    reviews, ok, failed, quota_exceeded = pipeline.run_pipeline(5)
     assert reviews == []
     assert ok == []
     assert failed == []
+    assert quota_exceeded is False
 
 
 def test_run_pipeline_tracks_per_source_success_and_failure(monkeypatch):
@@ -67,11 +69,12 @@ def test_run_pipeline_tracks_per_source_success_and_failure(monkeypatch):
         raise RuntimeError("actor timed out")
     monkeypatch.setattr(pipeline, "fetch_instagram", _broken_instagram)
 
-    reviews, ok, failed = pipeline.run_pipeline(5)
+    reviews, ok, failed, quota_exceeded = pipeline.run_pipeline(5)
     assert ok == ["google_maps"]
     assert failed == ["instagram"]
     assert len(reviews) == 1
     assert reviews[0]["source"] == "Google Maps - Test"
+    assert quota_exceeded is False
 
 
 def test_run_pipeline_all_sources_succeed(monkeypatch):
@@ -87,10 +90,11 @@ def test_run_pipeline_all_sources_succeed(monkeypatch):
     monkeypatch.setattr(pipeline, "fetch_maps", lambda key, terms, loc, name: [{"source": "Google Maps"}])
     monkeypatch.setattr(pipeline, "fetch_instagram", lambda key, usernames: [{"source": "Instagram"}])
 
-    reviews, ok, failed = pipeline.run_pipeline(5)
+    reviews, ok, failed, quota_exceeded = pipeline.run_pipeline(5)
     assert set(ok) == {"google_maps", "instagram"}
     assert failed == []
     assert len(reviews) == 2
+    assert quota_exceeded is False
 
 
 # ── Instagram: only comments are customer feedback, captions are not ────────

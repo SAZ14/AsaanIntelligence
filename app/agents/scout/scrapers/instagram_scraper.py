@@ -81,6 +81,9 @@ def fetch_recent_posts(handles: list[str], limit: int = IG_POSTS_PER_PROFILE) ->
         items = _run_actor(usernames, hashtags, limit)
     except Exception as exc:
         logger.error("Apify Instagram actor failed: %s", exc)
+        from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
+        if is_quota_error(exc):
+            raise ApifyQuotaExceeded(str(exc)) from exc
         return []
 
     findings: list[FindingSchema] = []

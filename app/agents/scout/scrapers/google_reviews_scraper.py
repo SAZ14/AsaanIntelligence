@@ -97,6 +97,9 @@ def fetch_reviews(competitor: dict) -> list[FindingSchema]:
             logger.info("Maps %s for %r: %d items", sort_key, name, len(items))
         except Exception as exc:
             logger.error("Apify Maps actor (%s) failed for %r: %s", sort_key, name, exc)
+            from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
+            if is_quota_error(exc):
+                raise ApifyQuotaExceeded(str(exc)) from exc
 
     seen: set[str] = set()
     findings: list[FindingSchema] = []

@@ -967,7 +967,7 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
         logger.info("reputation.check: store=%d scraping_reviews", store_id)
         try:
-            raw_reviews, sources_ok, sources_failed = run_pipeline(store_id)
+            raw_reviews, sources_ok, sources_failed, quota_exceeded = run_pipeline(store_id)
         except Exception as exc:
             logger.error("reputation.check: store=%d pipeline_failed error=%s", store_id, exc)
             review_db.update_run(run_id, "error", [], [], 0)
@@ -980,8 +980,24 @@ def _check_reviews(store_id: int, store_name: str) -> str:
         if not raw_reviews:
             status = "ok" if not sources_failed else ("partial" if sources_ok else "error")
             review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
+            from app.core import apify_guard
             if status == "ok":
                 _mark_reputation_checked(store_id, datetime.utcnow())
+                apify_guard.record_success()
+            elif quota_exceeded:
+                # Total failure specifically because Apify's account-level
+                # quota is exhausted -- _mark_reputation_checked is
+                # deliberately NOT called (status != "ok"), so the existing
+                # "last known good check" timestamp is untouched and future
+                # cache reads keep serving it, however old, rather than
+                # this failed attempt (confirmed live this needs saying
+                # explicitly rather than the generic "no new reviews"
+                # message, which reads as a successful up-to-date check).
+                apify_guard.record_quota_failure("reputation")
+                return (
+                    f"*{store_name}* - Review check failed (data provider usage limit "
+                    f"reached). Your last known review status is unchanged."
+                )
             return f"*{store_name}* - No new reviews found across all platforms."
 
         # Dedup against the DB BEFORE any classification or drafting -- the
@@ -1005,6 +1021,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
             review_db.update_run(run_id, status, sources_ok, sources_failed, 0)
             if status == "ok":
                 _mark_reputation_checked(store_id, datetime.utcnow())
+                from app.core import apify_guard
+                apify_guard.record_success()
             return f"*{store_name}* - No new reviews found. All up to date."
 
         # Defensive safety ceiling, not a routine cap -- see MAX_NEW_REVIEWS_PER_CHECK.
@@ -1075,6 +1093,8 @@ def _check_reviews(store_id: int, store_name: str) -> str:
         review_db.update_run(run_id, status, sources_ok, sources_failed, new_count)
         if status == "ok":
             _mark_reputation_checked(store_id, datetime.utcnow())
+            from app.core import apify_guard
+            apify_guard.record_success()
 
         if new_count == 0:
             return f"*{store_name}* - No new reviews found. All up to date."
@@ -1106,8 +1126,20 @@ def run_reputation_check_all() -> None:
     logged, never sent -- this only needs to populate the cache, not notify
     anyone. _check_reviews' own in-flight guard and cache check make this
     safe to call even if a staff member's own check overlaps with a
-    scheduled run."""
+    scheduled run.
+
+    Also checks the shared Apify circuit breaker (app.core.apify_guard,
+    tripped after 3 consecutive account-level quota failures, shared with
+    scout's cron) before touching any store -- confirmed live this
+    matters: without it, a 1-minute cron interval means an Apify outage
+    gets retried up to 1440 times a day, which risks Apify rate-limiting
+    or banning the account outright."""
     from app.core.db import SessionLocal, Store
+    from app.core import apify_guard
+
+    if apify_guard.breaker_open():
+        logger.warning("reputation.cron: apify breaker open -- skipping all stores this cycle")
+        return
 
     for store_id in _active_store_ids():
         try:

@@ -94,7 +94,7 @@ class TestScoutFreshnessCache:
              patch("app.agents.scout.pipeline.prune_stale_competitors", return_value=0), \
              patch("app.agents.scout.pipeline.get_all_competitors", return_value=[]), \
              patch("app.agents.scout.pipeline._select_competitors_to_scrape", return_value=[]), \
-             patch("app.agents.scout.pipeline._fetch_all_sources", return_value=([], ["web"], [])), \
+             patch("app.agents.scout.pipeline._fetch_all_sources", return_value=([], ["web"], [], False)), \
              patch("app.agents.scout.pipeline.build_report", return_value="report text"):
             run("scout", store_id=store_id)
 
