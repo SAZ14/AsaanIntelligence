@@ -1972,6 +1972,39 @@ async def debug_freshness_cache_clear(store_id: int) -> JSONResponse:
     return JSONResponse({"status": "cleared", "store_id": store_id, "keys": keys})
 
 
+@app.get("/admin/debug/apify_breaker")
+async def debug_apify_breaker_status() -> JSONResponse:
+    """Inspect the shared Apify circuit breaker (app.core.apify_guard) --
+    whether it's currently open, and how many consecutive quota failures
+    have been recorded. The breaker auto-clears after BREAKER_COOLDOWN_HOURS
+    (24h) even with no action taken, but that means a real Apify recovery
+    (plan upgrade, monthly quota reset) isn't noticed until that cooldown
+    naturally expires -- neither the scheduled cron nor a manual "scout"/
+    "check" command will attempt a real call while it's open, by design
+    (see apify_guard.py). Use the /clear endpoint below to force an early
+    retry once you've confirmed Apify is actually working again."""
+    from app.core import cache as _cache
+    from app.core import apify_guard
+    return JSONResponse({
+        "breaker_open": apify_guard.breaker_open(),
+        "consecutive_failures": _cache.get(apify_guard._FAILURE_COUNT_KEY),
+        "breaker_detail": _cache.get(apify_guard._BREAKER_KEY),
+    })
+
+
+@app.post("/admin/debug/apify_breaker/clear")
+async def debug_apify_breaker_clear() -> JSONResponse:
+    """Force-clear the shared Apify circuit breaker so the next scheduled
+    cron cycle (or manual scout/check command) attempts a real call again
+    immediately, instead of waiting out the 24h auto-expiry. Use this after
+    confirming Apify is actually working again (plan upgraded, quota
+    reset) -- clearing it while Apify is still down just re-trips it after
+    another 3 consecutive failures."""
+    from app.core import apify_guard
+    apify_guard.record_success()
+    return JSONResponse({"status": "cleared"})
+
+
 @app.post("/admin/debug/backfill_review_embeddings")
 async def debug_backfill_review_embeddings(batch_size: int = 32) -> JSONResponse:
     """TEMPORARY — one-time backfill of Finding.content_embedding for
