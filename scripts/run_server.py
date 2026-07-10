@@ -17,6 +17,7 @@ from app.agents.customer.jobs.winback import run_winback_all
 from app.agents.customer.jobs.leaderboard_broadcast import broadcast_all
 from app.agents.scout.pipeline import run_scout_all
 from app.agents.reputation import run_reputation_check_all
+from app.core.run_reaper import reap_orphaned_runs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 
 def _start_scheduler() -> BackgroundScheduler:
+    # Reap once immediately on boot -- this is exactly when a deploy-
+    # orphaned run (previous deployment's process killed mid-scrape,
+    # never reached its own lock-release) would otherwise sit stuck for
+    # up to its full TTL. Also scheduled periodically below to catch
+    # crashes/OOM kills that happen without a redeploy.
+    try:
+        reap_orphaned_runs()
+    except Exception as exc:
+        logger.error("run_reaper: startup reap failed: %s", exc)
+
     scheduler = BackgroundScheduler(timezone="Asia/Karachi")
     # Winback: daily at 10:00 AM
     scheduler.add_job(
@@ -81,6 +92,13 @@ def _start_scheduler() -> BackgroundScheduler:
         run_reputation_check_all,
         trigger="interval", seconds=60,
         id="reputation_check_60s_poll", replace_existing=True,
+    )
+    # Catches orphaned runs from crashes/OOM kills that happen without a
+    # redeploy (the startup call above only covers the deploy case).
+    scheduler.add_job(
+        reap_orphaned_runs,
+        trigger="interval", minutes=10,
+        id="run_reaper_10min_poll", replace_existing=True,
     )
     scheduler.start()
     return scheduler

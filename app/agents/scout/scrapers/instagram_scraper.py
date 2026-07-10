@@ -4,10 +4,11 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from app.agents.scout.config import APIFY_TOKEN, APIFY_IG_ACTOR, IG_POSTS_PER_PROFILE
 from app.agents.scout.schemas import FindingSchema
+from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error, should_retry_apify_call
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def _parse_timestamp(ts) -> Optional[datetime]:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=4, max=30),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception(should_retry_apify_call),
     reraise=True,
 )
 def _run_actor(usernames: list[str], hashtags: list[str], limit: int) -> list[dict]:
@@ -81,7 +82,6 @@ def fetch_recent_posts(handles: list[str], limit: int = IG_POSTS_PER_PROFILE) ->
         items = _run_actor(usernames, hashtags, limit)
     except Exception as exc:
         logger.error("Apify Instagram actor failed: %s", exc)
-        from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
         if is_quota_error(exc):
             raise ApifyQuotaExceeded(str(exc)) from exc
         return []

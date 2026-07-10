@@ -2,10 +2,11 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from app.agents.scout.config import APIFY_TOKEN, APIFY_WEBSITE_ACTOR, APIFY_SEARCH_ACTOR
 from app.agents.scout.schemas import FindingSchema
+from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error, should_retry_apify_call
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _infer_update_type(text: str) -> str:
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=2, min=5, max=30),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception(should_retry_apify_call),
     reraise=True,
 )
 def _run_website_actor(url: str) -> list[dict]:
@@ -49,7 +50,7 @@ def _run_website_actor(url: str) -> list[dict]:
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=2, min=5, max=30),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception(should_retry_apify_call),
     reraise=True,
 )
 def _run_search_actor(query: str, num_results: int) -> list[dict]:
@@ -90,7 +91,6 @@ def search(query: str, limit: int = 5) -> list[dict]:
         return results[:limit]
     except Exception as exc:
         logger.warning("Web search failed for %r: %s", query, exc)
-        from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
         if is_quota_error(exc):
             raise ApifyQuotaExceeded(str(exc)) from exc
         return []
@@ -125,7 +125,6 @@ def find_menu_and_offers(competitor: dict) -> list[FindingSchema]:
                 ))
         except Exception as exc:
             logger.warning("Website crawl failed for %s: %s", website, exc)
-            from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
             if is_quota_error(exc):
                 raise ApifyQuotaExceeded(str(exc)) from exc
 

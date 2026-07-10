@@ -252,3 +252,142 @@ def test_run_reputation_check_all_skips_every_store_when_breaker_open(store_id, 
         run_reputation_check_all()
 
     mock_check.assert_not_called()
+
+
+# ── Fail fast: don't retry a guaranteed-fail quota error ────────────────────
+# Confirmed live: tenacity's @retry decorators around each Apify call used
+# retry_if_exception_type(Exception) -- retrying a quota error 2-3x (with
+# exponential backoff delay on top) before the caller even got a chance to
+# detect and stop it, multiplying wasted calls during an outage.
+
+QUOTA_MSG = "Monthly usage hard limit exceeded. Please upgrade your subscription"
+
+
+def test_should_retry_apify_call_predicate():
+    from app.core.apify_errors import should_retry_apify_call
+    assert should_retry_apify_call(RuntimeError(QUOTA_MSG)) is False
+    assert should_retry_apify_call(RuntimeError("Connection reset")) is True
+
+
+def test_google_reviews_run_actor_does_not_retry_quota_error():
+    from app.agents.scout.scrapers.google_reviews_scraper import _run_actor
+    from app.core.apify_errors import ApifyQuotaExceeded
+
+    mock_client = MagicMock()
+    mock_client.actor.return_value.call.side_effect = RuntimeError(QUOTA_MSG)
+    with patch("apify_client.ApifyClient", return_value=mock_client) as mock_ctor:
+        with pytest.raises((RuntimeError, ApifyQuotaExceeded)):
+            _run_actor("https://maps.example/search", "mostRelevant", 10)
+
+    assert mock_client.actor.return_value.call.call_count == 1  # no retries
+
+
+def test_instagram_run_actor_does_not_retry_quota_error():
+    from app.agents.scout.scrapers.instagram_scraper import _run_actor
+
+    mock_client = MagicMock()
+    mock_client.actor.return_value.call.side_effect = RuntimeError(QUOTA_MSG)
+    with patch("apify_client.ApifyClient", return_value=mock_client):
+        with pytest.raises(RuntimeError):
+            _run_actor(["testcafe"], [], 12)
+
+    assert mock_client.actor.return_value.call.call_count == 1  # no retries
+
+
+def test_web_search_actor_does_not_retry_quota_error():
+    from app.agents.scout.scrapers.web_scraper import _run_search_actor
+
+    mock_client = MagicMock()
+    mock_client.actor.return_value.call.side_effect = RuntimeError(QUOTA_MSG)
+    with patch("apify_client.ApifyClient", return_value=mock_client):
+        with pytest.raises(RuntimeError):
+            _run_search_actor("Test Cafe Islamabad offers", 3)
+
+    assert mock_client.actor.return_value.call.call_count == 1  # no retries
+
+
+def test_web_scraper_still_retries_routine_failures():
+    """Confirming the fix didn't accidentally kill retries altogether --
+    a routine (non-quota) failure should still get its normal 2 attempts."""
+    from app.agents.scout.scrapers.web_scraper import _run_search_actor
+
+    mock_client = MagicMock()
+    mock_client.actor.return_value.call.side_effect = RuntimeError("temporary network blip")
+    with patch("apify_client.ApifyClient", return_value=mock_client):
+        with pytest.raises(RuntimeError):
+            _run_search_actor("Test Cafe Islamabad offers", 3)
+
+    assert mock_client.actor.return_value.call.call_count == 2  # stop_after_attempt(2)
+
+
+# ── Orphaned run reaper ──────────────────────────────────────────────────────
+# Confirmed live: a deploy landing mid-live-scrape leaves the process's
+# Redis lock held for its full TTL (up to 60 min for scout) with nothing
+# actually running -- every request in that window wrongly reports
+# "already running, please wait" instead of serving cache or retrying.
+
+def _seed_running_run(store_id, command, started_at):
+    from app.core.db import ScoutRun
+    with TestSession() as db:
+        run = ScoutRun(store_id=store_id, command=command, status="running", started_at=started_at)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run.id
+
+
+def test_reap_clears_scout_run_stuck_past_its_ttl(store_id, fake_redis):
+    from datetime import datetime, timedelta
+    from app.core import cache as _cache
+    from app.agents.scout.config import RUN_IN_FLIGHT_MINUTES
+    from app.agents.scout.pipeline import scout_live_lock_key
+    from app.core.run_reaper import reap_orphaned_runs
+    from app.core.db import ScoutRun
+
+    _cache.try_lock(scout_live_lock_key(store_id), ttl_seconds=RUN_IN_FLIGHT_MINUTES * 60)
+    run_id = _seed_running_run(store_id, "scout", datetime.utcnow() - timedelta(minutes=RUN_IN_FLIGHT_MINUTES + 5))
+
+    reaped = reap_orphaned_runs()
+
+    assert reaped == 1
+    with TestSession() as db:
+        run = db.query(ScoutRun).filter(ScoutRun.id == run_id).first()
+        assert run.status == "error"
+    assert _cache.try_lock(scout_live_lock_key(store_id), ttl_seconds=60) is True  # lock released
+
+
+def test_reap_leaves_a_genuinely_recent_running_run_alone(store_id, fake_redis):
+    from datetime import datetime, timedelta
+    from app.core.run_reaper import reap_orphaned_runs
+    from app.core.db import ScoutRun
+
+    run_id = _seed_running_run(store_id, "scout", datetime.utcnow() - timedelta(minutes=5))
+
+    reaped = reap_orphaned_runs()
+
+    assert reaped == 0
+    with TestSession() as db:
+        run = db.query(ScoutRun).filter(ScoutRun.id == run_id).first()
+        assert run.status == "running"  # untouched -- still plausibly in flight
+
+
+def test_reap_clears_stuck_reputation_run(store_id, fake_redis):
+    from datetime import datetime, timedelta
+    from app.core import cache as _cache
+    from app.agents.reputation import REPUTATION_RUN_LOCK_MINUTES, _reputation_live_lock_key
+    from app.core.run_reaper import reap_orphaned_runs
+    from app.core.db import ScoutRun
+
+    _cache.try_lock(_reputation_live_lock_key(store_id), ttl_seconds=REPUTATION_RUN_LOCK_MINUTES * 60)
+    run_id = _seed_running_run(
+        store_id, "whatsapp_check",
+        datetime.utcnow() - timedelta(minutes=REPUTATION_RUN_LOCK_MINUTES + 5),
+    )
+
+    reaped = reap_orphaned_runs()
+
+    assert reaped == 1
+    with TestSession() as db:
+        run = db.query(ScoutRun).filter(ScoutRun.id == run_id).first()
+        assert run.status == "error"
+    assert _cache.try_lock(_reputation_live_lock_key(store_id), ttl_seconds=60) is True

@@ -3,10 +3,11 @@ import hashlib
 import logging
 from urllib.parse import quote_plus
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from app.agents.scout.config import APIFY_TOKEN, APIFY_MAPS_ACTOR, APIFY_REVIEWS_PER_COMPETITOR
 from app.agents.scout.schemas import FindingSchema
+from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error, should_retry_apify_call
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _extract_topics(text: str) -> list[str]:
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=2, min=5, max=30),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception(should_retry_apify_call),
     reraise=True,
 )
 def _run_actor(search_url: str, sort: str, max_reviews: int) -> list[dict]:
@@ -97,7 +98,6 @@ def fetch_reviews(competitor: dict) -> list[FindingSchema]:
             logger.info("Maps %s for %r: %d items", sort_key, name, len(items))
         except Exception as exc:
             logger.error("Apify Maps actor (%s) failed for %r: %s", sort_key, name, exc)
-            from app.core.apify_errors import ApifyQuotaExceeded, is_quota_error
             if is_quota_error(exc):
                 raise ApifyQuotaExceeded(str(exc)) from exc
 

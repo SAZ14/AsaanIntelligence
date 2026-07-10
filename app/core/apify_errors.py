@@ -21,3 +21,14 @@ class ApifyQuotaExceeded(Exception):
 def is_quota_error(exc: BaseException | str) -> bool:
     msg = str(exc).lower()
     return "usage hard limit" in msg or ("apify.com" in msg and "upgrade" in msg)
+
+
+def should_retry_apify_call(exc: BaseException) -> bool:
+    """Predicate for tenacity's retry_if_exception -- retry on routine
+    per-item failures (a timeout, a transient 500), but NOT on a quota
+    error, since every retry is then a guaranteed-fail call by
+    definition. Confirmed live: scout's scrapers were retrying a quota
+    error up to 3x each (with exponential backoff delay on top) before
+    the caller even got a chance to detect it and stop, multiplying
+    wasted Apify calls during an outage instead of failing fast."""
+    return not is_quota_error(exc)
