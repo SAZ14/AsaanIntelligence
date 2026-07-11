@@ -493,6 +493,24 @@ def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | No
         send_fn(report)
         logger.info("bg_scout: delivered store=%d", store_id)
         logger.info("bg_scout: reply_text store=%d text=%r", store_id, report)
+
+        # This keyword-shortcut dispatch (see _is_scout_message) bypasses
+        # gateway/internal.py's LLM router entirely, so without saving
+        # memory here too, a scout question leaves the next message with
+        # zero history and no last_agent to work with -- confirmed live:
+        # "should I be worried about any of them" right after a scout
+        # question had nothing to go on, misrouted to reputation, and that
+        # wrong agent then got LOCKED IN by the continuity override on the
+        # turn after that (compounding the error instead of catching it).
+        # Wrapped separately so a memory-save hiccup can't turn an already-
+        # delivered report into a false "could not be completed" error.
+        try:
+            from app.gateway.internal import _load_staff_history, _save_staff_turn, _save_last_agent
+            history = _load_staff_history(store_id, from_number)
+            _save_staff_turn(store_id, from_number, history, body, report)
+            _save_last_agent(store_id, from_number, "scout")
+        except Exception as mem_exc:
+            logger.warning("bg_scout: memory_save_failed store=%d error=%s", store_id, mem_exc)
     except Exception as exc:
         logger.error("bg_scout: store=%d failed error=%s", store_id, exc)
         if _reraise:
@@ -518,6 +536,18 @@ def _bg_scout_cached_only(store_id: int, from_number: str, send_fn, body: str, a
         report = answer_from_cache(store_id, body)
         send_fn(report)
         logger.info("bg_scout_cached_only: delivered store=%d", store_id)
+
+        # Same gap as _bg_scout -- this keyword-shortcut dispatch bypasses
+        # gateway/internal.py's router entirely, so save memory here too or
+        # the next message has nothing to work with. See _bg_scout's
+        # comment for the confirmed-live failure this fixes.
+        try:
+            from app.gateway.internal import _load_staff_history, _save_staff_turn, _save_last_agent
+            history = _load_staff_history(store_id, from_number)
+            _save_staff_turn(store_id, from_number, history, body, report)
+            _save_last_agent(store_id, from_number, "scout")
+        except Exception as mem_exc:
+            logger.warning("bg_scout_cached_only: memory_save_failed store=%d error=%s", store_id, mem_exc)
     except Exception as exc:
         logger.error("bg_scout_cached_only: store=%d failed error=%s", store_id, exc)
         if _reraise:

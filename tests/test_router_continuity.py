@@ -175,3 +175,75 @@ def test_last_agent_saved_after_shorthand_turn(store_id, fake_redis):
         handle_internal_for_store(PHONE, "next", store_id)
 
     assert _load_last_agent(store_id, PHONE) == "reputation"
+
+
+# ── Scout's keyword-shortcut dispatch (gateway/main.py's _bg_scout /
+# _bg_scout_cached_only) must ALSO save memory ──────────────────────────────
+#
+# Confirmed live: "what are competitors up to" gets caught by
+# _is_scout_message() and dispatched straight to _bg_scout, entirely
+# bypassing handle_internal_for_store()'s LLM router -- so without saving
+# memory here too, the staff member's NEXT message has zero history and no
+# last_agent to work with. Live failure observed: "should I be worried
+# about any of them" right after a scout question had nothing to go on,
+# misrouted to reputation, and that wrong agent then got LOCKED IN by the
+# continuity override on the turn after that.
+
+def test_bg_scout_saves_last_agent_and_history(store_id, fake_redis):
+    from app.gateway.main import _bg_scout
+    from app.gateway.internal import _load_last_agent, _load_staff_history
+
+    sent = []
+    with (
+        patch("app.agents.scout.analysis.classify_intent", return_value="scout"),
+        patch("app.agents.scout.pipeline.run", return_value="Competitor report text."),
+    ):
+        _bg_scout(store_id, PHONE, sent.append, "what are competitors up to")
+
+    assert sent == ["Competitor report text."]
+    assert _load_last_agent(store_id, PHONE) == "scout"
+    assert _load_staff_history(store_id, PHONE) == [
+        {"role": "user", "content": "what are competitors up to"},
+        {"role": "assistant", "content": "Competitor report text."},
+    ]
+
+
+def test_bg_scout_cached_only_saves_last_agent_and_history(store_id, fake_redis):
+    from app.gateway.main import _bg_scout_cached_only
+    from app.gateway.internal import _load_last_agent, _load_staff_history
+
+    sent = []
+    with patch("app.agents.scout.pipeline.answer_from_cache", return_value="Cached report text."):
+        _bg_scout_cached_only(store_id, PHONE, sent.append, "what are competitors up to")
+
+    assert sent == ["Cached report text."]
+    assert _load_last_agent(store_id, PHONE) == "scout"
+    assert _load_staff_history(store_id, PHONE) == [
+        {"role": "user", "content": "what are competitors up to"},
+        {"role": "assistant", "content": "Cached report text."},
+    ]
+
+
+def test_bg_scout_memory_saved_lets_next_turn_stay_on_scout(store_id, fake_redis):
+    """End-to-end reproduction of the confirmed-live failure: a scout
+    question followed by a vague, keyword-free continuation must now stay
+    on scout instead of misrouting with zero context."""
+    from app.gateway.main import _bg_scout
+    from app.gateway.internal import handle_internal_for_store
+
+    with (
+        patch("app.agents.scout.analysis.classify_intent", return_value="scout"),
+        patch("app.agents.scout.pipeline.run", return_value="Competitor report text."),
+    ):
+        _bg_scout(store_id, PHONE, lambda _r: None, "what are competitors up to")
+
+    with (
+        patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "negative")),
+        patch("app.gateway.internal._scout", return_value="Yes, watch out for Rival Co.") as mock_scout,
+        patch("app.gateway.internal._reputation") as mock_reputation,
+    ):
+        reply = handle_internal_for_store(PHONE, "should I be worried about any of them", store_id)
+
+    mock_scout.assert_called_once()
+    mock_reputation.assert_not_called()
+    assert reply == "Yes, watch out for Rival Co."
