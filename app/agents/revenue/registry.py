@@ -78,11 +78,11 @@ class RevenueRegistry:
         logger.info("revenue.registry: store=%d from=%s cmd=%s", store_id, from_phone, text.split()[0] if text else "")
         return agent.handle_message(from_phone, text)
 
-    def answer_question(self, store_id: int, text: str) -> str:
+    def answer_question(self, store_id: int, text: str, history: list[dict] | None = None) -> str:
         agent = self.agent_for_store(store_id)
         if agent is None:
             return "Revenue analysis isn't configured for this restaurant yet."
-        return agent.answer_question(text)
+        return agent.answer_question(text, history=history)
 
     def invalidate(self, store_id: int) -> None:
         self._agents.pop(store_id, None)

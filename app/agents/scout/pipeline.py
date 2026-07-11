@@ -361,7 +361,7 @@ def _most_recent_report(store_id: int):
         )
 
 
-def answer_from_cache(store_id: int, user_message: str) -> str:
+def answer_from_cache(store_id: int, user_message: str, history: list[dict] | None = None) -> str:
     """Answer a natural-language scout question using only what's already
     stored -- NEVER dispatches a live Apify scrape, no matter how stale the
     cache is. A live scrape is expensive (7-45 min, real Apify credits) and
@@ -390,7 +390,7 @@ def answer_from_cache(store_id: int, user_message: str) -> str:
         freshness_note = _build_freshness_note(latest_run, is_live=False)
         enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
         return build_report("scout", enriched, freshness_note, user_message=user_message,
-                            store_name=store_name, store_category=store_category)
+                            store_name=store_name, store_category=store_category, history=history)
     except ReportGenerationFailed:
         # Never persisted here (this path never writes a Run/Report row),
         # so there's nothing to protect -- just don't leak a raw

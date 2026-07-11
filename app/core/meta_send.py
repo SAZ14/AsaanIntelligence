@@ -82,6 +82,39 @@ def send_meta(phone_number_id: str, to_wa_id: str, body: str) -> None:
             logger.error("meta_send: chunk %d/%d failed: %s", i + 1, len(chunks), exc)
 
 
+def send_typing_indicator(phone_number_id: str, message_id: str) -> None:
+    """Mark the inbound message read and show the native WhatsApp "typing…"
+    bubble in one request. Meta dismisses it automatically after 25s or as
+    soon as a real reply is sent, whichever comes first -- so this is a
+    best-effort visual cue for the common case (a reply within a few
+    seconds), not a substitute for an informative ack on genuinely slow
+    operations (reputation's review check, scout's live scrape both
+    routinely exceed 25s and keep their own explicit "will take ~N"
+    text acks alongside this). Best-effort: a failure here should never
+    block or fail the actual reply, so exceptions are swallowed.
+    https://developers.facebook.com/documentation/business-messaging/whatsapp/typing-indicators"""
+    import httpx
+
+    token = _token_for(phone_number_id)
+    if not token:
+        return
+    url = f"{_graph_base()}/{phone_number_id}/messages"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(url, headers=headers, json=payload)
+        if r.status_code >= 400:
+            logger.warning("meta_send: typing_indicator API error %d body=%s", r.status_code, r.text[:200])
+    except Exception as exc:
+        logger.warning("meta_send: typing_indicator failed: %s", exc)
+
+
 def download_media(media_id: str, phone_number_id: str) -> tuple[bytes, str, str] | None:
     """Download inbound media by id. Returns (content, mime_type, filename)
     or None. Cloud API media is a two-step fetch: GET /{media_id} returns a

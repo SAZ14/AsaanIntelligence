@@ -65,6 +65,48 @@ def _get_store_name(store_id: int) -> str:
         return store.name if store else "your restaurant"
 
 
+# ── Staff conversational memory ─────────────────────────────────────────────
+# Reuses the customer agent's chat-session storage (Redis, 1h TTL + Postgres
+# durability -- app/agents/customer/community/store.py) via a "staff:"-
+# prefixed phone key, rather than duplicating that load/save/cache pattern.
+# The prefix matters: the same phone number can be in customer mode or staff
+# mode at different times (mode switching is a real, supported flow), so a
+# shared bare-phone key would bleed customer-facing chit-chat into staff
+# tool answers and vice versa. Capped at the last 6 messages (3 turns), same
+# window customer mode already uses -- enough for real follow-ups ("what
+# about last week") without letting a long-stale conversation drift the
+# router or an agent's answer off onto an unrelated earlier topic.
+_STAFF_HISTORY_TURNS = 6
+
+
+def _load_staff_history(store_id: int, phone: str) -> list[dict]:
+    from app.agents.customer.community.store import load_chat_session
+    return load_chat_session(store_id, f"staff:{phone}")
+
+
+def _save_staff_turn(store_id: int, phone: str, history: list[dict], user_text: str, reply: str) -> None:
+    from app.agents.customer.community.store import save_chat_session
+    updated = list(history) + [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": reply},
+    ]
+    save_chat_session(store_id, f"staff:{phone}", updated[-_STAFF_HISTORY_TURNS:])
+
+
+def _condensed_history(history: list[dict], max_assistant_len: int = 150) -> list[dict]:
+    """Trims prior assistant replies for the router's classification call --
+    it only needs enough to resolve a reference ("what about last week"),
+    not the full text of a 2000-character report, which would just add
+    latency/cost to what's meant to be a sub-second classification."""
+    condensed = []
+    for turn in history:
+        content = turn.get("content", "")
+        if turn.get("role") == "assistant" and len(content) > max_assistant_len:
+            content = content[:max_assistant_len] + "..."
+        condensed.append({"role": turn.get("role", "user"), "content": content})
+    return condensed
+
+
 _REPUTATION_EXACT = {"post", "ignore", "next"}
 
 # Documented Revenue Advisor shorthand commands (see staff_help_text). These bypass
@@ -93,7 +135,7 @@ def _is_shorthand(text: str) -> bool:
     )
 
 
-def _classify_with_llm(text: str) -> tuple[str, str]:
+def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[str, str]:
     """Return (agent, command) via ZAI. Falls back to keyword routing."""
     try:
         from app.core.llm import get_client, get_fast_model, nothink_kwargs
@@ -171,12 +213,12 @@ def _classify_with_llm(text: str) -> tuple[str, str]:
         # English/Urdu routing eval before switching). Tight timeout: if the
         # API stalls, the keyword fallback below routes instead of making
         # staff wait out an API hiccup.
+        messages = [{"role": "system", "content": system}]
+        messages.extend(_condensed_history(history or []))
+        messages.append({"role": "user", "content": text})
         resp = client.chat.completions.create(
             model=fast_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ],
+            messages=messages,
             temperature=0,
             max_tokens=25,
             timeout=8.0,
@@ -204,6 +246,7 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
     """Reframe the raw agent output as a direct conversational answer."""
     try:
         from app.core.llm import get_client, get_fast_model, nothink_kwargs
+        from app.core.persona import WHATSAPP_FORMAT_RULES
         try:
             client = get_client()
         except RuntimeError:
@@ -223,10 +266,8 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
                         "A restaurant manager asked a question on WhatsApp. "
                         "You have the system output. "
                         "Rewrite it as a direct, conversational answer to their specific question. "
-                        "Keep all numbers and data intact. "
-                        "WhatsApp format: short paragraphs, use *word* for bold (single asterisks), "
-                        "no markdown headers, no em-dashes, numbered or bullet lists for multiple items. "
-                        "Never invent information not in the system output."
+                        "Keep all numbers and data intact. Never invent information not in the "
+                        f"system output.\n\n{WHATSAPP_FORMAT_RULES}"
                     ),
                 },
                 {
@@ -247,7 +288,16 @@ def _adapt_response(original_query: str, raw_response: str) -> str:
 
 
 def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str:
-    """Route one staff message to the right agent. Returns reply text."""
+    """Route one staff message to the right agent. Returns reply text.
+
+    Loads/saves short-term conversational memory (_load_staff_history /
+    _save_staff_turn) around every path except the static help/greeting
+    short-circuit -- even a shorthand command's reply becomes useful
+    context for a later natural-language follow-up ("why is that leakage
+    number so high" right after "leakage"), so every turn is saved
+    regardless of which branch answered it. A single exit point (the
+    `reply = ...; break` pattern below) is what makes saving-once-at-the-
+    end possible without wrapping every branch in its own save call."""
     text = (body or "").strip()
 
     if not text or text.lower() in ("help", *_GREETINGS):
@@ -255,86 +305,90 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
 
     first = text.lower().split()[0]
     is_natural = not _is_shorthand(text)
+    history = _load_staff_history(store_id, from_number)
 
     # Unambiguous action commands — skip LLM
     if first in _REPUTATION_EXACT:
         logger.info("internal.routing: store=%d agent=reputation trigger=action from=%s", store_id, from_number)
-        return _reputation(store_id, from_number, text)
+        reply = _reputation(store_id, from_number, text, history=history)
 
-    if first == "edit" and len(text.split()) > 1:
+    elif first == "edit" and len(text.split()) > 1:
         logger.info("internal.routing: store=%d agent=reputation trigger=edit from=%s", store_id, from_number)
-        return _reputation(store_id, from_number, text)
+        reply = _reputation(store_id, from_number, text, history=history)
 
-    if first in _REVENUE_EXACT and len(text.split()) == 1:
+    elif first in _REVENUE_EXACT and len(text.split()) == 1:
         logger.info("internal.routing: store=%d agent=revenue trigger=exact from=%s", store_id, from_number)
-        return _revenue(store_id, from_number, text)
+        reply = _revenue(store_id, from_number, text)
 
-    # LLM classification
-    agent, command = _classify_with_llm(text)
-    logger.info(
-        "internal.routing: store=%d agent=%s command=%s natural=%s from=%s",
-        store_id, agent, command, is_natural, from_number,
-    )
+    else:
+        # LLM classification
+        agent, command = _classify_with_llm(text, history=history)
+        logger.info(
+            "internal.routing: store=%d agent=%s command=%s natural=%s from=%s",
+            store_id, agent, command, is_natural, from_number,
+        )
 
-    if agent == "scout":
-        # Scout should have been caught by async dispatch upstream; this is the edge-case fallback.
-        return _scout(store_id, from_number, text)
+        if agent == "scout":
+            # Scout should have been caught by async dispatch upstream; this is the edge-case fallback.
+            reply = _scout(store_id, from_number, text, history=history)
 
-    if agent == "revenue":
-        # Natural language goes straight to answer_question() -- one LLM
-        # call given real computed numbers and the actual question,
-        # mirroring scout/reputation/customer's proven-good single-pass
-        # pattern. Previously this always went through handle_message()'s
-        # classify-into-one-of-11-fixed-intents-then-template path (whose
-        # own classifier ran on a keyword-regex fallback with no LLM at
-        # all -- see registry.get_registry()) and only got fixed up
-        # afterward via _adapt_response, which was working from a generic
-        # template's text rather than the real data. Exact shorthand
-        # commands (is_natural=False) still use the existing template path.
-        if is_natural:
-            return _revenue_answer(store_id, text)
-        return _revenue(store_id, from_number, text)
+        elif agent == "revenue":
+            # Natural language goes straight to answer_question() -- one LLM
+            # call given real computed numbers and the actual question,
+            # mirroring scout/reputation/customer's proven-good single-pass
+            # pattern. Previously this always went through handle_message()'s
+            # classify-into-one-of-11-fixed-intents-then-template path (whose
+            # own classifier ran on a keyword-regex fallback with no LLM at
+            # all -- see registry.get_registry()) and only got fixed up
+            # afterward via _adapt_response, which was working from a generic
+            # template's text rather than the real data. Exact shorthand
+            # commands (is_natural=False) still use the existing template path.
+            if is_natural:
+                reply = _revenue_answer(store_id, text, history=history)
+            else:
+                reply = _revenue(store_id, from_number, text)
 
-    if agent == "reputation":
-        # "check" is the one command with no useful modifiers -- always
-        # canonicalize it so any check-shaped phrasing reaches
-        # reputation.py's exact-match fast path reliably. positive/
-        # negative/reviews used to get canonicalized the same way, but
-        # that silently discarded a time modifier the original phrasing
-        # might carry ("show me LAST WEEK'S positive reviews") -- by the
-        # time reputation.py saw just the bare word "positive", the "last
-        # week" was already gone with no way to recover it downstream.
-        # Passing the original text through instead means simple phrasings
-        # that don't exactly match reputation.py's own trigger set (e.g.
-        # "show me the good reviews") take its slightly slower
-        # _classify_review_query fallback path instead of the instant
-        # exact-match one -- an acceptable trade since that fallback is
-        # already relied on for everything else and handles time-range
-        # detection too.
-        if command == "check":
-            body_to_send = command
+        elif agent == "reputation":
+            # "check" is the one command with no useful modifiers -- always
+            # canonicalize it so any check-shaped phrasing reaches
+            # reputation.py's exact-match fast path reliably. positive/
+            # negative/reviews used to get canonicalized the same way, but
+            # that silently discarded a time modifier the original phrasing
+            # might carry ("show me LAST WEEK'S positive reviews") -- by the
+            # time reputation.py saw just the bare word "positive", the "last
+            # week" was already gone with no way to recover it downstream.
+            # Passing the original text through instead means simple phrasings
+            # that don't exactly match reputation.py's own trigger set (e.g.
+            # "show me the good reviews") take its slightly slower
+            # _classify_review_query fallback path instead of the instant
+            # exact-match one -- an acceptable trade since that fallback is
+            # already relied on for everything else and handles time-range
+            # detection too.
+            body_to_send = command if command == "check" else text
+            reply = _reputation(store_id, from_number, body_to_send, history=history)
+
         else:
-            body_to_send = text
-        return _reputation(store_id, from_number, body_to_send)
+            # integrity (default)
+            # Always pass the ORIGINAL text, never the classified command keyword.
+            # IntegrityService.handle_message() splits on the first word to pick a
+            # branch -- an exact shorthand command (is_natural=False) matches one
+            # of its fixed branches directly and behaves exactly as before; a real
+            # question's first word essentially never matches, so it naturally
+            # falls through to the service's own free-form answer_question() (one
+            # LLM call, real report data + the actual question) instead of the
+            # fixed summary/leakage/profit templates. That free-form answer is
+            # already a direct, tailored response, so no _adapt_response pass on
+            # top of it.
+            reply = _integrity(store_id, from_number, text, history=history)
 
-    # integrity (default)
-    # Always pass the ORIGINAL text, never the classified command keyword.
-    # IntegrityService.handle_message() splits on the first word to pick a
-    # branch -- an exact shorthand command (is_natural=False) matches one
-    # of its fixed branches directly and behaves exactly as before; a real
-    # question's first word essentially never matches, so it naturally
-    # falls through to the service's own free-form answer_question() (one
-    # LLM call, real report data + the actual question) instead of the
-    # fixed summary/leakage/profit templates. That free-form answer is
-    # already a direct, tailored response, so no _adapt_response pass on
-    # top of it.
-    return _integrity(store_id, from_number, text)
+    _save_staff_turn(store_id, from_number, history, text, reply)
+    return reply
 
 
-def _integrity(store_id: int, from_number: str, text: str) -> str:
+def _integrity(store_id: int, from_number: str, text: str, history: list[dict] | None = None) -> str:
     try:
         from app.agents.integrity.service import get_service
-        return get_service().handle_message(store_id, from_number, text)
+        return get_service().handle_message(store_id, from_number, text, history=history)
     except Exception as e:
         logger.warning("internal._integrity: store=%d error=%s", store_id, e)
         return "POS audit is unavailable right now. Please try again shortly."
@@ -350,16 +404,16 @@ def _revenue(store_id: int, from_number: str, text: str) -> str:
         return "Revenue advisor is unavailable right now. Please try again shortly."
 
 
-def _revenue_answer(store_id: int, text: str) -> str:
+def _revenue_answer(store_id: int, text: str, history: list[dict] | None = None) -> str:
     try:
         from app.agents.revenue.registry import get_registry
-        return get_registry().answer_question(store_id, text)
+        return get_registry().answer_question(store_id, text, history=history)
     except Exception as e:
         logger.warning("internal._revenue_answer: store=%d error=%s", store_id, e)
         return "Revenue advisor is unavailable right now. Please try again shortly."
 
 
-def _scout(store_id: int, from_number: str, text: str) -> str:
+def _scout(store_id: int, from_number: str, text: str, history: list[dict] | None = None) -> str:
     """Fallback for scout-classified messages the upstream keyword-based
     async dispatch in gateway/main.py didn't catch -- e.g. natural-language
     queries like "what are other burger places doing" that contain none of
@@ -380,16 +434,16 @@ def _scout(store_id: int, from_number: str, text: str) -> str:
     """
     try:
         from app.agents.scout.pipeline import answer_from_cache
-        return answer_from_cache(store_id, text)
+        return answer_from_cache(store_id, text, history=history)
     except Exception as e:
         logger.error("internal._scout: store=%d error=%s", store_id, e)
         return "Scout report could not be completed. Please try again."
 
 
-def _reputation(store_id: int, from_number: str, text: str) -> str:
+def _reputation(store_id: int, from_number: str, text: str, history: list[dict] | None = None) -> str:
     try:
         from app.agents.reputation import process_reputation_owner_reply
-        return process_reputation_owner_reply(from_number, text, store_id=store_id)
+        return process_reputation_owner_reply(from_number, text, store_id=store_id, history=history)
     except Exception as e:
         logger.warning("internal._reputation: store=%d error=%s", store_id, e)
         return (

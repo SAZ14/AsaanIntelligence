@@ -871,21 +871,21 @@ class TestInternalRoutingForReviewListing:
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "positive")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "show me the good reviews", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "show me the good reviews")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "show me the good reviews", history=[])
 
     def test_router_negative_command_passes_original_text_not_canonical_word(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "negative")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "what are people complaining about", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "what are people complaining about")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "what are people complaining about", history=[])
 
     def test_router_reviews_command_passes_original_text_not_canonical_word(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "reviews")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "show me all the reviews", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "show me all the reviews")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "show me all the reviews", history=[])
 
     def test_router_check_command_still_canonicalizes(self, store_id):
         """check has no useful modifiers, so it still canonicalizes to the
@@ -894,14 +894,14 @@ class TestInternalRoutingForReviewListing:
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "check")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "can you check our google reviews", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "check")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "check", history=[])
 
     def test_router_chat_command_still_passes_original_text(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         with patch("app.gateway.internal._classify_with_llm", return_value=("reputation", "chat")), \
              patch("app.gateway.internal._reputation", return_value="ok") as mock_rep:
             handle_internal_for_store("+923001234567", "how is our rating trending", store_id)
-        mock_rep.assert_called_once_with(store_id, "+923001234567", "how is our rating trending")
+        mock_rep.assert_called_once_with(store_id, "+923001234567", "how is our rating trending", history=[])
 
     def test_next_bypasses_llm_classifier_entirely(self, store_id):
         from app.gateway.internal import handle_internal_for_store

@@ -90,7 +90,7 @@ class IntegrityService:
         self._cache[store_id] = _Cached(at=now, report=report)
         return report
 
-    def handle_message(self, store_id: int, from_phone: str, body: str) -> str:
+    def handle_message(self, store_id: int, from_phone: str, body: str, history: list[dict] | None = None) -> str:
         text = (body or "").strip()
         # Bare greetings ("hi"/"hello"/"start"/"commands") are intercepted
         # upstream in app/gateway/internal.py, which shows the full staff
@@ -135,7 +135,7 @@ class IntegrityService:
                 return _weekly_report(store_id, report)
 
             # Free-form question — use LLM if available
-            answer = answer_question(report, text)
+            answer = answer_question(report, text, history=history)
             return answer or HELP_TEXT
 
         except FileNotFoundError as exc:

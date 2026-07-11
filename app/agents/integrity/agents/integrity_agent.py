@@ -270,23 +270,25 @@ def run_integrity_agent(
     return report
 
 
-def answer_question(report: IntegrityAgentReport, question: str, client=None) -> str:
+def answer_question(report: IntegrityAgentReport, question: str, client=None, history: list[dict] | None = None) -> str:
     from app.core.llm import get_model, nothink_kwargs
+    from app.core.persona import staff_persona
     llm = _make_client(client)
     if llm is None:
         return "LLM unavailable, set ZAI_API_KEY to enable Q&A about the audit."
-    prompt = (
-        "Answer the question using ONLY the audit data below. Cite exact figures. "
-        "If the data does not contain the answer, say so. "
-        "No em-dashes -- use a comma or colon instead. No emojis.\n\n"
-        f"{_context(report)}\n\nQuestion: {question}"
+    system = (
+        staff_persona(f"You are a loss-prevention/POS-integrity analyst for {report.venue_name}.")
+        + "\nCite exact figures from the audit data."
     )
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history or [])
+    messages.append({"role": "user", "content": f"{_context(report)}\n\nQuestion: {question}"})
     try:
         resp = llm.chat.completions.create(
             timeout=25.0,
             model=get_model(),
             max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             **nothink_kwargs(get_model()),
         )
         return resp.choices[0].message.content.strip()

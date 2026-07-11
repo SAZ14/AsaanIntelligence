@@ -711,7 +711,7 @@ def _format_pending(pending: dict) -> str:
 
 # ── WhatsApp owner reply handler ──
 
-def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | None = None) -> str:
+def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | None = None, history: list[dict] | None = None) -> str:
     """Handle a reputation-related WhatsApp message from an owner/staff member.
 
     store_id must be passed by the gateway (derived from the Twilio To field).
@@ -838,7 +838,7 @@ def process_reputation_owner_reply(from_phone: str, body: str, store_id: int | N
         days_back = _detect_time_range(text)
         return _list_reviews_page(store_id, store_name, from_phone, sentiment_filter, status_filter, days_back=days_back)
 
-    return _chat_about_reviews(store_id, store_name, text)
+    return _chat_about_reviews(store_id, store_name, text, history=history)
 
 
 def _reputation_cache_key(store_id: int) -> str:
@@ -1518,9 +1518,10 @@ def _list_reviews_page(
     return "\n".join(lines)
 
 
-def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
+def _chat_about_reviews(store_id: int, store_name: str, text: str, history: list[dict] | None = None) -> str:
     from app.review_sources import db as review_db
     from app.core.llm import get_client, get_model, nothink_kwargs
+    from app.core.persona import staff_persona
 
     pending = review_db.get_pending_finding(store_id)
 
@@ -1575,19 +1576,19 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
         recent_ctx += "(None, type CHECK to scrape new reviews)\n"
 
     system = (
-        f"You assist the owner of '{store_name}' with review management on WhatsApp. "
-        "Be brief, direct and conversational. If the reviews below don't "
-        "cover what's being asked, say so plainly instead of guessing.\n"
+        staff_persona(f"You assist the owner of '{store_name}' with review management on WhatsApp.")
+        + "\nBe brief and direct.\n"
         "Commands: *POST* (mark draft as replied -- owner still has to post it "
         "on the actual platform themselves, we can't publish it for them), "
         "*EDIT <text>* (revise draft), "
         "*IGNORE* (skip), *CHECK* (scrape new reviews), "
         "*POSITIVE REVIEWS* / *NEGATIVE REVIEWS* / *ALL REVIEWS* (list reviews "
         "10 at a time), *NEXT* (see the next 10).\n\n"
-        "WhatsApp format: no markdown, no em-dashes (use a comma or colon instead), "
-        "no emojis, use *word* for bold, short paragraphs.\n\n"
         f"{pending_ctx}\n{recent_ctx}"
     )
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history or [])
+    messages.append({"role": "user", "content": text})
 
     try:
         client = get_client()
@@ -1602,10 +1603,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str) -> str:
             timeout=45.0,
             model=get_model(),
             max_tokens=500,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ],
+            messages=messages,
             **nothink_kwargs(get_model()),
         )
         return resp.choices[0].message.content.strip()

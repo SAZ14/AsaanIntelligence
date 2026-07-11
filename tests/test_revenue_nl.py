@@ -76,11 +76,12 @@ class TestRevenueAnswerQuestion:
         result = agent.answer_question("how many burgers did we sell this week")
 
         mock_client.chat.completions.create.assert_called_once()
-        prompt = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "how many burgers did we sell this week" in prompt
-        assert "Classic Burger" in prompt  # real computed data made it into context
-        assert "No em-dashes" in prompt
-        assert "No emojis" in prompt or "no emojis" in prompt.lower()
+        messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        full_prompt = "\n".join(m["content"] for m in messages)
+        assert "how many burgers did we sell this week" in full_prompt
+        assert "Classic Burger" in full_prompt  # real computed data made it into context
+        assert "no em-dashes" in full_prompt.lower()
+        assert "no emojis" in full_prompt.lower()
         assert result == "You sold 2 Classic Burgers for PKR 1,300 this week."
 
     def test_llm_failure_returns_an_error_string_not_a_crash(self):

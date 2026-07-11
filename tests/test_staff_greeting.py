@@ -92,5 +92,5 @@ def test_real_natural_language_query_still_reaches_the_llm_router(store_id):
          patch("app.gateway.internal._integrity", return_value="mocked summary") as mock_integrity:
         reply = handle_internal_for_store("+923001234567", "how did we do this week", store_id)
     mock_classify.assert_called_once()
-    mock_integrity.assert_called_once_with(store_id, "+923001234567", "how did we do this week")
+    mock_integrity.assert_called_once_with(store_id, "+923001234567", "how did we do this week", history=[])
     assert reply == "mocked summary"

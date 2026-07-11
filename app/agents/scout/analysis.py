@@ -36,24 +36,17 @@ def _enrich_system(store_name: str, store_category: str) -> str:
 
 
 def _report_system(store_name: str, store_category: str) -> str:
+    from app.core.persona import staff_persona
     return (
-        f"You advise the owner of {store_name} ({store_category} restaurant). "
-        "Be specific: name competitors and their concrete moves, cite exact evidence from "
-        "the data whenever it's present -- prices, ratings, engagement numbers, dates, quotes. "
-        "Give concrete, actionable steps: specific bundle ideas, reel concepts, counter-offers. "
-        "Never be generic, and never pad a thin finding with filler sentences that add no "
-        "new information; conversely, don't compress a well-evidenced competitor into one "
-        "throwaway line just to save space. Match length to how much real signal exists for "
-        "each item. Keep it skimmable for WhatsApp -- short paragraphs, not one giant block --"
-        " but substance over brevity: a report that's slightly longer and actually useful beats"
-        " one that's short and empty.\n\n"
-        "Formatting rules:\n"
-        "- Plain text only, no markdown (no ##, no **, no --)\n"
-        "- Bold with *single asterisks*\n"
-        "- Numbered lists or bullet points with -\n"
-        "- No em-dashes, use a colon or comma instead\n"
-        "- No emojis\n"
-        "- Short paragraphs, easy to read on mobile"
+        staff_persona(f"You advise the owner of {store_name} ({store_category} restaurant) on competitive intelligence.")
+        + "\nCite exact evidence from the data whenever it's present -- prices, ratings, "
+        "engagement numbers, dates, quotes. Give concrete, actionable steps: specific bundle "
+        "ideas, reel concepts, counter-offers. Never be generic, and never pad a thin finding "
+        "with filler sentences that add no new information; conversely, don't compress a "
+        "well-evidenced competitor into one throwaway line just to save space. Match length "
+        "to how much real signal exists for each item -- substance over brevity, a report "
+        "that's slightly longer and actually useful beats one that's short and empty. "
+        "Numbered lists or bullet points with - are fine for multiple items."
     )
 
 
@@ -163,7 +156,7 @@ def _extract_json(text: str) -> list:
     return []
 
 
-def _chat(system: str, user: str) -> str:
+def _chat(system: str, user: str, history: list[dict] | None = None) -> str:
     from app.core.llm import nothink_kwargs
 
     client = _get_client()
@@ -185,12 +178,12 @@ def _chat(system: str, user: str) -> str:
     # overrides the shared client's 30s interactive default as headroom
     # for the largest reports; max_tokens gives the denser per-competitor
     # paragraphs REPORT_DEPTH_POLICY asks for room to actually use.
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history or [])
+    messages.append({"role": "user", "content": user})
     resp = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        messages=messages,
         temperature=0.4,
         timeout=90,
         max_tokens=2000,
@@ -396,6 +389,7 @@ def build_report(
     user_message: Optional[str] = None,
     store_name: str = "the restaurant",
     store_category: str = "food",
+    history: list[dict] | None = None,
 ) -> str:
     cmd = command.lower().strip()
     instructions = _command_instructions(store_name)
@@ -442,7 +436,7 @@ def build_report(
     )
 
     try:
-        report = _chat(_report_system(store_name, store_category), prompt)
+        report = _chat(_report_system(store_name, store_category), prompt, history=history)
         return f"{freshness_note}\n\n{report}"
     except Exception as exc:
         logger.error("ZAI report generation failed: %s", exc)

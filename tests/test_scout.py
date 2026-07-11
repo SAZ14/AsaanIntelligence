@@ -464,7 +464,7 @@ def test_scout_never_calls_run_regardless_of_lock_state(store_id, fake_redis):
         reply = _scout(store_id, "+923001234567", "what are competitors doing")
 
     mock_run.assert_not_called()
-    mock_cache.assert_called_once_with(store_id, "what are competitors doing")
+    mock_cache.assert_called_once_with(store_id, "what are competitors doing", history=None)
     assert reply == "cached answer"
 
 

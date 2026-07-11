@@ -986,7 +986,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
 def _process_async_message(store, from_number: str, body_text: str, send_fn,
                            background_tasks: BackgroundTasks, reply_to: dict,
-                           log_prefix: str) -> str:
+                           log_prefix: str, typing_fn=None) -> str:
     """Shared staff/customer routing for async-reply providers (OpenWA, Meta).
 
     Everything after "we know the store, the sender, and how to reply" lives
@@ -994,6 +994,21 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
     parsing, media handling, and how a reply is delivered (send_fn/reply_to).
     The Twilio handler stays separate because it answers synchronously via
     TwiML. Returns "ok" or "throttled" for the webhook's HTTP response.
+
+    typing_fn: optional zero-arg callable that fires Meta's native
+    read-receipt + typing-indicator (app.core.meta_send.send_typing_
+    indicator) -- None for OpenWA, which has no equivalent API. When
+    provided, the catch-all staff dispatch below skips its own guessed
+    text ack (ack=_internal_ack(body_text)) in favor of the native
+    indicator: that guessed ack used a cruder, separate keyword match
+    than the real LLM router (_classify_with_llm), so it could say e.g.
+    "Running your POS audit" right before actually answering a revenue
+    question -- confirmed live as the most visible seam in the whole
+    staff flow. The native indicator can't be wrong about what's coming
+    since it doesn't say anything specific. Scout's live-scrape ack and
+    reputation's "check" ack are unaffected -- both are deterministic,
+    keyword-matched (not LLM-guessed) and correctly set multi-minute/
+    30-90s expectations a 25s-max typing indicator can't convey.
     """
     from app.core.db import is_store_member, get_user_session, set_user_session
 
@@ -1053,6 +1068,8 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
     # ── Internal tools mode ────────────────────────────────────────────────────
     if current_mode == MODE_INTERNAL:
         logger.info("%s: store=%d mode=internal from=%s", log_prefix, store_id, from_number)
+        if typing_fn:
+            background_tasks.add_task(typing_fn)
 
         if _is_scout_message(body_text):
             from app.core.db import SessionLocal, ScoutRun as Run
@@ -1142,7 +1159,9 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
             logger.info("%s: staff cooldown drop from=%s", log_prefix, from_number)
             background_tasks.add_task(send_fn, "Still working on your last request, one moment!")
             return "throttled"
-        ack = _internal_ack(body_text)
+        # Skip the guessed text ack when a native typing indicator already
+        # covers that feedback -- see typing_fn's docstring note above.
+        ack = None if typing_fn else _internal_ack(body_text)
         logger.info("%s: internal_async store=%d from=%s ack=%r", log_prefix, store_id, from_number, ack)
         _dispatch_durable(
             background_tasks, "internal", store_id, from_number, body_text,
@@ -1411,10 +1430,14 @@ async def meta_webhook(request: Request, background_tasks: BackgroundTasks) -> J
                 if not body_text:
                     continue
 
+                def _typing(_pnid=phone_number_id, _mid=msg_id) -> None:
+                    from app.core.meta_send import send_typing_indicator
+                    send_typing_indicator(_pnid, _mid)
+
                 _process_async_message(
                     store, from_number, body_text, _send, background_tasks,
                     {"provider": "meta", "phone_number_id": phone_number_id, "to": wa_id},
-                    "meta.webhook",
+                    "meta.webhook", typing_fn=_typing,
                 )
 
     # Always 200: Meta retries and eventually disables webhooks that error.

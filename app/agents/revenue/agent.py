@@ -148,7 +148,7 @@ class RevenueAgent:
             return self._help()
         return self._help(unknown=True)
 
-    def answer_question(self, text: str) -> str:
+    def answer_question(self, text: str, history: list[dict] | None = None) -> str:
         """Free-form Q&A: one LLM call given real computed numbers and the
         owner's actual question, mirroring integrity's answer_question()
         and the customer agent's single-pass pattern -- both proven to
@@ -171,19 +171,20 @@ class RevenueAgent:
         ])
 
         from app.core.llm import get_model, nothink_kwargs
-        prompt = (
-            "Answer the owner's question using ONLY the revenue data below. Cite exact "
-            "figures (PKR amounts, unit counts, percentages) from it; do not invent numbers. "
-            "If the data doesn't contain the answer, say so plainly. "
-            "No em-dashes -- use a comma or colon instead. No emojis.\n\n"
-            f"{context}\n\nQuestion: {text}"
+        from app.core.persona import staff_persona
+        system = (
+            staff_persona(f"You are a revenue/sales advisor for {self.config.venue_name}.")
+            + "\nCite exact figures (PKR amounts, unit counts, percentages) from the revenue data; do not invent numbers."
         )
+        messages = [{"role": "system", "content": system}]
+        messages.extend(history or [])
+        messages.append({"role": "user", "content": f"{context}\n\nQuestion: {text}"})
         try:
             resp = self.client.chat.completions.create(
                 timeout=25.0,
                 model=get_model(),
                 max_tokens=400,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 **nothink_kwargs(get_model()),
             )
             return resp.choices[0].message.content.strip()
