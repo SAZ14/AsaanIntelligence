@@ -2028,6 +2028,20 @@ async def debug_apify_breaker_clear() -> JSONResponse:
     return JSONResponse({"status": "cleared"})
 
 
+@app.post("/admin/debug/staff_chat_test")
+async def debug_staff_chat_test(store_id: int, phone: str, text: str) -> JSONResponse:
+    """TEMPORARY — run one handle_internal_for_store() turn inside the
+    actual web process (not a bare SSH shell, which has a confirmed
+    environment-dependent failure loading the sentence-transformers model
+    -- see debug_backfill_review_embeddings below for the same note).
+    Used to live-evaluate staff natural-language answer quality with a
+    real, warm embedding model rather than getting an SSH session's false
+    "no embedding model available" degradation. Remove after use."""
+    from app.gateway.internal import handle_internal_for_store
+    reply = handle_internal_for_store(phone, text, store_id)
+    return JSONResponse({"reply": reply})
+
+
 @app.post("/admin/debug/backfill_review_embeddings")
 async def debug_backfill_review_embeddings(batch_size: int = 32) -> JSONResponse:
     """TEMPORARY — one-time backfill of Finding.content_embedding for
