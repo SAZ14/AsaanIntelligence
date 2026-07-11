@@ -135,7 +135,7 @@ class IntegrityService:
                 return _weekly_report(store_id, report)
 
             # Free-form question — use LLM if available
-            answer = answer_question(report, text, history=history)
+            answer = answer_question(report, text, store_id, history=history)
             return answer or HELP_TEXT
 
         except FileNotFoundError as exc:

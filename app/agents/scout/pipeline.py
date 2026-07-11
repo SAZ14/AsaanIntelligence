@@ -384,13 +384,13 @@ def answer_from_cache(store_id: int, user_message: str, history: list[dict] | No
     try:
         if latest_run is None:
             return build_report("scout", [], "Data: no scan yet", user_message=user_message,
-                                store_name=store_name, store_category=store_category)
+                                store_name=store_name, store_category=store_category, store_id=store_id)
         findings = _findings_from_db(db_findings)
         findings = _maybe_target_competitor(store_id, user_message, findings)
         freshness_note = _build_freshness_note(latest_run, is_live=False)
         enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
         return build_report("scout", enriched, freshness_note, user_message=user_message,
-                            store_name=store_name, store_category=store_category, history=history)
+                            store_name=store_name, store_category=store_category, store_id=store_id, history=history)
     except ReportGenerationFailed:
         # Never persisted here (this path never writes a Run/Report row),
         # so there's nothing to protect -- just don't leak a raw
@@ -407,7 +407,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
 
     if command == "help":
         return build_report("help", [], "", user_message=user_message,
-                            store_name=store_name, store_category=store_category)
+                            store_name=store_name, store_category=store_category, store_id=store_id)
 
     is_live = command == "scout"
     latest_run, db_findings = _get_latest_run(store_id)
@@ -422,7 +422,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
             try:
                 return build_report(command, enriched, freshness_note, user_message=user_message,
-                                    store_name=store_name, store_category=store_category)
+                                    store_name=store_name, store_category=store_category, store_id=store_id)
             except ReportGenerationFailed:
                 # Nothing new was written on this path (pure cache read) --
                 # just avoid leaking a raw failure string to the user.
@@ -545,7 +545,7 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
         report_findings = _maybe_target_competitor(store_id, user_message, enriched)
         try:
             report_text = build_report(command, report_findings, freshness_note, user_message=user_message,
-                                       store_name=store_name, store_category=store_category)
+                                       store_name=store_name, store_category=store_category, store_id=store_id)
         except ReportGenerationFailed:
             # Scraping itself succeeded (we're past the quota_exceeded
             # branch above) -- only the final LLM summarization call

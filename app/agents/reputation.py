@@ -1598,7 +1598,7 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str, history: list
         recent_ctx += "(None, type CHECK to scrape new reviews)\n"
 
     system = (
-        staff_persona(f"You assist the owner of '{store_name}' with review management on WhatsApp.")
+        staff_persona("You assist the owner with review management on WhatsApp.", store_id)
         + "\nBe brief and direct.\n"
         "Commands: *POST* (mark draft as replied -- owner still has to post it "
         "on the actual platform themselves, we can't publish it for them), "

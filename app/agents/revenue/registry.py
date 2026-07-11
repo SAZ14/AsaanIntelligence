@@ -82,7 +82,7 @@ class RevenueRegistry:
         agent = self.agent_for_store(store_id)
         if agent is None:
             return "Revenue analysis isn't configured for this restaurant yet."
-        return agent.answer_question(text, history=history)
+        return agent.answer_question(text, store_id, history=history)
 
     def invalidate(self, store_id: int) -> None:
         self._agents.pop(store_id, None)

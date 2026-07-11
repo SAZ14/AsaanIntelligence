@@ -35,10 +35,10 @@ def _enrich_system(store_name: str, store_category: str) -> str:
     )
 
 
-def _report_system(store_name: str, store_category: str) -> str:
+def _report_system(store_name: str, store_category: str, store_id: int) -> str:
     from app.core.persona import staff_persona
     return (
-        staff_persona(f"You advise the owner of {store_name} ({store_category} restaurant) on competitive intelligence.")
+        staff_persona(f"You advise on competitive intelligence for this {store_category} restaurant.", store_id)
         + "\nCite exact evidence from the data whenever it's present -- prices, ratings, "
         "engagement numbers, dates, quotes. Give concrete, actionable steps: specific bundle "
         "ideas, reel concepts, counter-offers. Never be generic, and never pad a thin finding "
@@ -389,6 +389,7 @@ def build_report(
     user_message: Optional[str] = None,
     store_name: str = "the restaurant",
     store_category: str = "food",
+    store_id: int = 1,
     history: list[dict] | None = None,
 ) -> str:
     cmd = command.lower().strip()
@@ -436,7 +437,7 @@ def build_report(
     )
 
     try:
-        report = _chat(_report_system(store_name, store_category), prompt, history=history)
+        report = _chat(_report_system(store_name, store_category, store_id), prompt, history=history)
         return f"{freshness_note}\n\n{report}"
     except Exception as exc:
         logger.error("ZAI report generation failed: %s", exc)

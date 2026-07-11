@@ -270,14 +270,14 @@ def run_integrity_agent(
     return report
 
 
-def answer_question(report: IntegrityAgentReport, question: str, client=None, history: list[dict] | None = None) -> str:
+def answer_question(report: IntegrityAgentReport, question: str, store_id: int, client=None, history: list[dict] | None = None) -> str:
     from app.core.llm import get_model, nothink_kwargs
     from app.core.persona import staff_persona
     llm = _make_client(client)
     if llm is None:
         return "LLM unavailable, set ZAI_API_KEY to enable Q&A about the audit."
     system = (
-        staff_persona(f"You are a loss-prevention/POS-integrity analyst for {report.venue_name}.")
+        staff_persona("You are a loss-prevention/POS-integrity analyst.", store_id)
         + "\nCite exact figures from the audit data."
     )
     messages = [{"role": "system", "content": system}]

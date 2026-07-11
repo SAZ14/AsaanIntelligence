@@ -70,6 +70,12 @@ class Store(Base):
     location = Column(String, nullable=True)
     category = Column(String, nullable=True)
     instagram_handle = Column(String, nullable=True)
+    # Free-text identity/context for this restaurant (cuisine, vibe, what
+    # makes it distinct, target customers, etc) -- surfaced to staff-facing
+    # LLM prompts via app.core.persona.staff_persona() so every agent's
+    # answer is grounded in what this specific restaurant actually is, not
+    # just its name. Nullable: existing stores have none until set.
+    description = Column(Text, nullable=True)
     config = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
 

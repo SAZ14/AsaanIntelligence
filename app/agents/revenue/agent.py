@@ -148,7 +148,7 @@ class RevenueAgent:
             return self._help()
         return self._help(unknown=True)
 
-    def answer_question(self, text: str, history: list[dict] | None = None) -> str:
+    def answer_question(self, text: str, store_id: int, history: list[dict] | None = None) -> str:
         """Free-form Q&A: one LLM call given real computed numbers and the
         owner's actual question, mirroring integrity's answer_question()
         and the customer agent's single-pass pattern -- both proven to
@@ -173,7 +173,7 @@ class RevenueAgent:
         from app.core.llm import get_model, nothink_kwargs
         from app.core.persona import staff_persona
         system = (
-            staff_persona(f"You are a revenue/sales advisor for {self.config.venue_name}.")
+            staff_persona("You are a revenue/sales advisor.", store_id)
             + "\nCite exact figures (PKR amounts, unit counts, percentages) from the revenue data; do not invent numbers."
         )
         messages = [{"role": "system", "content": system}]

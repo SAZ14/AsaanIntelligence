@@ -32,10 +32,28 @@ GROUNDING_RULE = (
 )
 
 
-def staff_persona(role_line: str) -> str:
-    """role_line: one sentence describing this agent's specific role,
-    e.g. "You are a POS-integrity analyst for Anatummy." Returns the
-    shared system-prompt prefix; callers append their own grounding data
-    context, domain-specific instructions, and the user's question after
-    this."""
-    return f"{role_line} {GROUNDING_RULE}\n\n{WHATSAPP_FORMAT_RULES}"
+def staff_persona(role_line: str, store_id: int) -> str:
+    """role_line: one sentence describing this agent's domain-specific
+    role, e.g. "You are a POS-integrity analyst." (no need to name the
+    restaurant -- that's handled here, once, for every agent, instead of
+    each caller re-fetching/re-formatting it their own way.)
+
+    store_id: fetches this store's name and (if set) description from the
+    stores table and prepends them as shared identity context, so every
+    agent's answers are grounded in what this specific restaurant actually
+    is, not just generic advice that happens to mention its name.
+
+    Returns the shared system-prompt prefix; callers append their own
+    grounding data context, domain-specific instructions, and the user's
+    question after this."""
+    from app.core.db import SessionLocal, Store
+
+    with SessionLocal() as db:
+        store = db.query(Store).filter(Store.id == store_id).first()
+
+    name = store.name if store else "this restaurant"
+    identity = f"You are the internal staff assistant for {name}."
+    if store and store.description:
+        identity += f" About this restaurant: {store.description}"
+
+    return f"{identity} {role_line} {GROUNDING_RULE}\n\n{WHATSAPP_FORMAT_RULES}"
