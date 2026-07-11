@@ -118,15 +118,21 @@ if __name__ == "__main__":
     logger.info("Scheduler started")
     dev_mode = os.environ.get("DEV", "false").lower() == "true"
     # Every DB/Redis call in the request path is synchronous (SQLAlchemy sync
-    # engine, redis-py sync client) executed inline inside `async def` webhook
-    # handlers -- on a single worker that means one process's single event
-    # loop serializes ALL of it. A 50-concurrent-request live test confirmed
+    # engine, redis-py sync client). It used to run inline inside `async def`
+    # webhook handlers, so on a single worker one process's single event loop
+    # serialized ALL of it -- a 50-concurrent-request live test confirmed
     # this: webhook ack times climbed to 4+ seconds and Railway's proxy 502'd
-    # the tail of the burst. Multiple worker processes give real OS-level
-    # parallelism for that blocking work. Safe to run >1 worker now that
-    # cross-instance state (rate limits/cooldowns/idempotency, the job queue)
-    # is Redis-backed rather than in-process dicts.
-    workers = int(os.environ.get("WEB_CONCURRENCY", "4"))
+    # the tail of the burst. That inline work now runs via run_in_threadpool
+    # (app/gateway/main.py's openwa_webhook/meta_webhook) so it no longer
+    # blocks the event loop directly, but multiple worker processes still
+    # give real OS-level parallelism on top of that -- each is a separate
+    # process with its own event loop, thread pool and DB connection pool.
+    # Default raised from 4 to 8 for the 24-vCPU/24GB host this runs on
+    # (app/core/db.py's pool sizing assumes up to 8 workers). Safe to run
+    # >1 worker since cross-instance state (rate limits/cooldowns/
+    # idempotency, the job queue) is Redis-backed rather than in-process
+    # dicts.
+    workers = int(os.environ.get("WEB_CONCURRENCY", "8"))
     uvicorn.run(
         "app.gateway.main:app",
         host="0.0.0.0",

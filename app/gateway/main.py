@@ -44,6 +44,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 import json as _json_mod
 
@@ -667,6 +668,19 @@ async def lifespan(app: FastAPI):
         level=logging.INFO,
         format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
     )
+
+    # Raise this worker process's AnyIO thread-pool ceiling. Webhook
+    # processing now runs via run_in_threadpool (see openwa_webhook /
+    # meta_webhook) and every BackgroundTasks-dispatched sync handler
+    # already ran there too -- both share this one pool, so AnyIO's
+    # default of 40 threads/process becomes the real concurrency ceiling
+    # once inline DB/Redis/LLM work moved off the event loop. Set well
+    # above the per-worker DB pool size (app/core/db.py) on purpose:
+    # excess threads just queue for a free DB connection instead of the
+    # request queuing (and 502'ing) at the ASGI layer.
+    import anyio
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 100
+
     _jobq.start_worker()  # no-op if Redis is unavailable
     threading.Thread(target=_warm_embeddings, name="embedding-warmup", daemon=True).start()
     logger.info("Central server started")
@@ -1222,78 +1236,88 @@ async def openwa_webhook(request: Request, background_tasks: BackgroundTasks) ->
     if from_me or is_group or (not is_document and (not body_text or msg_type not in ("chat", "text", ""))):
         return JSONResponse({"status": "ignored"})
 
-    # Idempotency: drop duplicate deliveries within 60 s
-    idem_key = payload.get("idempotencyKey") or payload.get("deliveryId") or ""
-    if idem_key and not _idem_ok(f"owa:{idem_key}"):
-        logger.info("openwa.webhook: duplicate idempotencyKey=%s — dropped", idem_key)
-        return JSONResponse({"status": "duplicate"})
+    # Everything below is synchronous DB/Redis/HTTP work (idempotency check,
+    # LID resolution, store lookup, membership check, routing) -- run it in
+    # the AnyIO worker thread pool instead of inline on this worker's single
+    # event loop, so one slow webhook can't stall every other request this
+    # process is handling concurrently (confirmed live: 50 concurrent
+    # requests serialized through this exact inline path and Railway's
+    # proxy 502'd the tail of the burst -- see scripts/run_server.py).
+    def _handle() -> JSONResponse:
+        # Idempotency: drop duplicate deliveries within 60 s
+        idem_key = payload.get("idempotencyKey") or payload.get("deliveryId") or ""
+        if idem_key and not _idem_ok(f"owa:{idem_key}"):
+            logger.info("openwa.webhook: duplicate idempotencyKey=%s — dropped", idem_key)
+            return JSONResponse({"status": "duplicate"})
 
-    # WhatsApp multi-device sends @lid (privacy ID) instead of @c.us (phone) for
-    # some contacts. Resolve to the real @c.us JID so is_store_member() can match
-    # against phone numbers stored in store_members.
-    resolved_jid = from_jid
-    if from_jid.endswith("@lid"):
-        resolved_jid = _resolve_lid(session_id, from_jid) or from_jid
+        # WhatsApp multi-device sends @lid (privacy ID) instead of @c.us (phone) for
+        # some contacts. Resolve to the real @c.us JID so is_store_member() can match
+        # against phone numbers stored in store_members.
+        resolved_jid = from_jid
+        if from_jid.endswith("@lid"):
+            resolved_jid = _resolve_lid(session_id, from_jid) or from_jid
 
-    from_number = _jid_to_internal(resolved_jid)
-    logger.info("openwa.webhook: session=%s from=%s (raw_jid=%s) body=%r", session_id, from_number, from_jid, body_text[:80])
+        from_number = _jid_to_internal(resolved_jid)
+        logger.info("openwa.webhook: session=%s from=%s (raw_jid=%s) body=%r", session_id, from_number, from_jid, body_text[:80])
 
-    from app.core.db import get_store_by_openwa_session, is_store_member
+        from app.core.db import get_store_by_openwa_session, is_store_member
 
-    store = get_store_by_openwa_session(session_id)
-    if store is None:
-        logger.warning("openwa.webhook: unknown session=%s", session_id)
-        return JSONResponse({"status": "unknown_session"}, status_code=404)
+        store = get_store_by_openwa_session(session_id)
+        if store is None:
+            logger.warning("openwa.webhook: unknown session=%s", session_id)
+            return JSONResponse({"status": "unknown_session"}, status_code=404)
 
-    store_id = store.id
-    logger.info("openwa.webhook: store=%s(%d) from=%s", store.name, store_id, from_number)
+        store_id = store.id
+        logger.info("openwa.webhook: store=%s(%d) from=%s", store.name, store_id, from_number)
 
-    # Build provider-specific send function — reply to resolved @c.us JID, not LID
-    from app.core.openwa_send import send_openwa as _openwa_send_fn
-    def _owa_send(reply: str) -> None:
-        _openwa_send_fn(session_id, resolved_jid, reply)
+        # Build provider-specific send function — reply to resolved @c.us JID, not LID
+        from app.core.openwa_send import send_openwa as _openwa_send_fn
+        def _owa_send(reply: str) -> None:
+            _openwa_send_fn(session_id, resolved_jid, reply)
 
-    # ── Document upload (staff CSV path) ───────────────────────────────────────
-    if is_document:
-        if not is_store_member(from_number, store_id):
-            return JSONResponse({"status": "ignored"})
-        media = data.get("media") or (data.get("metadata") or {}).get("media") or {}
-        mimetype = (media.get("mimetype") or "").split(";")[0].strip().lower()
-        filename = media.get("filename") or media.get("fileName") or ""
-        b64 = media.get("data") or ""
-        if not _looks_like_csv(mimetype, filename):
-            background_tasks.add_task(
-                _owa_send,
-                "I can only read CSV files. Export your POS report as CSV and resend it "
-                "with a caption: 'sales', 'menu', or 'staff'.",
-            )
+        # ── Document upload (staff CSV path) ───────────────────────────────────
+        if is_document:
+            if not is_store_member(from_number, store_id):
+                return JSONResponse({"status": "ignored"})
+            media = data.get("media") or (data.get("metadata") or {}).get("media") or {}
+            mimetype = (media.get("mimetype") or "").split(";")[0].strip().lower()
+            filename = media.get("filename") or media.get("fileName") or ""
+            b64 = media.get("data") or ""
+            if not _looks_like_csv(mimetype, filename):
+                background_tasks.add_task(
+                    _owa_send,
+                    "I can only read CSV files. Export your POS report as CSV and resend it "
+                    "with a caption: 'sales', 'menu', or 'staff'.",
+                )
+                return JSONResponse({"status": "ok"})
+            if not b64:
+                logger.warning("openwa.webhook: document without media data store=%d keys=%s",
+                               store_id, sorted(data.keys()))
+                background_tasks.add_task(_owa_send, "Couldn't read the attached file, please resend it.")
+                return JSONResponse({"status": "ok"})
+            import base64 as _b64
+            try:
+                content = _b64.b64decode(b64).decode("utf-8-sig", errors="replace")
+            except Exception as exc:
+                logger.error("openwa.webhook: media decode failed store=%d: %s", store_id, exc)
+                background_tasks.add_task(_owa_send, "Couldn't read the attached file, please resend it as CSV.")
+                return JSONResponse({"status": "ok"})
+            logger.info("openwa.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
+
+            def _do_ingest() -> None:
+                reply = _ingest_csv_content(store_id, from_number, body_text, content)
+                _owa_send(reply)
+            background_tasks.add_task(_do_ingest)
             return JSONResponse({"status": "ok"})
-        if not b64:
-            logger.warning("openwa.webhook: document without media data store=%d keys=%s",
-                           store_id, sorted(data.keys()))
-            background_tasks.add_task(_owa_send, "Couldn't read the attached file, please resend it.")
-            return JSONResponse({"status": "ok"})
-        import base64 as _b64
-        try:
-            content = _b64.b64decode(b64).decode("utf-8-sig", errors="replace")
-        except Exception as exc:
-            logger.error("openwa.webhook: media decode failed store=%d: %s", store_id, exc)
-            background_tasks.add_task(_owa_send, "Couldn't read the attached file, please resend it as CSV.")
-            return JSONResponse({"status": "ok"})
-        logger.info("openwa.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
 
-        def _do_ingest() -> None:
-            reply = _ingest_csv_content(store_id, from_number, body_text, content)
-            _owa_send(reply)
-        background_tasks.add_task(_do_ingest)
-        return JSONResponse({"status": "ok"})
+        status = _process_async_message(
+            store, from_number, body_text, _owa_send, background_tasks,
+            {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
+            "openwa.webhook",
+        )
+        return JSONResponse({"status": status})
 
-    status = _process_async_message(
-        store, from_number, body_text, _owa_send, background_tasks,
-        {"provider": "openwa", "session_id": session_id, "jid": resolved_jid},
-        "openwa.webhook",
-    )
-    return JSONResponse({"status": status})
+    return await run_in_threadpool(_handle)
 
 
 # ── Meta Cloud API webhook (WhatsApp Business Platform) ───────────────────────
@@ -1354,91 +1378,99 @@ async def meta_webhook(request: Request, background_tasks: BackgroundTasks) -> J
     from app.core.db import get_store_by_meta_phone_number_id, is_store_member
     from app.core.meta_send import send_meta as _meta_send_fn, download_media as _meta_download
 
-    for entry in payload.get("entry", []):
-        for change in entry.get("changes", []):
-            if change.get("field") != "messages":
-                continue
-            value = change.get("value", {})
-            phone_number_id = (value.get("metadata") or {}).get("phone_number_id", "")
-            if not phone_number_id:
-                continue
-            # Delivery/read receipts arrive on the same field — no messages array.
-            messages = value.get("messages") or []
-            if not messages:
-                continue
-
-            store = get_store_by_meta_phone_number_id(phone_number_id)
-            if store is None:
-                logger.warning("meta.webhook: unknown phone_number_id=%s", phone_number_id)
-                continue
-            store_id = store.id
-
-            for msg in messages:
-                msg_id = msg.get("id", "")
-                if msg_id and not _idem_ok(f"meta:{msg_id}"):
-                    logger.info("meta.webhook: duplicate message id=%s — dropped", msg_id)
+    # All of the below is synchronous DB/Redis/HTTP work (store lookups,
+    # idempotency, membership checks, routing) -- run it off this worker's
+    # event loop via the AnyIO thread pool so one webhook payload can't
+    # stall every other concurrent request (see openwa_webhook's identical
+    # note and scripts/run_server.py's documented 50-concurrent-request test).
+    def _handle_all() -> None:
+        for entry in payload.get("entry", []):
+            for change in entry.get("changes", []):
+                if change.get("field") != "messages":
+                    continue
+                value = change.get("value", {})
+                phone_number_id = (value.get("metadata") or {}).get("phone_number_id", "")
+                if not phone_number_id:
+                    continue
+                # Delivery/read receipts arrive on the same field — no messages array.
+                messages = value.get("messages") or []
+                if not messages:
                     continue
 
-                wa_id = msg.get("from", "")
-                if not wa_id:
+                store = get_store_by_meta_phone_number_id(phone_number_id)
+                if store is None:
+                    logger.warning("meta.webhook: unknown phone_number_id=%s", phone_number_id)
                     continue
-                from_number = f"whatsapp:+{wa_id}"
+                store_id = store.id
 
-                def _send(reply: str, _pnid=phone_number_id, _to=wa_id) -> None:
-                    _meta_send_fn(_pnid, _to, reply)
-
-                msg_type = msg.get("type", "")
-                logger.info(
-                    "meta.webhook: store=%s(%d) from=%s type=%s",
-                    store.name, store_id, from_number, msg_type,
-                )
-
-                # ── Document upload (staff CSV path) ──────────────────────────
-                if msg_type == "document":
-                    if not is_store_member(from_number, store_id):
+                for msg in messages:
+                    msg_id = msg.get("id", "")
+                    if msg_id and not _idem_ok(f"meta:{msg_id}"):
+                        logger.info("meta.webhook: duplicate message id=%s — dropped", msg_id)
                         continue
-                    doc = msg.get("document", {})
-                    mimetype = (doc.get("mime_type") or "").split(";")[0].strip().lower()
-                    filename = doc.get("filename", "") or ""
-                    caption = (doc.get("caption") or "").strip()
-                    if not _looks_like_csv(mimetype, filename):
-                        background_tasks.add_task(
-                            _send,
-                            "I can only read CSV files. Export your POS report as CSV and "
-                            "resend it with a caption: 'sales', 'menu', or 'staff'.",
-                        )
+
+                    wa_id = msg.get("from", "")
+                    if not wa_id:
                         continue
-                    media_id = doc.get("id", "")
-                    logger.info("meta.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
+                    from_number = f"whatsapp:+{wa_id}"
 
-                    def _do_ingest(_mid=media_id, _pnid=phone_number_id, _cap=caption,
-                                   _from=from_number, _sid=store_id, _sendfn=_send) -> None:
-                        got = _meta_download(_mid, _pnid)
-                        if got is None:
-                            _sendfn("Could not download the file. Please try again.")
-                            return
-                        blob, _mt, _fn = got
-                        content = blob.decode("utf-8-sig", errors="replace")
-                        _sendfn(_ingest_csv_content(_sid, _from, _cap, content))
-                    background_tasks.add_task(_do_ingest)
-                    continue
+                    def _send(reply: str, _pnid=phone_number_id, _to=wa_id) -> None:
+                        _meta_send_fn(_pnid, _to, reply)
 
-                # ── Text ──────────────────────────────────────────────────────
-                if msg_type != "text":
-                    continue
-                body_text = ((msg.get("text") or {}).get("body") or "").strip()
-                if not body_text:
-                    continue
+                    msg_type = msg.get("type", "")
+                    logger.info(
+                        "meta.webhook: store=%s(%d) from=%s type=%s",
+                        store.name, store_id, from_number, msg_type,
+                    )
 
-                def _typing(_pnid=phone_number_id, _mid=msg_id) -> None:
-                    from app.core.meta_send import send_typing_indicator
-                    send_typing_indicator(_pnid, _mid)
+                    # ── Document upload (staff CSV path) ──────────────────────
+                    if msg_type == "document":
+                        if not is_store_member(from_number, store_id):
+                            continue
+                        doc = msg.get("document", {})
+                        mimetype = (doc.get("mime_type") or "").split(";")[0].strip().lower()
+                        filename = doc.get("filename", "") or ""
+                        caption = (doc.get("caption") or "").strip()
+                        if not _looks_like_csv(mimetype, filename):
+                            background_tasks.add_task(
+                                _send,
+                                "I can only read CSV files. Export your POS report as CSV and "
+                                "resend it with a caption: 'sales', 'menu', or 'staff'.",
+                            )
+                            continue
+                        media_id = doc.get("id", "")
+                        logger.info("meta.webhook: csv_upload store=%d from=%s file=%s", store_id, from_number, filename)
 
-                _process_async_message(
-                    store, from_number, body_text, _send, background_tasks,
-                    {"provider": "meta", "phone_number_id": phone_number_id, "to": wa_id},
-                    "meta.webhook", typing_fn=_typing,
-                )
+                        def _do_ingest(_mid=media_id, _pnid=phone_number_id, _cap=caption,
+                                       _from=from_number, _sid=store_id, _sendfn=_send) -> None:
+                            got = _meta_download(_mid, _pnid)
+                            if got is None:
+                                _sendfn("Could not download the file. Please try again.")
+                                return
+                            blob, _mt, _fn = got
+                            content = blob.decode("utf-8-sig", errors="replace")
+                            _sendfn(_ingest_csv_content(_sid, _from, _cap, content))
+                        background_tasks.add_task(_do_ingest)
+                        continue
+
+                    # ── Text ──────────────────────────────────────────────────
+                    if msg_type != "text":
+                        continue
+                    body_text = ((msg.get("text") or {}).get("body") or "").strip()
+                    if not body_text:
+                        continue
+
+                    def _typing(_pnid=phone_number_id, _mid=msg_id) -> None:
+                        from app.core.meta_send import send_typing_indicator
+                        send_typing_indicator(_pnid, _mid)
+
+                    _process_async_message(
+                        store, from_number, body_text, _send, background_tasks,
+                        {"provider": "meta", "phone_number_id": phone_number_id, "to": wa_id},
+                        "meta.webhook", typing_fn=_typing,
+                    )
+
+    await run_in_threadpool(_handle_all)
 
     # Always 200: Meta retries and eventually disables webhooks that error.
     return JSONResponse({"status": "ok"})

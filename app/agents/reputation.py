@@ -1155,6 +1155,12 @@ def _active_store_ids() -> list[int]:
         return [s.id for s in db.query(Store).all()]
 
 
+# Bounded worker count for run_reputation_check_all()'s cron loop -- kept
+# low relative to the 24-vCPU host on purpose: this bounds concurrent Apify
+# actor fan-out (the actual scaling constraint), not CPU/RAM.
+_REPUTATION_CRON_CONCURRENCY = 3
+
+
 def run_reputation_check_all() -> None:
     """Scheduled job (see scripts/run_server.py) -- runs a real review check
     for every store on a cadence matched to REPUTATION_CACHE_HOURS, so a
@@ -1171,15 +1177,28 @@ def run_reputation_check_all() -> None:
     scout's cron) before touching any store -- confirmed live this
     matters: without it, a 1-minute cron interval means an Apify outage
     gets retried up to 1440 times a day, which risks Apify rate-limiting
-    or banning the account outright."""
+    or banning the account outright.
+
+    Bounded concurrency (_REPUTATION_CRON_CONCURRENCY stores at a time),
+    not a single sequential loop -- safe because _check_reviews() already
+    has its own per-store in-flight guard and cache check (same reason a
+    staff member's own "check" command can safely overlap a scheduled run).
+    A small worker pool lets the cache stay warm across many more stores
+    per cron pass while keeping concurrent Apify load bounded; each worker
+    re-checks the circuit breaker before starting so a trip mid-cycle stops
+    queued stores too, not just next cycle's top-level check."""
     from app.core.db import SessionLocal, Store
     from app.core import apify_guard
+    from concurrent.futures import ThreadPoolExecutor
 
     if apify_guard.breaker_open():
         logger.warning("reputation.cron: apify breaker open -- skipping all stores this cycle")
         return
 
-    for store_id in _active_store_ids():
+    def _run_one(store_id: int) -> None:
+        if apify_guard.breaker_open():
+            logger.warning("reputation.cron: apify breaker tripped mid-cycle -- skipping store=%d", store_id)
+            return
         try:
             with SessionLocal() as db:
                 store = db.query(Store).filter(Store.id == store_id).first()
@@ -1188,6 +1207,9 @@ def run_reputation_check_all() -> None:
             logger.info("reputation.cron_check: store=%d result=%r", store_id, result[:120])
         except Exception as exc:
             logger.error("reputation.cron_check: store=%d failed: %s", store_id, exc)
+
+    with ThreadPoolExecutor(max_workers=_REPUTATION_CRON_CONCURRENCY) as pool:
+        list(pool.map(_run_one, _active_store_ids()))
 
 
 _SENTIMENT_FILTERS = ("positive", "negative", "neutral")

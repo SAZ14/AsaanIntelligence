@@ -634,6 +634,12 @@ def _is_scout_fresh(store_id: int, freshness_minutes: int = FRESHNESS_MINUTES) -
     return fresh
 
 
+# Bounded worker count for run_scout_all()'s cron loop -- kept low relative
+# to the 24-vCPU host on purpose: this bounds concurrent Apify actor fan-out
+# (the actual scaling constraint), not CPU/RAM.
+_SCOUT_CRON_CONCURRENCY = 3
+
+
 def run_scout_all() -> None:
     """Scheduled job (see scripts/run_server.py) -- keeps every store's
     scout cache warm so staff almost always land on a cached report
@@ -657,11 +663,15 @@ def run_scout_all() -> None:
     run() most recently cached for the store regardless of which command
     produced it, so one fresh "scout" run is enough to warm all of them.
 
-    Sequential, not parallel -- a single run already takes 7-45 minutes
-    (confirmed live) and fans out many Apify actors internally per store;
-    running several stores' scrapes concurrently would multiply that
-    fan-out and risk Apify rate limits. Fine at today's store count;
-    worth revisiting if this needs to cover many stores.
+    Bounded concurrency (_SCOUT_CRON_CONCURRENCY stores at a time), not a
+    single sequential loop -- a single run already takes 7-45 minutes
+    (confirmed live) and fans out many Apify actors internally per store, so
+    running every store at once would multiply that fan-out and risk Apify
+    rate limits. A small worker pool instead of one-at-a-time lets the cache
+    stay warm across many more stores within FRESHNESS_MINUTES while keeping
+    concurrent Apify load bounded and low; each worker re-checks the circuit
+    breaker before starting so a trip mid-cycle stops queued stores too, not
+    just next cycle's top-level check.
 
     Also checks the shared Apify circuit breaker (app.core.apify_guard,
     tripped after 3 consecutive account-level quota failures, shared with
@@ -679,13 +689,20 @@ def run_scout_all() -> None:
     with SessionLocal() as db:
         store_ids = [s.id for s in db.query(Store).all()]
 
-    for store_id in store_ids:
+    def _run_one(store_id: int) -> None:
         if _is_scout_fresh(store_id):
             logger.info("scout.cron: store=%d already fresh, skipping", store_id)
-            continue
+            return
+        if apify_guard.breaker_open():
+            logger.warning("scout.cron: apify breaker tripped mid-cycle -- skipping store=%d", store_id)
+            return
         try:
             run("scout", store_id=store_id)
             logger.info("scout.cron: store=%d completed", store_id)
         except Exception as exc:
             logger.error("scout.cron: store=%d failed: %s", store_id, exc)
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=_SCOUT_CRON_CONCURRENCY) as pool:
+        list(pool.map(_run_one, store_ids))
 
