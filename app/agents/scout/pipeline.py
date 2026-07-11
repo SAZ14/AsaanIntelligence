@@ -15,7 +15,7 @@ from app.agents.scout.config import (
 from app.core.db import SessionLocal, Run, Finding as DBFinding, Report
 from app.agents.scout.schemas import FindingSchema
 from app.agents.scout.cleaning import clean_findings, cap_findings_per_competitor
-from app.agents.scout.analysis import enrich_findings, build_report
+from app.agents.scout.analysis import enrich_findings, build_report, ReportGenerationFailed
 from app.agents.scout.discovery import (
     confirm_seed_competitors, discover_new_competitors, get_all_competitors,
     prune_stale_competitors,
@@ -342,6 +342,25 @@ def _store_info(store_id: int) -> tuple[str, str]:
         return name, category
 
 
+def _most_recent_report(store_id: int):
+    """Most recent saved ScoutReport across the WHOLE scout command family
+    (scout, competitors, alerts, pricing, ...) for this store -- not scoped
+    to one exact command. Confirmed live this distinction matters: a
+    same-command-only lookup can miss a recent good report saved under a
+    different (but still legitimate, non-whatsapp_check) command and
+    resurface a much older, possibly broken one from the requested
+    command's own history instead."""
+    from app.core.db import ScoutReport
+    with SessionLocal() as db:
+        return (
+            db.query(ScoutReport)
+            .join(Run, Run.id == ScoutReport.run_id)
+            .filter(ScoutReport.store_id == store_id, Run.command != "whatsapp_check")
+            .order_by(Run.finished_at.desc())
+            .first()
+        )
+
+
 def answer_from_cache(store_id: int, user_message: str) -> str:
     """Answer a natural-language scout question using only what's already
     stored -- NEVER dispatches a live Apify scrape, no matter how stale the
@@ -362,15 +381,21 @@ def answer_from_cache(store_id: int, user_message: str) -> str:
     uses the latest run's findings, however old they are."""
     store_name, store_category = _store_info(store_id)
     latest_run, db_findings = _get_latest_run(store_id)
-    if latest_run is None:
-        return build_report("scout", [], "Data: no scan yet", user_message=user_message,
+    try:
+        if latest_run is None:
+            return build_report("scout", [], "Data: no scan yet", user_message=user_message,
+                                store_name=store_name, store_category=store_category)
+        findings = _findings_from_db(db_findings)
+        findings = _maybe_target_competitor(store_id, user_message, findings)
+        freshness_note = _build_freshness_note(latest_run, is_live=False)
+        enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
+        return build_report("scout", enriched, freshness_note, user_message=user_message,
                             store_name=store_name, store_category=store_category)
-    findings = _findings_from_db(db_findings)
-    findings = _maybe_target_competitor(store_id, user_message, findings)
-    freshness_note = _build_freshness_note(latest_run, is_live=False)
-    enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
-    return build_report("scout", enriched, freshness_note, user_message=user_message,
-                        store_name=store_name, store_category=store_category)
+    except ReportGenerationFailed:
+        # Never persisted here (this path never writes a Run/Report row),
+        # so there's nothing to protect -- just don't leak a raw
+        # "Report generation failed: ..." string to the user.
+        return "Couldn't summarize that right now (a temporary hiccup on our end). Please try again in a moment."
 
 
 def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINUTES,
@@ -395,8 +420,13 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             findings = _maybe_target_competitor(store_id, user_message, findings)
             freshness_note = _build_freshness_note(latest_run, is_live=False)
             enriched = enrich_findings(findings, store_name=store_name, store_category=store_category)
-            return build_report(command, enriched, freshness_note, user_message=user_message,
-                                store_name=store_name, store_category=store_category)
+            try:
+                return build_report(command, enriched, freshness_note, user_message=user_message,
+                                    store_name=store_name, store_category=store_category)
+            except ReportGenerationFailed:
+                # Nothing new was written on this path (pure cache read) --
+                # just avoid leaking a raw failure string to the user.
+                return f"{freshness_note}\n\nCouldn't summarize that right now (a temporary hiccup on our end). Please try again in a moment."
         else:
             logger.info("scout.pipeline: cache_stale age_min=%d — live fetch", int(age.total_seconds() / 60))
             is_live = True
@@ -490,18 +520,11 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
             # outage, each cycle overwriting the previous report with "No
             # competitor signals found in this run").
             apify_guard.record_quota_failure("scout")
-            from app.core.db import ScoutReport as _ScoutReport
-            with SessionLocal() as db:
-                prev = (
-                    db.query(_ScoutReport)
-                    .filter(_ScoutReport.store_id == store_id, _ScoutReport.command == command)
-                    .order_by(_ScoutReport.id.desc())
-                    .first()
-                )
             logger.error(
                 "scout.pipeline: apify_quota_exceeded store=%d -- keeping previous cached report",
                 store_id,
             )
+            prev = _most_recent_report(store_id)
             if prev:
                 return (
                     "⚠️ Live scan failed (data provider usage limit reached) -- "
@@ -520,8 +543,31 @@ def run(command: str, store_id: int = 1, freshness_minutes: int = FRESHNESS_MINU
         # unconditionally -- only what feeds the report itself swaps to a
         # specific competitor's full history when the question asks for one.
         report_findings = _maybe_target_competitor(store_id, user_message, enriched)
-        report_text = build_report(command, report_findings, freshness_note, user_message=user_message,
-                                   store_name=store_name, store_category=store_category)
+        try:
+            report_text = build_report(command, report_findings, freshness_note, user_message=user_message,
+                                       store_name=store_name, store_category=store_category)
+        except ReportGenerationFailed:
+            # Scraping itself succeeded (we're past the quota_exceeded
+            # branch above) -- only the final LLM summarization call
+            # failed. Confirmed live: this used to be swallowed inside
+            # build_report() and saved as a real ScoutReport row (a
+            # "Report generation failed: ..." string with no way to tell
+            # it apart from a genuine report later), and one such
+            # placeholder got resurfaced days afterward as "the most
+            # recent report on file" for a completely different failure.
+            # Same treatment as the quota-outage case: never persist this,
+            # serve the last genuinely good report instead.
+            logger.error(
+                "scout.pipeline: report_generation_failed store=%d -- keeping previous cached report",
+                store_id,
+            )
+            prev = _most_recent_report(store_id)
+            if prev:
+                return (
+                    "⚠️ Report summarization failed (temporary issue) -- "
+                    "showing the most recent report on file instead:\n\n" + prev.report_text
+                )
+            return "⚠️ Report summarization failed and no previous report is available yet. Please try again later."
 
         with SessionLocal() as db:
             db.add(Report(

@@ -11,6 +11,20 @@ from app.agents.scout.schemas import FindingSchema
 
 logger = logging.getLogger(__name__)
 
+
+class ReportGenerationFailed(Exception):
+    """Raised when build_report()'s final LLM call fails (timeout, API
+    error) -- distinct from a routine "no findings" case. Confirmed live:
+    build_report() used to swallow this and return a
+    "Report generation failed: ..." STRING as if it were a normal report,
+    which run() then persisted as a real ScoutReport row with no way to
+    tell it apart from a genuine one later -- one such placeholder got
+    resurfaced days later as "the most recent report on file" when a
+    different failure needed a fallback. Raising instead lets callers
+    (run(), answer_from_cache()) decide explicitly: never persist this,
+    fall back to the last genuinely good report where one exists."""
+
+
 def _enrich_system(store_name: str, store_category: str) -> str:
     return (
         f"You are a competitive-intelligence analyst for {store_name}, a {store_category} restaurant. "
@@ -432,8 +446,4 @@ def build_report(
         return f"{freshness_note}\n\n{report}"
     except Exception as exc:
         logger.error("ZAI report generation failed: %s", exc)
-        return (
-            f"{freshness_note}\n\n"
-            f"Report generation failed: {exc}. "
-            f"Raw findings count: {len(findings)}."
-        )
+        raise ReportGenerationFailed(str(exc)) from exc

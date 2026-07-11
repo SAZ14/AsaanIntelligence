@@ -108,15 +108,38 @@ def test_run_pipeline_detects_quota_exceeded(monkeypatch):
 # ── scout.pipeline.run(): preserve previous report on quota outage ─────────
 
 def _seed_scout_report(store_id, command, report_text):
+    from datetime import datetime
     from app.core.db import ScoutRun, ScoutReport
     with TestSession() as db:
-        run = ScoutRun(store_id=store_id, command=command, status="ok")
+        run = ScoutRun(store_id=store_id, command=command, status="ok", finished_at=datetime.utcnow())
         db.add(run)
         db.commit()
         db.refresh(run)
         db.add(ScoutReport(store_id=store_id, run_id=run.id, command=command, report_text=report_text))
         db.commit()
         return run.id
+
+
+def _seed_scout_run(store_id, status="ok"):
+    from datetime import datetime
+    from app.core.db import ScoutRun
+    with TestSession() as db:
+        run = ScoutRun(store_id=store_id, command="scout", status=status, finished_at=datetime.utcnow())
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run.id
+
+
+def _seed_finding(store_id, run_id, competitor_name, text, update_type="post"):
+    from app.core.db import Finding
+    with TestSession() as db:
+        db.add(Finding(
+            store_id=store_id, run_id=run_id, competitor_name=competitor_name,
+            source_platform="Instagram", update_type=update_type,
+            content_text=text, content_hash=f"{competitor_name}-{text[:10]}-{run_id}",
+        ))
+        db.commit()
 
 
 def test_run_keeps_previous_report_on_total_quota_outage(store_id, fake_redis):
@@ -163,6 +186,139 @@ def test_run_reports_no_data_when_quota_outage_and_no_prior_report(store_id, fak
 
     assert "usage limit" in reply.lower()
     mock_build_report.assert_not_called()
+
+
+def test_report_fallback_not_scoped_to_exact_command(store_id, fake_redis):
+    """Confirmed live: the fallback used to filter by
+    ScoutReport.command == command (the CURRENT request's command), so a
+    rarely-used command (e.g. "competitors") with only an old/broken report
+    of its own resurfaced THAT instead of a much more recent good report
+    saved under a different command (e.g. plain "scout"). The fallback
+    must pick the most recent report across the whole command family."""
+    from app.agents.scout.pipeline import run
+
+    _seed_scout_report(store_id, "competitors", "OLD BROKEN: Report generation failed: timeout.")
+    _seed_scout_report(store_id, "scout", "RECENT GOOD REPORT: Daily Deli launched a new burger.")
+
+    with (
+        patch("app.agents.scout.pipeline.confirm_seed_competitors"),
+        patch("app.agents.scout.pipeline.discover_new_competitors"),
+        patch("app.agents.scout.pipeline.prune_stale_competitors", return_value=0),
+        patch("app.agents.scout.pipeline.get_all_competitors", return_value=[]),
+        patch("app.agents.scout.pipeline._select_competitors_to_scrape", return_value=[]),
+        patch("app.agents.scout.pipeline._fetch_all_sources", return_value=([], [], ["web", "instagram", "google_reviews"], True)),
+    ):
+        # command="scout" forces a live attempt (is_live=True) regardless
+        # of cache freshness, so this actually exercises the quota-outage
+        # fallback rather than a normal cache hit.
+        reply = run("scout", store_id=store_id)
+
+    assert "RECENT GOOD REPORT" in reply
+    assert "OLD BROKEN" not in reply
+
+
+def test_run_keeps_previous_report_when_report_generation_fails(store_id, fake_redis):
+    """Confirmed live: build_report() used to swallow its own LLM failure
+    and return a "Report generation failed: ..." STRING as if it were a
+    real report, which run() then persisted unconditionally -- one such
+    placeholder got resurfaced days later as "the most recent report on
+    file" for a completely different failure. Scraping succeeding but
+    summarization failing must get the same never-overwrite treatment as
+    a total Apify outage."""
+    from app.agents.scout.pipeline import run
+    from app.agents.scout.analysis import ReportGenerationFailed
+    from app.agents.scout.schemas import FindingSchema
+
+    _seed_scout_report(store_id, "scout", "GOOD OLD REPORT: Burger Lab launched a new item.")
+
+    fake_finding = FindingSchema(
+        competitor_name="Burger Lab", source_platform="Instagram", update_type="post",
+        content_text="New item launched", content_hash="h1",
+    )
+    with (
+        patch("app.agents.scout.pipeline.confirm_seed_competitors"),
+        patch("app.agents.scout.pipeline.discover_new_competitors"),
+        patch("app.agents.scout.pipeline.prune_stale_competitors", return_value=0),
+        patch("app.agents.scout.pipeline.get_all_competitors", return_value=[]),
+        patch("app.agents.scout.pipeline._select_competitors_to_scrape", return_value=[]),
+        patch("app.agents.scout.pipeline._fetch_all_sources", return_value=([fake_finding], ["web"], [], False)),
+        patch("app.agents.scout.pipeline.build_report", side_effect=ReportGenerationFailed("timed out")),
+    ):
+        reply = run("scout", store_id=store_id)
+
+    assert "GOOD OLD REPORT" in reply
+    assert "Report generation failed" not in reply  # no raw leaked error string
+
+    from app.core.db import ScoutReport
+    with TestSession() as db:
+        count = db.query(ScoutReport).filter(ScoutReport.store_id == store_id).count()
+    assert count == 1  # no new report saved over the good one
+
+
+def test_run_no_previous_report_when_report_generation_fails_and_none_exist(store_id, fake_redis):
+    from app.agents.scout.pipeline import run
+    from app.agents.scout.analysis import ReportGenerationFailed
+    from app.agents.scout.schemas import FindingSchema
+
+    fake_finding = FindingSchema(
+        competitor_name="Burger Lab", source_platform="Instagram", update_type="post",
+        content_text="New item launched", content_hash="h1",
+    )
+    with (
+        patch("app.agents.scout.pipeline.confirm_seed_competitors"),
+        patch("app.agents.scout.pipeline.discover_new_competitors"),
+        patch("app.agents.scout.pipeline.prune_stale_competitors", return_value=0),
+        patch("app.agents.scout.pipeline.get_all_competitors", return_value=[]),
+        patch("app.agents.scout.pipeline._select_competitors_to_scrape", return_value=[]),
+        patch("app.agents.scout.pipeline._fetch_all_sources", return_value=([fake_finding], ["web"], [], False)),
+        patch("app.agents.scout.pipeline.build_report", side_effect=ReportGenerationFailed("timed out")),
+    ):
+        reply = run("scout", store_id=store_id)
+
+    assert "no previous report" in reply.lower()
+
+    from app.core.db import ScoutReport
+    with TestSession() as db:
+        count = db.query(ScoutReport).filter(ScoutReport.store_id == store_id).count()
+    assert count == 0
+
+
+def test_cache_hit_report_generation_failure_gives_friendly_message(store_id, fake_redis):
+    """The fresh-cache path (is_live=False) never persists anything --
+    a build_report() failure here just needs a clean user-facing message,
+    not the preserve-previous-report machinery (there's no NEW report to
+    avoid overwriting)."""
+    from datetime import datetime, timedelta
+    from app.agents.scout.pipeline import run
+    from app.agents.scout.analysis import ReportGenerationFailed
+
+    run_id = _seed_scout_run(store_id)
+    with TestSession() as db:
+        from app.core.db import ScoutRun
+        r = db.query(ScoutRun).filter(ScoutRun.id == run_id).first()
+        r.finished_at = datetime.utcnow() - timedelta(minutes=5)
+        db.commit()
+    _seed_finding(store_id, run_id, "Burger Lab", "Some finding.")
+
+    with patch("app.agents.scout.pipeline.build_report", side_effect=ReportGenerationFailed("timed out")):
+        reply = run("competitors", store_id=store_id)
+
+    assert "Report generation failed" not in reply
+    assert "hiccup" in reply.lower() or "try again" in reply.lower()
+
+
+def test_answer_from_cache_report_generation_failure_gives_friendly_message(store_id, fake_redis):
+    from app.agents.scout.pipeline import answer_from_cache
+    from app.agents.scout.analysis import ReportGenerationFailed
+
+    run_id = _seed_scout_run(store_id)
+    _seed_finding(store_id, run_id, "Burger Lab", "Some finding.")
+
+    with patch("app.agents.scout.pipeline.build_report", side_effect=ReportGenerationFailed("timed out")):
+        reply = answer_from_cache(store_id, "what's burger lab up to")
+
+    assert "Report generation failed" not in reply
+    assert "hiccup" in reply.lower() or "try again" in reply.lower()
 
 
 def test_run_scout_all_skips_every_store_when_breaker_open(store_id, fake_redis):
