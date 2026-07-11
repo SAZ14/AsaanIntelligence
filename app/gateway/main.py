@@ -2111,6 +2111,20 @@ async def debug_backfill_review_embeddings(batch_size: int = 32) -> JSONResponse
     return JSONResponse({"status": "ok", "total": total, "embedded": done, "skipped": skipped})
 
 
+@app.post("/admin/debug/staff_test")
+async def debug_staff_test(store_id: int, phone: str, text: str) -> JSONResponse:
+    """TEMPORARY — exercises handle_internal_for_store() directly (same
+    entry point _bg_internal dispatches to) inside the real deployed
+    process, without going through an actual WhatsApp send/webhook. Lets a
+    conversation be driven turn-by-turn via repeated calls with the same
+    phone (staff conversational memory keys off phone+store_id exactly
+    like the real path), to verify router/persona/memory quality live.
+    Remove after use."""
+    from app.gateway.internal import handle_internal_for_store
+    reply = handle_internal_for_store(phone, text, store_id)
+    return JSONResponse({"reply": reply})
+
+
 @app.get("/admin/stores")
 async def list_stores() -> JSONResponse:
     from app.core.db import SessionLocal, Store, StoreTwilioNumber
