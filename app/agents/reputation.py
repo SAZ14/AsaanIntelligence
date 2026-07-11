@@ -1597,10 +1597,16 @@ def _chat_about_reviews(store_id: int, store_name: str, text: str, history: list
             # took 20-45s even before semantic search was added -- 20s was
             # already marginal. _detect_sentiment_lean above adds its own
             # latency before this call even starts, on top of that
-            # existing variance. Matches revenue/scout's more generous
-            # final-answer timeouts (25s/90s) rather than a classification
-            # call's tight one.
-            timeout=45.0,
+            # existing variance. Confirmed live AGAIN after adding
+            # conversation history: a genuine (not hung, just slow)
+            # completion hit the old 45s ceiling and fell back to the
+            # command-menu text instead of the real answer. This call only
+            # ever runs inside an already-backgrounded task (never blocks
+            # a webhook response), so there's no real cost to waiting
+            # longer for a completion that's actually going to succeed --
+            # raised well past the worst observed latency rather than
+            # matching revenue/scout's tighter budgets.
+            timeout=120.0,
             model=get_model(),
             max_tokens=500,
             messages=messages,

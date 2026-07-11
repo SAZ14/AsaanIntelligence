@@ -10,6 +10,7 @@ Scout is handled upstream in the gateway as an async background task.
 """
 from __future__ import annotations
 import logging
+import re as _re
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,55 @@ def _condensed_history(history: list[dict], max_assistant_len: int = 150) -> lis
     return condensed
 
 
+# ── Router continuity safety net ────────────────────────────────────────────
+# Confirmed live: even at temperature=0, the LLM router occasionally
+# misroutes a short, keyword-free continuation message ("draft a reply I
+# can send them" mid-way through a reviews conversation) to a completely
+# unrelated agent -- reproduced twice out of several attempts. Not a new
+# problem (the router was never perfectly deterministic), but jarring now
+# that memory makes conversations otherwise feel coherent: getting a random
+# revenue pitch mid-review-discussion breaks the illusion harder than a
+# context-free bot ever could. This is a zero-latency, deterministic
+# correction layered under the LLM call rather than a second LLM call
+# (self-consistency/voting would fix this too, but at 2-3x the router's
+# cost and latency for a rare edge case) -- reuses the SAME keyword sets
+# gateway/main.py already has for the ack-text guess, so "does this
+# message contain a real signal for switching topics" is answered the
+# identical way everywhere in this codebase.
+
+_LAST_AGENT_TTL = 7200  # matches staff chat history's TTL
+
+
+def _topic_signal(text: str) -> str | None:
+    """Which agent (if any) this text contains a strong keyword signal
+    for, independent of the LLM's classification. None means the message
+    doesn't clearly point anywhere -- exactly the case where sticking
+    with the previous turn's agent is safer than trusting a possibly-
+    flaky classification."""
+    from app.gateway.main import _is_scout_message, _INTEGRITY_SHORTHAND, _REVIEW_KEYWORDS, _REVENUE_KEYWORDS
+
+    if _is_scout_message(text):
+        return "scout"
+    words = set(_re.sub(r"[^\w\s]", "", text.lower()).split())
+    if words & _REVIEW_KEYWORDS:
+        return "reputation"
+    if words & _REVENUE_KEYWORDS:
+        return "revenue"
+    if words & _INTEGRITY_SHORTHAND:
+        return "integrity"
+    return None
+
+
+def _load_last_agent(store_id: int, phone: str) -> str | None:
+    from app.core import cache as _cache
+    return _cache.get(f"last_agent:{store_id}:{phone}")
+
+
+def _save_last_agent(store_id: int, phone: str, agent: str) -> None:
+    from app.core import cache as _cache
+    _cache.set(f"last_agent:{store_id}:{phone}", agent, ttl=_LAST_AGENT_TTL)
+
+
 _REPUTATION_EXACT = {"post", "ignore", "next"}
 
 # Documented Revenue Advisor shorthand commands (see staff_help_text). These bypass
@@ -163,6 +213,12 @@ def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[st
             "reputation/reviews  – SHOW/LIST reviews with no sentiment filter: 'show all reviews', 'list reviews'\n"
             "reputation/chat     – other questions ABOUT reviews that aren't a show/list request: trends, ratings over time, general \"how are we doing on reviews\"\n"
             "scout/scout         – competitor intelligence, rival restaurants, what competitors are doing\n\n"
+            "CONVERSATION CONTINUITY: if earlier turns are shown above, a short "
+            "follow-up that names no clear new topic ('draft a reply for them', "
+            "'what about that one', 'send it', 'why', 'when was that') is almost "
+            "always CONTINUING the SAME topic as the most recent turn, not "
+            "switching to a different agent. Only switch agents when the message "
+            "itself names a genuinely different, unrelated subject.\n\n"
             "DISAMBIGUATION RULES (apply these when in doubt):\n"
             "• 'how much did we make/sell today/this week' (a TOTAL/aggregate figure) → integrity/daily or integrity/weekly — POS data query, NOT strategy\n"
             "• 'best sellers' / 'top products' / 'what's selling' / 'how is X doing vs Y' (comparing SALES VOLUME/units/revenue of specific items) → revenue/general — product performance, NOT integrity\n"
@@ -206,7 +262,12 @@ def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[st
             "  'give me a full summary' → integrity/summary\n"
             "  'data refresh karo' → integrity/refresh\n"
             "  'can you check our google reviews' → reputation/check\n"
-            "  'increase karni hai sales' → revenue/general\n"
+            "  'increase karni hai sales' → revenue/general\n\n"
+            "  Given prior turns discussing a specific negative review:\n"
+            "  'draft a reply I can send them' → reputation/chat -- a bare "
+            "'draft a reply' names no topic on its own; it continues whatever "
+            "the conversation was already about\n"
+            "  'when was that posted' → reputation/chat -- same continuation logic\n"
         )
         # Routing is a 25-token classification — the fast non-reasoning model
         # answers in <1s vs ~10s of thinking on glm-4.7 (verified 10/10 on an
@@ -309,20 +370,39 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
 
     # Unambiguous action commands — skip LLM
     if first in _REPUTATION_EXACT:
+        agent = "reputation"
         logger.info("internal.routing: store=%d agent=reputation trigger=action from=%s", store_id, from_number)
         reply = _reputation(store_id, from_number, text, history=history)
 
     elif first == "edit" and len(text.split()) > 1:
+        agent = "reputation"
         logger.info("internal.routing: store=%d agent=reputation trigger=edit from=%s", store_id, from_number)
         reply = _reputation(store_id, from_number, text, history=history)
 
     elif first in _REVENUE_EXACT and len(text.split()) == 1:
+        agent = "revenue"
         logger.info("internal.routing: store=%d agent=revenue trigger=exact from=%s", store_id, from_number)
         reply = _revenue(store_id, from_number, text)
 
     else:
         # LLM classification
         agent, command = _classify_with_llm(text, history=history)
+
+        # Continuity safety net: a short, keyword-free continuation
+        # ("draft a reply I can send them") has been confirmed live to
+        # occasionally flip to a completely unrelated agent even with
+        # history in the prompt. If the message itself contains no real
+        # signal for switching topics, prefer staying with whichever
+        # agent handled the last turn over trusting a possibly-flaky
+        # classification -- see _topic_signal's docstring.
+        last_agent = _load_last_agent(store_id, from_number)
+        if history and last_agent and agent != last_agent and _topic_signal(text) is None:
+            logger.info(
+                "internal.routing: continuity override store=%d %s->%s (no topic signal) from=%s",
+                store_id, agent, last_agent, from_number,
+            )
+            agent = last_agent
+
         logger.info(
             "internal.routing: store=%d agent=%s command=%s natural=%s from=%s",
             store_id, agent, command, is_natural, from_number,
@@ -382,6 +462,7 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
             reply = _integrity(store_id, from_number, text, history=history)
 
     _save_staff_turn(store_id, from_number, history, text, reply)
+    _save_last_agent(store_id, from_number, agent)
     return reply
 
 
