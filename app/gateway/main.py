@@ -2028,16 +2028,6 @@ async def debug_apify_breaker_clear() -> JSONResponse:
     return JSONResponse({"status": "cleared"})
 
 
-@app.post("/admin/debug/staff_chat_test")
-async def debug_staff_chat_test(store_id: int, phone: str, text: str) -> JSONResponse:
-    """TEMPORARY — see app.gateway.internal.handle_internal_for_store.
-    Used to live-verify the router continuity fix inside the real warm
-    process. Remove after use."""
-    from app.gateway.internal import handle_internal_for_store
-    reply = handle_internal_for_store(phone, text, store_id)
-    return JSONResponse({"reply": reply})
-
-
 @app.post("/admin/debug/backfill_review_embeddings")
 async def debug_backfill_review_embeddings(batch_size: int = 32) -> JSONResponse:
     """TEMPORARY — one-time backfill of Finding.content_embedding for
