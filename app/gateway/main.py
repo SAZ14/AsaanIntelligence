@@ -2111,14 +2111,6 @@ async def debug_backfill_review_embeddings(batch_size: int = 32) -> JSONResponse
     return JSONResponse({"status": "ok", "total": total, "embedded": done, "skipped": skipped})
 
 
-@app.post("/admin/debug/staff_test")
-async def debug_staff_test(store_id: int, phone: str, text: str) -> JSONResponse:
-    """TEMPORARY — exercises handle_internal_for_store() directly inside
-    the real deployed process, without a real WhatsApp send/webhook.
-    Remove after use."""
-    from app.gateway.internal import handle_internal_for_store
-    reply = handle_internal_for_store(phone, text, store_id)
-    return JSONResponse({"reply": reply})
 
 
 @app.get("/admin/stores")
