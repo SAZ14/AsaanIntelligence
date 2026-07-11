@@ -339,6 +339,20 @@ def clear_onboarding_session(store_id: int, phone: str) -> None:
 
 
 # ── Chat Sessions ─────────────────────────────────────────────────────────────
+# Redis is the source of truth for the hot path (every load/save); Postgres
+# is durability-only, batch-synced hourly (sync_chat_sessions_to_postgres,
+# wired into scripts/run_server.py's scheduler) rather than written on every
+# single turn. Measured live: the per-turn Postgres write cost ~25-35ms,
+# noise next to the ~600-1500ms LLM call it sits alongside -- but at higher
+# message volume across many stores/staff, a write on every turn (customer
+# AND staff chat both go through this) adds up in Postgres load in a way a
+# once-an-hour batch doesn't. TTL bumped from 1h to 2h to leave comfortable
+# margin around the hourly sync -- a session written right after one sync
+# cycle needs to survive to the next without being evicted first.
+
+_CHAT_SESSION_TTL = 7200
+_DIRTY_SESSIONS_KEY = "chat_sessions:dirty"
+
 
 def load_chat_session(store_id: int, phone: str) -> list[dict]:
     cached = _cache.get(f"chat:{store_id}:{phone}")
@@ -351,16 +365,25 @@ def load_chat_session(store_id: int, phone: str) -> list[dict]:
                 OrmChatSession.phone == phone,
             ).first()
             history = list(row.history or []) if row else []
-            _cache.set(f"chat:{store_id}:{phone}", history, ttl=3600)
+            _cache.set(f"chat:{store_id}:{phone}", history, ttl=_CHAT_SESSION_TTL)
             return history
     except Exception:
         return []
 
 
 def save_chat_session(store_id: int, phone: str, history: list[dict]) -> None:
-    # Redis is primary — fast write for the hot path
-    _cache.set(f"chat:{store_id}:{phone}", history, ttl=3600)
-    # DB write for durability (non-blocking from caller's perspective)
+    if _cache.available():
+        _cache.set(f"chat:{store_id}:{phone}", history, ttl=_CHAT_SESSION_TTL)
+        # Mark dirty for the next batch sync rather than writing Postgres
+        # here directly -- member format "store_id:phone" is safe to split
+        # on the first colon even though phone itself contains colons
+        # (e.g. staff mode's "staff:whatsapp:+92..." prefix, gateway/
+        # internal.py).
+        _cache.sadd(_DIRTY_SESSIONS_KEY, f"{store_id}:{phone}")
+        return
+    # Redis unavailable -- write straight to Postgres so a session isn't
+    # silently lost for the whole outage. This is the old always-write
+    # behavior, kept as a fallback rather than the default path now.
     try:
         with SessionLocal() as db:
             row = db.query(OrmChatSession).filter(
@@ -375,6 +398,47 @@ def save_chat_session(store_id: int, phone: str, history: list[dict]) -> None:
             db.commit()
     except Exception:
         pass
+
+
+def sync_chat_sessions_to_postgres() -> int:
+    """Batch-flush every chat session marked dirty since the last sync
+    (customer and staff both -- same storage) from Redis to Postgres.
+    Scheduled hourly; returns how many sessions were synced.
+
+    Atomically hands off the dirty set to a temp key first (RENAME) so
+    saves that land mid-sync go into a fresh dirty set under the original
+    name instead of racing this batch -- nothing gets silently dropped
+    just because it was written while a sync was already in progress."""
+    import uuid as _uuid
+
+    swap_key = f"{_DIRTY_SESSIONS_KEY}:sync:{_uuid.uuid4().hex[:8]}"
+    if not _cache.rename_for_batch(_DIRTY_SESSIONS_KEY, swap_key):
+        return 0  # nothing dirty (or Redis unavailable)
+
+    members = _cache.smembers(swap_key)
+    synced = 0
+    try:
+        with SessionLocal() as db:
+            for member in members:
+                store_id_str, phone = member.split(":", 1)
+                store_id = int(store_id_str)
+                history = _cache.get(f"chat:{store_id}:{phone}")
+                if history is None:
+                    continue  # evicted before we got to it -- nothing left to persist
+                row = db.query(OrmChatSession).filter(
+                    OrmChatSession.store_id == store_id,
+                    OrmChatSession.phone == phone,
+                ).first()
+                if row is None:
+                    db.add(OrmChatSession(store_id=store_id, phone=phone, history=history))
+                else:
+                    row.history = history
+                    row.updated_at = datetime.utcnow()
+                synced += 1
+            db.commit()
+    finally:
+        _cache.delete(swap_key)
+    return synced
 
 
 # ── Knowledge Base (RAG via pgvector) ────────────────────────────────────────

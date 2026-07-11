@@ -18,6 +18,7 @@ from app.agents.customer.jobs.leaderboard_broadcast import broadcast_all
 from app.agents.scout.pipeline import run_scout_all
 from app.agents.reputation import run_reputation_check_all
 from app.core.run_reaper import reap_orphaned_runs
+from app.agents.customer.community.store import sync_chat_sessions_to_postgres
 
 logging.basicConfig(
     level=logging.INFO,
@@ -99,6 +100,14 @@ def _start_scheduler() -> BackgroundScheduler:
         reap_orphaned_runs,
         trigger="interval", minutes=10,
         id="run_reaper_10min_poll", replace_existing=True,
+    )
+    # Batch-flush chat sessions (customer + staff) from Redis to Postgres --
+    # see app/agents/customer/community/store.py's module comment for why
+    # this moved off the per-turn write path.
+    scheduler.add_job(
+        sync_chat_sessions_to_postgres,
+        trigger="interval", hours=1,
+        id="chat_session_sync_hourly", replace_existing=True,
     )
     scheduler.start()
     return scheduler

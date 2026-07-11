@@ -129,6 +129,47 @@ def release_lock(key: str) -> None:
     delete(key)
 
 
+def sadd(key: str, member: str) -> None:
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        r.sadd(key, member)
+    except Exception:
+        pass
+
+
+def rename_for_batch(src: str, dst: str) -> bool:
+    """Atomically rename src to dst -- used to hand off a "dirty" set to a
+    batch job without racing new writes that arrive mid-batch (they land
+    under the original `src` name again, since callers keep writing to
+    the same key; only what existed at rename time moves to `dst`).
+    Returns False (no-op) if src doesn't exist or Redis is unavailable --
+    RENAME itself would raise ResponseError on a missing key, so that
+    case is treated the same as "nothing to sync" rather than an error."""
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        return bool(r.rename(src, dst))
+    except Exception:
+        return False
+
+
+def smembers(key: str) -> set[str]:
+    # NOTE: this module defines its own set() (the cache-write helper
+    # above), which shadows the builtin set TYPE for the rest of this
+    # file -- calling set(...) here would silently call cache.set()
+    # instead. Set literals/comprehensions sidestep the name entirely.
+    r = _get_redis()
+    if not r:
+        return {*()}
+    try:
+        return {m for m in r.smembers(key)}
+    except Exception:
+        return {*()}
+
+
 def rate_limit_ok(key: str, max_count: int, window_seconds: int) -> bool:
     """Sliding-window rate limit via a Redis sorted set (score = arrival
     time). Returns True (and records a hit) if the caller is still under
