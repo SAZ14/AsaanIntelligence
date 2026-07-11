@@ -29,13 +29,13 @@ _kw = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 _is_sqlite = "sqlite" in DATABASE_URL
 # pool_size/max_overflow are explicit (not SQLAlchemy's 5+10 default) so the
 # per-worker ceiling is a known, chosen number: WEB_CONCURRENCY worker
-# processes (scripts/run_server.py) each get their own engine/pool, so the
-# system-wide max is pool_size+max_overflow times worker count. Sized so
-# that total stays comfortably under Postgres's actual max_connections
-# (confirmed live: 100) with headroom for admin/migration connections --
-# 10/worker x up to 8 workers = 80, leaving 20 free. SQLite (dev/tests) has
-# no such pool.
-_pool_kw = {} if _is_sqlite else {"pool_size": 5, "max_overflow": 5}
+# processes (scripts/run_server.py, kept at 4 -- see its comment on why 8
+# crashed the container) each get their own engine/pool, so the system-wide
+# max is pool_size+max_overflow times worker count. Sized so that total
+# stays comfortably under Postgres's actual max_connections (confirmed
+# live: 100) with headroom for admin/migration connections -- 20/worker x
+# 4 workers = 80, leaving 20 free. SQLite (dev/tests) has no such pool.
+_pool_kw = {} if _is_sqlite else {"pool_size": 10, "max_overflow": 10}
 engine = create_engine(
     DATABASE_URL,
     connect_args=_kw,

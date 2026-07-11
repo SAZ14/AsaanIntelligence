@@ -127,12 +127,17 @@ if __name__ == "__main__":
     # blocks the event loop directly, but multiple worker processes still
     # give real OS-level parallelism on top of that -- each is a separate
     # process with its own event loop, thread pool and DB connection pool.
-    # Default raised from 4 to 8 for the 24-vCPU/24GB host this runs on
-    # (app/core/db.py's pool sizing assumes up to 8 workers). Safe to run
-    # >1 worker since cross-instance state (rate limits/cooldowns/
-    # idempotency, the job queue) is Redis-backed rather than in-process
-    # dicts.
-    workers = int(os.environ.get("WEB_CONCURRENCY", "8"))
+    # Kept at 4, NOT raised: confirmed live that 8 workers starting
+    # simultaneously (each spinning up an embedding-model warmup thread, a
+    # job-queue heartbeat thread, and PyTorch/tokenizers' own internal
+    # thread pools) hits the container's OS thread limit at startup --
+    # "RuntimeError: can't start new thread" / "Resource temporarily
+    # unavailable", which crashed every worker and took the whole service
+    # down. The vCPU/RAM headroom on this host doesn't raise that ceiling.
+    # Safe to run >1 worker since cross-instance state (rate limits/
+    # cooldowns/idempotency, the job queue) is Redis-backed rather than
+    # in-process dicts.
+    workers = int(os.environ.get("WEB_CONCURRENCY", "4"))
     uvicorn.run(
         "app.gateway.main:app",
         host="0.0.0.0",

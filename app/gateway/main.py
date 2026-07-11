@@ -674,12 +674,16 @@ async def lifespan(app: FastAPI):
     # meta_webhook) and every BackgroundTasks-dispatched sync handler
     # already ran there too -- both share this one pool, so AnyIO's
     # default of 40 threads/process becomes the real concurrency ceiling
-    # once inline DB/Redis/LLM work moved off the event loop. Set well
-    # above the per-worker DB pool size (app/core/db.py) on purpose:
-    # excess threads just queue for a free DB connection instead of the
-    # request queuing (and 502'ing) at the ASGI layer.
+    # once inline DB/Redis/LLM work moved off the event loop. Raised
+    # moderately (not aggressively) above the per-worker DB pool size
+    # (app/core/db.py): confirmed live that this container has a real,
+    # fairly tight OS thread ceiling -- raising WEB_CONCURRENCY from 4 to
+    # 8 crashed every worker at startup with "can't start new thread" /
+    # "Resource temporarily unavailable" (see run_server.py's comment), so
+    # this value is deliberately conservative rather than matching the
+    # 24-vCPU core count.
     import anyio
-    anyio.to_thread.current_default_thread_limiter().total_tokens = 100
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 60
 
     _jobq.start_worker()  # no-op if Redis is unavailable
     threading.Thread(target=_warm_embeddings, name="embedding-warmup", daemon=True).start()
