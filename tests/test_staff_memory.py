@@ -148,6 +148,58 @@ def test_handle_internal_for_store_saves_a_turn_and_threads_it_forward(store_id)
     assert second_history_arg == saved
 
 
+@pytest.fixture
+def fake_redis(monkeypatch):
+    fakeredis = pytest.importorskip("fakeredis")
+    import app.core.cache as cache
+    monkeypatch.setattr(cache, "_client", fakeredis.FakeRedis(decode_responses=True))
+    monkeypatch.setattr(cache, "_unavailable", False)
+
+
+# ── Self-service reset ("reset" / "new chat" / "clear" / ...) ──────────────
+
+def test_reset_clears_staff_history(store_id, fake_redis):
+    from app.gateway.internal import handle_internal_for_store, _load_staff_history, _save_staff_turn
+
+    _save_staff_turn(store_id, PHONE, [], "leakage", "PKR 5,000 in voids.")
+    assert _load_staff_history(store_id, PHONE) != []
+
+    reply = handle_internal_for_store(PHONE, "reset", store_id)
+
+    assert "cleared" in reply.lower()
+    assert _load_staff_history(store_id, PHONE) == []
+
+
+def test_reset_clears_last_agent_continuity(store_id, fake_redis):
+    from app.gateway.internal import handle_internal_for_store, _save_last_agent, _load_last_agent
+
+    _save_last_agent(store_id, PHONE, "reputation")
+    assert _load_last_agent(store_id, PHONE) == "reputation"
+
+    handle_internal_for_store(PHONE, "reset", store_id)
+
+    assert _load_last_agent(store_id, PHONE) is None
+
+
+def test_reset_does_not_reach_the_llm_or_agents(store_id, fake_redis):
+    """A reset should be a pure memory-clear, zero-latency shortcut --
+    never touch the router or any agent."""
+    from app.gateway.internal import handle_internal_for_store
+
+    with (
+        patch("app.gateway.internal._classify_with_llm") as mock_classify,
+        patch("app.gateway.internal._integrity") as mock_integrity,
+        patch("app.gateway.internal._revenue") as mock_revenue,
+        patch("app.gateway.internal._reputation") as mock_reputation,
+    ):
+        handle_internal_for_store(PHONE, "new chat", store_id)
+
+    mock_classify.assert_not_called()
+    mock_integrity.assert_not_called()
+    mock_revenue.assert_not_called()
+    mock_reputation.assert_not_called()
+
+
 def test_shorthand_commands_also_save_history_for_later_followups(store_id):
     """Even a deterministic shorthand command's reply becomes useful
     context for a later natural-language follow-up ("why is that leakage

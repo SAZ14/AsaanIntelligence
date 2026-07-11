@@ -55,7 +55,7 @@ def staff_help_text(store_name: str) -> str:
         "You can also just write in plain language, e.g. \"how did we do this "
         "week\" or \"what are competitors offering\", no need to remember exact "
         "commands.\n\n"
-        "Type *menu* to switch modes."
+        "Type *menu* to switch modes, or *reset* to clear the conversation and start fresh."
     )
 
 
@@ -155,6 +155,21 @@ def _load_last_agent(store_id: int, phone: str) -> str | None:
 def _save_last_agent(store_id: int, phone: str, agent: str) -> None:
     from app.core import cache as _cache
     _cache.set(f"last_agent:{store_id}:{phone}", agent, ttl=_LAST_AGENT_TTL)
+
+
+_RESET_TRIGGERS = {"reset", "new chat", "clear", "clear chat", "start over", "forget"}
+
+
+def _clear_staff_memory(store_id: int, phone: str) -> None:
+    """Wipes this staff member's conversational history and router
+    continuity (_load_staff_history / _load_last_agent) so a stale or
+    derailed conversation stops influencing later turns. Self-service via
+    typing one of _RESET_TRIGGERS -- there was previously no way to do
+    this short of waiting out the 2h Redis TTL."""
+    from app.agents.customer.community.store import save_chat_session
+    from app.core import cache as _cache
+    save_chat_session(store_id, f"staff:{phone}", [])
+    _cache.delete(f"last_agent:{store_id}:{phone}")
 
 
 _REPUTATION_EXACT = {"post", "ignore", "next"}
@@ -360,6 +375,11 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     `reply = ...; break` pattern below) is what makes saving-once-at-the-
     end possible without wrapping every branch in its own save call."""
     text = (body or "").strip()
+
+    if text.lower() in _RESET_TRIGGERS:
+        _clear_staff_memory(store_id, from_number)
+        logger.info("internal.routing: memory_reset store=%d from=%s", store_id, from_number)
+        return "Cleared, starting fresh. What do you need?"
 
     if not text or text.lower() in ("help", *_GREETINGS):
         return staff_help_text(_get_store_name(store_id))
