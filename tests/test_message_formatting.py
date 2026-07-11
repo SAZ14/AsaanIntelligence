@@ -67,7 +67,8 @@ class TestStaffAgentsStayEmojiFree:
 
     def test_scout_report_system_prompt_forbids_emojis(self):
         from app.agents.scout.analysis import _report_system
-        prompt = _report_system("Test Cafe", "burger restaurant")
+        store_id = seed_store(seed_chain("Test Chain"), name="Test Cafe")
+        prompt = _report_system("Test Cafe", "burger restaurant", store_id)
         assert "no emojis" in prompt.lower()
 
     def test_revenue_agent_strings_have_no_emoji(self):

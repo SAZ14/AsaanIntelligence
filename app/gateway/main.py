@@ -1876,7 +1876,7 @@ async def configure_venue(store_id: int, request: Request) -> JSONResponse:
                 db.add(row)
             row.venue_name = params.get("venue_name", store.name)
             row.stamp_goal = int(params.get("stamp_goal", 5))
-            row.reward_text = params.get("reward_text", "a free drink or dessert")
+            row.reward_text = params.get("reward_text", "a free treat")
             row.winback_days = int(params.get("winback_days", 10))
             row.code_expiry_days = int(params.get("code_expiry_days", 30))
             row.owner_phones = owner_phones

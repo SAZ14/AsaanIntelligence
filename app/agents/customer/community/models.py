@@ -38,7 +38,7 @@ class Deal(BaseModel):
 class VenueConfig(BaseModel):
     venue_name: str = "Restaurant"
     stamp_goal: int = 5
-    reward_text: str = "a free drink or dessert"
+    reward_text: str = "a free treat"
     winback_days: int = 10
     code_expiry_days: int = 30
     owner_phones: list[str] = Field(default_factory=list)

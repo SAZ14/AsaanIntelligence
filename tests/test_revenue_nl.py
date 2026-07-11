@@ -62,7 +62,7 @@ class TestRegistryPassesRealClient:
 class TestRevenueAnswerQuestion:
     def test_no_client_returns_a_graceful_fallback(self):
         agent = _agent(client=None)
-        result = agent.answer_question("how did we do this week")
+        result = agent.answer_question("how did we do this week", store_id=1)
         assert "unavailable" in result.lower()
 
     def test_calls_llm_once_with_real_data_and_the_actual_question(self):
@@ -73,7 +73,7 @@ class TestRevenueAnswerQuestion:
         mock_client.chat.completions.create.return_value = resp
 
         agent = _agent(client=mock_client)
-        result = agent.answer_question("how many burgers did we sell this week")
+        result = agent.answer_question("how many burgers did we sell this week", store_id=1)
 
         mock_client.chat.completions.create.assert_called_once()
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
@@ -88,7 +88,7 @@ class TestRevenueAnswerQuestion:
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = RuntimeError("timeout")
         agent = _agent(client=mock_client)
-        result = agent.answer_question("how did we do this week")
+        result = agent.answer_question("how did we do this week", store_id=1)
         assert "failed" in result.lower()
 
 

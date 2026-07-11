@@ -175,6 +175,12 @@ class RevenueAgent:
         system = (
             staff_persona("You are a revenue/sales advisor.", store_id)
             + "\nCite exact figures (PKR amounts, unit counts, percentages) from the revenue data; do not invent numbers."
+            + "\nWhen the data suggests an opportunity (a slow window, low attach rate, etc.) but doesn't "
+              "prescribe a specific tactic, suggest one yourself -- grounded in what this restaurant actually "
+              "is (see its description above), not generic advice that happens to fit any restaurant. A "
+              "delivery-heavy burger spot and a sit-down café need different tactics for the same slow-window "
+              "problem; don't default to cafe tropes (coffee tastings, acoustic nights) unless this restaurant "
+              "actually is one."
         )
         messages = [{"role": "system", "content": system}]
         messages.extend(history or [])
@@ -321,11 +327,11 @@ class RevenueAgent:
         text = (
             "Raise the average ticket:\n"
             f"• Food attach is {a.attach_rate*100:.0f}% of drink orders "
-            f"({a.beverage_orders} drink orders). Get baristas suggesting a pastry / "
-            f"premium add-on (extra shot, syrup, dairy-free) → target {a.target_rate*100:.0f}%.\n"
+            f"({a.beverage_orders} drink orders). Get staff suggesting a complementary "
+            f"side or premium add-on at checkout → target {a.target_rate*100:.0f}%.\n"
             f"• Each point of attach ≈ PKR {a.avg_food_price:,.0f} per order added; "
             f"reaching target ≈ {_money(a.est_monthly_uplift)}/mo.{bundle}\n"
-            "• Add a premium tier (coffee flight, single-origin) to nudge ticket up."
+            "• Add a premium/larger option on your top sellers to nudge ticket up."
         )
         return RevenueReply(text=text, intent="upsell", period=period, action="advise")
 

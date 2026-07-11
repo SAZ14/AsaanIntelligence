@@ -103,18 +103,43 @@ def _get_latest_run(store_id: int) -> tuple[Run | None, list[DBFinding]]:
     data-integrity bug, confirmed live: a "competitors" query fed
     Anatummy's own 5-star reviews to the report LLM, which correctly (if
     confusingly) noted "these aren't competitor findings, they're internal
-    reviews" rather than reporting on any actual competitor."""
+    reviews" rather than reporting on any actual competitor.
+
+    Prefers the most recent run that actually has findings attached over
+    the strictly-latest run, which can be a genuine "ok"/"partial" run
+    with zero findings (e.g. every source failing during an Apify quota
+    outage -- confirmed live: the latest run was "ok" with 0 findings
+    while an older run from the same day had real data, and every
+    natural-language question served "no competitor signals found" for
+    days instead of the last real report). _build_freshness_note still
+    reports this run's true age honestly -- this only changes which run's
+    findings get served, never claims fresher data than actually exists."""
     with SessionLocal() as db:
+        base_filter = (
+            Run.store_id == store_id,
+            Run.status.in_(["ok", "partial"]),
+            Run.command != "whatsapp_check",
+        )
         run = (
             db.query(Run)
             .filter(
-                Run.store_id == store_id,
-                Run.status.in_(["ok", "partial"]),
-                Run.command != "whatsapp_check",
+                *base_filter,
+                Run.id.in_(db.query(DBFinding.run_id).filter(DBFinding.store_id == store_id)),
             )
             .order_by(Run.finished_at.desc())
             .first()
         )
+        if run is None:
+            # No run has ever had findings -- fall back to the plain latest
+            # run so callers still get an accurate "no scan yet"/empty state
+            # instead of silently treating a genuinely brand-new store the
+            # same as an outage.
+            run = (
+                db.query(Run)
+                .filter(*base_filter)
+                .order_by(Run.finished_at.desc())
+                .first()
+            )
         if run is None:
             return None, []
         findings = db.query(DBFinding).filter(DBFinding.run_id == run.id).all()

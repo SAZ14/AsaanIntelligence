@@ -72,26 +72,29 @@ class Campaign:
     fits_dayparts: tuple[str, ...]   # daypart names this offer suits
 
 
-# Brand-safe catalogue — never "20% off". (Names come straight from the brief.)
+# Brand-safe catalogue — never "20% off". Deliberately generic (not
+# cafe/fine-dining specific like "coffee tasting hosted by the head
+# barista") so it fits any restaurant type; a store's own description can
+# tailor how these get pitched, not what they fundamentally are.
 DEFAULT_CAMPAIGNS: list[Campaign] = [
-    Campaign("coffee_tasting", "Invite-only coffee tasting for 2",
-             "Curated tasting flight, hosted by the head barista",
+    Campaign("tasting_invite", "Invite-only tasting for 2",
+             "A curated tasting of a few signature items, hosted by the team",
              "premium", est_cost_per_redemption=350.0,
              fits_dayparts=("Afternoon", "Midday")),
-    Campaign("chefs_dessert", "Chef's complimentary dessert",
-             "A complimentary signature dessert with any visit",
+    Campaign("free_treat", "A free treat with any visit",
+             "A complimentary signature item with any visit",
              "regular", est_cost_per_redemption=180.0,
              fits_dayparts=("Afternoon", "Evening", "Midday")),
     Campaign("priority_table", "Priority table",
              "A held, best-in-house table, no wait",
              "premium", est_cost_per_redemption=0.0,
              fits_dayparts=("Evening", "Late night")),
-    Campaign("members_mocktail", "Members-only mocktail",
-             "A complimentary craft mocktail for members",
+    Campaign("members_treat", "Members-only treat",
+             "A complimentary item for members",
              "regular", est_cost_per_redemption=220.0,
              fits_dayparts=("Evening", "Late night", "Afternoon")),
-    Campaign("founders_circle", "Founders' circle table",
-             "An exclusive invitation to the Founders' circle evening",
+    Campaign("founders_circle", "Founders' circle",
+             "An exclusive invitation to a founders' circle event",
              "premium", est_cost_per_redemption=500.0,
              fits_dayparts=("Evening", "Late night")),
 ]

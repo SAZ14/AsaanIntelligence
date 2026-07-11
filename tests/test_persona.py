@@ -9,11 +9,19 @@ for the same WhatsApp formatting rules).
 """
 from unittest.mock import MagicMock, patch
 
+from tests.conftest import seed_chain, seed_store
+
+
+def _test_cafe_id() -> int:
+    return seed_store(seed_chain("Test Chain"), name="Test Cafe")
+
 
 def test_staff_persona_includes_role_line_grounding_and_formatting():
     from app.core.persona import staff_persona
-    result = staff_persona("You are a test analyst for Test Cafe.")
-    assert "You are a test analyst for Test Cafe." in result
+    store_id = _test_cafe_id()
+    result = staff_persona("You are a test analyst.", store_id)
+    assert "Test Cafe" in result
+    assert "You are a test analyst." in result
     assert "ONLY the data provided" in result
     assert "never invent" in result.lower()
     assert "*single asterisks*" in result
@@ -31,6 +39,7 @@ def test_grounding_rule_says_say_so_when_unknown():
 def test_integrity_system_prompt_uses_shared_persona():
     from app.agents.integrity.agents import integrity_agent
 
+    store_id = _test_cafe_id()
     fake_report = MagicMock()
     fake_report.venue_name = "Test Cafe"
     mock_client = MagicMock()
@@ -40,7 +49,7 @@ def test_integrity_system_prompt_uses_shared_persona():
     mock_client.chat.completions.create.return_value = resp
 
     with patch.object(integrity_agent, "_context", return_value="fake context"):
-        integrity_agent.answer_question(fake_report, "what happened", client=mock_client)
+        integrity_agent.answer_question(fake_report, "what happened", store_id, client=mock_client)
 
     messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
     system_msg = next(m["content"] for m in messages if m["role"] == "system")
@@ -50,7 +59,8 @@ def test_integrity_system_prompt_uses_shared_persona():
 
 def test_scout_report_system_uses_shared_persona():
     from app.agents.scout.analysis import _report_system
-    system = _report_system("Test Cafe", "burger joint")
+    store_id = _test_cafe_id()
+    system = _report_system("Test Cafe", "burger joint", store_id)
     assert "*single asterisks*" in system
     assert "no emojis" in system.lower()
     assert "ONLY the data provided" in system
@@ -62,6 +72,7 @@ def test_reputation_chat_system_uses_shared_persona(monkeypatch):
     by reputation's own now-removed copy of the same rules)."""
     import app.agents.reputation as reputation
 
+    store_id = _test_cafe_id()
     monkeypatch.setattr(reputation, "_detect_sentiment_lean", lambda text: None)
     with (
         patch("app.review_sources.db.get_pending_finding", return_value=None),
@@ -77,7 +88,7 @@ def test_reputation_chat_system_uses_shared_persona(monkeypatch):
         mock_client.chat.completions.create.return_value = resp
         mock_get_client.return_value = mock_client
 
-        reputation._chat_about_reviews(1, "Test Cafe", "how are we doing")
+        reputation._chat_about_reviews(store_id, "Test Cafe", "how are we doing")
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         system_msg = next(m["content"] for m in messages if m["role"] == "system")

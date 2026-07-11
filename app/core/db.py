@@ -372,7 +372,7 @@ class VenueConfig(Base):
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=True, unique=True)
     venue_name = Column(String, nullable=False)
     stamp_goal = Column(Integer, nullable=False, default=5)
-    reward_text = Column(String, nullable=False, default="a free drink or dessert")
+    reward_text = Column(String, nullable=False, default="a free treat")
     winback_days = Column(Integer, nullable=False, default=10)
     code_expiry_days = Column(Integer, nullable=False, default=30)
     # ARRAY on Postgres (prod schema unchanged); JSON variant so the SQLite

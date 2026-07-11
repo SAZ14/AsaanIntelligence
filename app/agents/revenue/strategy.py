@@ -155,7 +155,7 @@ def menu_opportunities(
         moves.append(MenuMove(
             kind="feature", name=mi.name,
             detail=f"{mi.margin*100:.0f}% margin and already selling, "
-                   f"put it on specials / barista upsell.",
+                   f"put it on specials or have staff upsell it directly.",
         ))
 
     # Fix or cut the low-margin "dogs" that still take up menu space.
@@ -230,9 +230,9 @@ def build_playbook(
         items.append(StrategyItem(
             lever="Average ticket",
             title="Lift food-attach on drink orders",
-            action=(f"Only {attach.attach_rate*100:.0f}% of drink orders add food. "
-                    f"Train baristas to suggest a pastry / add-on (syrup, dairy "
-                    f"alternative) → aim for {attach.target_rate*100:.0f}%.{bundle}"),
+            action=(f"Only {attach.attach_rate*100:.0f}% of drink orders also include a "
+                    f"food item. Prompt staff to suggest a complementary side or add-on "
+                    f"at checkout → aim for {attach.target_rate*100:.0f}%.{bundle}"),
             rationale=f"{attach.beverage_orders} drink orders in window; "
                       f"avg food item ≈ PKR {attach.avg_food_price:,.0f}.",
             est_monthly_impact=attach.est_monthly_uplift,
@@ -259,8 +259,8 @@ def build_playbook(
         items.append(StrategyItem(
             lever="Dayparts",
             title=f"Fill the {ops.deadest_daypart.lower()} lull",
-            action=("Host acoustic nights / open-mic / private bookings, or run an "
-                    "evening small-plates + craft-drinks menu to pull a new crowd."),
+            action=("Run a time-limited discount or bundle deal during this window, "
+                    "or push a targeted offer to regulars to bring in orders."),
             rationale=f"{ops.deadest_daypart} is your quietest daypart vs a "
                       f"{ops.busiest_daypart.lower()} peak.",
             est_monthly_impact=round(gap, 0) if gap else None,
