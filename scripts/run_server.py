@@ -19,7 +19,6 @@ from app.agents.scout.pipeline import run_scout_all
 from app.agents.reputation import run_reputation_check_all
 from app.core.run_reaper import reap_orphaned_runs
 from app.agents.customer.community.store import sync_chat_sessions_to_postgres
-from app.agents.maitre_d.agent import run_maitre_d_maintenance_all
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,18 +108,6 @@ def _start_scheduler() -> BackgroundScheduler:
         sync_chat_sessions_to_postgres,
         trigger="interval", hours=1,
         id="chat_session_sync_hourly", replace_existing=True,
-    )
-    # Maitre D housekeeping: expire stale waitlist offers, sweep the door
-    # (auto-complete/no-show/release unpaid deposit holds), send day-before
-    # reminders. 5 minutes is granular enough relative to the shortest
-    # timer it acts on (offer_ttl_minutes defaults to 15) without polling
-    # pure-DB work needlessly often -- unlike scout/reputation there's no
-    # external API cost gating this, so this doesn't need the same 60s
-    # staleness-poll treatment.
-    scheduler.add_job(
-        run_maitre_d_maintenance_all,
-        trigger="interval", minutes=5,
-        id="maitre_d_maintenance_5min", replace_existing=True,
     )
     scheduler.start()
     return scheduler

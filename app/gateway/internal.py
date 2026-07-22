@@ -53,13 +53,14 @@ def staff_help_text(store_name: str) -> str:
         "  post: mark suggested reply as replied (post it yourself first)\n"
         "  ignore: skip current review\n"
         "  edit <text>: rewrite suggested reply\n\n"
-        "*Reservations*: The book & the door\n"
-        "  reservations: upcoming bookings (all branches)\n"
-        "  waitlist: who's waiting for a table\n"
+        "*Queue*: The live line & the door\n"
+        "  queue: who's waiting right now (all branches)\n"
         "  vip list: your VIP guests\n"
         "  branches: your locations and what they take\n"
         "  add vip <phone> <name>[, notes]: add a VIP\n"
-        "  seat/complete/noshow <id>: update a booking (id from *reservations*)\n\n"
+        "  admit [at <branch>]: seat the next person in line\n"
+        "  remove <position> [at <branch>]: take someone out of the line\n"
+        "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n\n"
         "You can also just write in plain language, e.g. \"how did we do this "
         "week\" or \"what are competitors offering\", no need to remember exact "
         "commands.\n\n"
@@ -241,7 +242,7 @@ def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[st
             "reputation/reviews  – SHOW/LIST reviews with no sentiment filter: 'show all reviews', 'list reviews'\n"
             "reputation/chat     – other questions ABOUT reviews that aren't a show/list request: trends, ratings over time, general \"how are we doing on reviews\"\n"
             "scout/scout         – competitor intelligence, rival restaurants, what competitors are doing\n"
-            "maitre_d/reservations – table reservations, waitlist, no-shows, VIP guests, the door (seat/complete/no-show a booking) — NOT loyalty stamps, NOT the customer's own booking (that's the guest-facing flow, this is staff asking ABOUT bookings)\n\n"
+            "maitre_d/reservations – the live walk-in queue, VIP guests, admitting/removing people from the line — NOT loyalty stamps, NOT the customer's own booking (that's the guest-facing flow, this is staff asking ABOUT the queue)\n\n"
             "CONVERSATION CONTINUITY: if earlier turns are shown above, a short "
             "follow-up that names no clear new topic ('draft a reply for them', "
             "'what about that one', 'send it', 'why', 'when was that') is almost "
@@ -292,10 +293,9 @@ def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[st
             "  'data refresh karo' → integrity/refresh\n"
             "  'can you check our google reviews' → reputation/check\n"
             "  'increase karni hai sales' → revenue/general\n"
-            "  'who's booked in tonight' → maitre_d/reservations\n"
-            "  'any VIPs coming this week' → maitre_d/reservations\n"
-            "  'seat the 8pm table for Ahmed' → maitre_d/reservations\n"
-            "  'who's on the waitlist' → maitre_d/reservations\n\n"
+            "  'who's in the queue right now' → maitre_d/reservations\n"
+            "  'any VIPs waiting' → maitre_d/reservations\n"
+            "  'how long is the line' → maitre_d/reservations\n\n"
             "  Given prior turns discussing a specific negative review:\n"
             "  'draft a reply I can send them' → reputation/chat -- a bare "
             "'draft a reply' names no topic on its own; it continues whatever "
@@ -405,12 +405,17 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     first = text.lower().split()[0]
     is_natural = not _is_shorthand(text)
     history = _load_staff_history(store_id, from_number)
+    words = text.split()
 
-    # Cheap pre-check before touching the DB: only "seat"/"complete"/
-    # "noshow"/"no show" can possibly be a door command.
-    door_reply = None
-    if first in ("seat", "complete", "noshow", "no"):
-        door_reply = _maitre_d_door_shorthand(store_id, first, text)
+    # Cheap pre-check before touching the DB: only "admit"/"remove
+    # <position>"/"add <position> ..." can possibly be a queue command.
+    queue_reply = None
+    if first == "admit":
+        queue_reply = _maitre_d_admit(store_id, " ".join(words[1:]))
+    elif first == "remove" and len(words) > 1 and words[1].isdigit():
+        queue_reply = _maitre_d_remove(store_id, " ".join(words[1:]))
+    elif first == "add" and len(words) > 1 and words[1].isdigit():
+        queue_reply = _maitre_d_insert(store_id, " ".join(words[1:]))
 
     # Unambiguous action commands — skip LLM
     if first in _REPUTATION_EXACT:
@@ -428,12 +433,12 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         logger.info("internal.routing: store=%d agent=revenue trigger=exact from=%s", store_id, from_number)
         reply = _revenue(store_id, from_number, text)
 
-    elif door_reply is not None:
+    elif queue_reply is not None:
         agent = "maitre_d"
-        logger.info("internal.routing: store=%d agent=maitre_d trigger=door from=%s", store_id, from_number)
-        reply = door_reply
+        logger.info("internal.routing: store=%d agent=maitre_d trigger=queue_cmd from=%s", store_id, from_number)
+        reply = queue_reply
 
-    elif text.lower().strip() in ("waitlist", "vip", "vips", "vip list", "reservations", "bookings", "locations", "branches"):
+    elif text.lower().strip() in ("queue", "line", "vip", "vips", "vip list", "locations", "branches"):
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=listing from=%s", store_id, from_number)
         reply = _maitre_d_listing(store_id, text.lower().strip())
@@ -596,40 +601,55 @@ def _reputation(store_id: int, from_number: str, text: str, history: list[dict] 
         )
 
 
-def _maitre_d_door_shorthand(store_id: int, first: str, text: str) -> str | None:
-    """seat/complete/noshow <id> — unambiguous door actions, skip the LLM
-    entirely (same reasoning as reputation's post/edit/ignore). Returns
-    None if this doesn't turn out to be a door command after all, so the
-    caller can fall through to normal routing."""
+def _maitre_d_admit(store_id: int, rest: str) -> str | None:
+    """"admit [at <branch>]" — seat the next person in line, skip the LLM
+    entirely (same reasoning as reputation's post/edit/ignore)."""
     try:
-        from app.agents.maitre_d.staff import handle_door_command
-        words = text.split()
-        rest = " ".join(words[1:]) if len(words) > 1 else ""
-        return handle_door_command(store_id, first, rest)
+        from app.agents.maitre_d.staff import admit_next_in_queue
+        return admit_next_in_queue(store_id, rest)
     except Exception as e:
-        logger.warning("internal._maitre_d_door_shorthand: store=%d error=%s", store_id, e)
+        logger.warning("internal._maitre_d_admit: store=%d error=%s", store_id, e)
+        return None
+
+
+def _maitre_d_remove(store_id: int, rest: str) -> str | None:
+    """"remove <position> [at <branch>]" — take someone out of the line."""
+    try:
+        from app.agents.maitre_d.staff import remove_queue_position
+        return remove_queue_position(store_id, rest)
+    except Exception as e:
+        logger.warning("internal._maitre_d_remove: store=%d error=%s", store_id, e)
+        return None
+
+
+def _maitre_d_insert(store_id: int, rest: str) -> str | None:
+    """"add <position> <phone> <name>[, party <N>] [at <branch>]" — insert
+    someone into the line at a specific spot."""
+    try:
+        from app.agents.maitre_d.staff import insert_queue_position
+        return insert_queue_position(store_id, rest)
+    except Exception as e:
+        logger.warning("internal._maitre_d_insert: store=%d error=%s", store_id, e)
         return None
 
 
 def _maitre_d_listing(store_id: int, cmd: str) -> str:
     try:
-        from app.agents.maitre_d.staff import format_reservations, format_waitlist, format_vips, format_locations
-        if cmd == "waitlist":
-            return format_waitlist(store_id)
+        from app.agents.maitre_d.staff import format_queue, format_vips, format_locations
         if cmd in ("vip", "vips", "vip list"):
             return format_vips(store_id)
         if cmd in ("locations", "branches"):
             return format_locations(store_id)
-        return format_reservations(store_id)
+        return format_queue(store_id)
     except Exception as e:
         logger.warning("internal._maitre_d_listing: store=%d error=%s", store_id, e)
-        return "Reservations agent is unavailable right now. Please try again shortly."
+        return "Queue agent is unavailable right now. Please try again shortly."
 
 
 def _maitre_d(store_id: int, from_number: str, text: str, history: list[dict] | None = None) -> str:
-    """Natural-language questions about reservations/waitlist/VIPs that the
-    router classified as maitre_d but didn't match a door-command/listing
-    shorthand -- e.g. "who's booked in tonight", "any VIPs this week"."""
+    """Natural-language questions about the queue/VIPs that the router
+    classified as maitre_d but didn't match a queue-command/listing
+    shorthand -- e.g. "who's in the queue right now", "any VIPs waiting"."""
     try:
         from app.agents.maitre_d.staff import answer_question
         return answer_question(store_id, text, history=history)

@@ -1,10 +1,11 @@
-"""Maitre D — reservations, waitlist, no-show/VIP, the door.
+"""Maitre D — the live walk-in queue and the door.
 
-Ported from the maitre-d-agent branch's standalone test suite onto this
-server's shared Postgres store/config (app.agents.maitre_d.store/config),
-plus new coverage for the gateway wiring (customer-mode booking routing,
-staff-mode door/listing/NL-Q&A routing) and multi-tenancy isolation, which
-didn't exist on the single-tenant branch.
+The guest-facing flow is deliberately simple: say "book", get asked for
+whatever isn't already known (branch if multi-location, name if not saved,
+party size), then get a permanent booking number back. Staff manage the
+live line with admit/remove/add-at-position. There is no date/time
+table-reservation model, no deposits, no no-show scoring any more -- see
+app/agents/maitre_d/__init__.py's module docstring.
 """
 from __future__ import annotations
 
@@ -18,10 +19,7 @@ from tests.conftest import seed_chain, seed_store
 from app.agents.maitre_d.agent import MaitreD, MaitreDReply
 from app.agents.maitre_d.config import VenueConfig, VipProfile
 from app.agents.maitre_d.store import Store
-from app.agents.maitre_d.models import Reservation
-from app.agents.maitre_d.noshow import assess_no_show
 from app.agents.maitre_d.nlu import parse_message
-from app.agents.maitre_d.payments import StubPaymentProvider
 
 
 @pytest.fixture
@@ -30,7 +28,7 @@ def store_id():
     return seed_store(chain_id, name="MD Test Cafe", location="F-7, Islamabad")
 
 
-FRIDAY_8PM = datetime(2026, 7, 17, 20, 0)  # a Friday, deposit-safe unless noted
+FRIDAY_8PM = datetime(2026, 7, 17, 20, 0)  # a Friday
 
 
 def _md(sid: int, now: datetime = FRIDAY_8PM, vips: dict | None = None) -> MaitreD:
@@ -51,24 +49,13 @@ class TestNLU:
         assert parse_message("party of 6").party_size == 6
         assert parse_message("we are 3").party_size == 3
 
-    def test_tomorrow_and_time(self):
-        now = datetime(2026, 7, 15, 10, 0)  # Wednesday
-        parsed = parse_message("table for 2 tomorrow 8pm", now=now)
-        assert parsed.when == datetime(2026, 7, 16, 20, 0)
-
-    def test_passed_time_today_rolls_to_tomorrow(self):
-        now = datetime(2026, 7, 15, 21, 0)
-        parsed = parse_message("table for 2 at 8pm", now=now)
-        assert parsed.when.date() == (now + timedelta(days=1)).date()
-
     def test_intents(self):
         assert parse_message("cancel my booking").intent == "cancel"
-        assert parse_message("yes").intent == "confirm"
-        assert parse_message("no thanks").intent == "decline"
         assert parse_message("hi there").intent == "greeting"
+        assert parse_message("table for 4").intent == "book"
 
-    def test_bare_details_imply_booking(self):
-        assert parse_message("table for 4 friday 8pm").intent == "book"
+    def test_bare_party_size_implies_booking(self):
+        assert parse_message("4 people please").intent == "book"
 
     def test_name_and_requests_extracted(self):
         parsed = parse_message("table for 2, it's Ayesha, window seat please")
@@ -76,97 +63,48 @@ class TestNLU:
         assert "window" in parsed.special_requests
 
 
-# ── No-show scoring (pure, no DB) ───────────────────────────────────────────
+# ── Joining the queue ────────────────────────────────────────────────────────
 
-class TestNoShowScoring:
-    def test_risk_within_bounds(self):
-        a = assess_no_show(when=FRIDAY_8PM, party_size=2, booked_at=FRIDAY_8PM - timedelta(hours=1), is_vip=False)
-        assert 0.0 < a.risk < 1.0
-
-    def test_prior_no_show_raises_risk(self):
-        booked_at = FRIDAY_8PM - timedelta(hours=1)
-        clean = assess_no_show(when=FRIDAY_8PM, party_size=2, booked_at=booked_at, is_vip=False)
-        history = [Reservation(phone=PHONE, party_size=2, when=FRIDAY_8PM, status="no_show")]
-        risky = assess_no_show(when=FRIDAY_8PM, party_size=2, booked_at=booked_at, is_vip=False, history=history)
-        assert risky.risk > clean.risk
-
-    def test_vip_lowers_risk(self):
-        booked_at = FRIDAY_8PM - timedelta(days=8)
-        non_vip = assess_no_show(when=FRIDAY_8PM, party_size=2, booked_at=booked_at, is_vip=False)
-        vip = assess_no_show(when=FRIDAY_8PM, party_size=2, booked_at=booked_at, is_vip=True)
-        assert vip.risk < non_vip.risk
-
-    def test_high_risk_requires_deposit(self):
-        booked_at = FRIDAY_8PM - timedelta(days=10)
-        history = [Reservation(phone=PHONE, party_size=8, when=FRIDAY_8PM, status="no_show")] * 2
-        a = assess_no_show(when=FRIDAY_8PM, party_size=8, booked_at=booked_at, is_vip=False, history=history)
-        assert a.band == "high"
-        assert a.require_deposit is True
-
-    def test_vip_high_risk_not_asked_for_deposit(self):
-        booked_at = FRIDAY_8PM - timedelta(days=10)
-        history = [Reservation(phone=PHONE, party_size=8, when=FRIDAY_8PM, status="no_show")] * 2
-        a = assess_no_show(when=FRIDAY_8PM, party_size=8, booked_at=booked_at, is_vip=True, history=history)
-        assert a.require_deposit is False
-
-
-# ── Booking ──────────────────────────────────────────────────────────────────
-
-class TestBooking:
-    def test_available_table_books(self, store_id):
+class TestQueueJoin:
+    def test_book_joins_queue_and_returns_a_number(self, store_id):
         md = _md(store_id)
-        reply = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        assert reply.action == "booked"
-        assert reply.reservation_id
-
-    def test_full_slot_waitlists(self, store_id):
-        md = _md(store_id)
-        cfg = md.config
-        cfg.tables = [("T1", 2)]  # exactly one table, capacity 2
-        for i in range(1):
-            r = md.handle_message(f"+92300000000{i}", "table for 2 friday 8pm, it's Guest")
-            assert r.action == "booked"
-        r2 = md.handle_message("+923000000099", "table for 2 friday 8pm, it's Overflow")
-        assert r2.action == "waitlisted"
-
-    def test_no_double_booking_same_table(self, store_id):
-        md = _md(store_id)
-        md.config.tables = [("T1", 4)]
-        md.handle_message("+923000000001", "table for 4 friday 8pm, it's Amir")
-        r2 = md.handle_message("+923000000002", "table for 4 friday 8pm, it's Bilal")
-        assert r2.action == "waitlisted"
-
-    def test_outside_service_window_asks_again(self, store_id):
-        md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 4am, it's Ahmed")
-        assert r.action in ("need_info", "info")
-
-    def test_oversized_party_redirected(self, store_id):
-        # The fallback parser's party-size regex sanity-caps extraction at
-        # 30 (anything above that is treated as noise, not a real party
-        # size), so this needs a number the parser will actually extract
-        # (<=30) but still above max_party_size (12 by default) to reach
-        # the oversized-party redirect in _book_flow.
-        md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 20 friday 8pm, it's Ahmed")
-        assert "call" in r.text.lower() or "personally" in r.text.lower()
+        reply = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert reply.action == "queued"
+        assert reply.queue_number == 1
+        assert "Hi Ahmed" in reply.text
+        assert "booking number" in reply.text
+        assert "1" in reply.text
 
     def test_slot_filling_across_messages(self, store_id):
         md = _md(store_id)
-        r1 = md.handle_message(PHONE, "table for 4")
+        r1 = md.handle_message(PHONE, "book")
         assert r1.action == "need_info"
-        r2 = md.handle_message(PHONE, "friday 8pm")
+        r2 = md.handle_message(PHONE, "party of 4")
         assert r2.action == "need_info"  # still needs a name
         r3 = md.handle_message(PHONE, "it's Ahmed")
-        assert r3.action == "booked"
+        assert r3.action == "queued"
 
-    def test_high_risk_booking_is_held_pending(self, store_id):
-        _seed_high_risk_history(store_id, PHONE)
-        booked_far_ahead = FRIDAY_8PM - timedelta(days=10)
-        md = _md(store_id, now=booked_far_ahead)
-        r = md.handle_message(PHONE, "table for 8 this friday 8pm, it's Guest")
-        assert r.no_show_band == "high"
-        assert r.action == "pending"
+    def test_saved_name_is_not_asked_for_again(self, store_id):
+        md = _md(store_id)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")  # saves the guest's name
+
+        md2 = _md(store_id)
+        r = md2.handle_message(PHONE, "table for 3")
+        assert r.action == "queued"  # name filled in silently from the saved guest record
+        assert "Ahmed" in r.text
+
+    def test_profile_name_used_when_nothing_saved(self, store_id):
+        md = _md(store_id)
+        r = md.handle_message(PHONE, "table for 2", profile_name="Bilal")
+        assert r.action == "queued"
+        assert "Bilal" in r.text
+
+    def test_queue_numbers_are_sequential(self, store_id):
+        md = _md(store_id)
+        r1 = md.handle_message("+923000000001", "table for 2, it's Aman")
+        r2 = md.handle_message("+923000000002", "table for 2, it's Bilal")
+        r3 = md.handle_message("+923000000003", "table for 2, it's Cyrus")
+        assert [r1.queue_number, r2.queue_number, r3.queue_number] == [1, 2, 3]
 
 
 # ── VIP recognition ──────────────────────────────────────────────────────────
@@ -182,223 +120,98 @@ class TestVIP:
     def test_vip_booking_flagged(self, store_id):
         vips = {PHONE: VipProfile(name="Ayesha Khan", tier="vip")}
         md = _md(store_id, vips=vips)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm")
+        r = md.handle_message(PHONE, "table for 2")
         assert r.is_vip
-        assert r.action == "booked"
+        assert r.action == "queued"
+        assert "VIP" in r.staff_alert
 
-    def test_vip_jumps_the_waitlist(self, store_id):
+    def test_vip_queues_like_everyone_else(self, store_id):
+        """Pure FIFO -- a VIP takes a normal spot at the back, staff can
+        move them manually with admit/remove/add if they want to."""
         md = _md(store_id, vips={PHONE: VipProfile(name="Ayesha", tier="vip")})
-        md.config.tables = [("T1", 2)]
-        md.handle_message("+923000000001", "table for 2 friday 8pm, it's Regular")
-        r = md.handle_message(PHONE, "table for 2 friday 8pm")
-        assert r.action == "waitlisted"
-        assert "top of the list" in r.text
+        md.handle_message("+923000000001", "table for 2, it's Regular")
+        r = md.handle_message(PHONE, "table for 2")
+        assert r.queue_number == 2
+        assert r.position == 2
 
 
-# ── Cancel / promotion ───────────────────────────────────────────────────────
+# ── Leaving the queue ────────────────────────────────────────────────────────
 
-class TestCancellationAndPromotion:
-    def test_cancel_marks_cancelled(self, store_id):
+class TestLeaveQueue:
+    def test_cancel_removes_from_queue(self, store_id):
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
+        r = md.handle_message(PHONE, "table for 2, it's Ahmed")
         cancel = md.handle_message(PHONE, "cancel")
         assert cancel.action == "cancelled"
-        res = md.store.get_reservation(r.reservation_id)
-        assert res.status == "cancelled"
-
-    def test_cancel_promotes_waitlist(self, store_id):
-        md = _md(store_id)
-        md.config.tables = [("T1", 2)]
-        booked = md.handle_message("+923000000001", "table for 2 friday 8pm, it's Amir")
-        waiter = "+923000000002"
-        wl = md.handle_message(waiter, "table for 2 friday 8pm, it's Bilal")
-        assert wl.action == "waitlisted"
-        cancel = md.handle_message("+923000000001", "cancel")
-        assert cancel.outbound  # the waiter got offered the freed table
-        assert cancel.outbound[0][0] == waiter
+        assert cancel.queue_number == r.queue_number
+        assert md.store.list_queue(status="waiting") == []
 
     def test_cancel_with_no_booking_is_graceful(self, store_id):
         md = _md(store_id)
         r = md.handle_message(PHONE, "cancel")
         assert r.action == "noop"
 
-
-# ── Door lifecycle ───────────────────────────────────────────────────────────
-
-class TestDoorLifecycle:
-    def test_seat_complete_transitions(self, store_id):
+    def test_queue_moves_up_after_a_cancel(self, store_id):
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        seated = md.mark_seated(r.reservation_id)
-        assert seated.status == "seated"
-        completed = md.mark_completed(r.reservation_id)
-        assert completed.status == "completed"
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        md.handle_message("+923000000001", "cancel")
+        remaining = md.store.list_queue(status="waiting")
+        assert len(remaining) == 1
+        assert remaining[0].position == 1
 
-    def test_mark_no_show(self, store_id):
+
+# ── Staff: admit / remove / insert ──────────────────────────────────────────
+
+class TestStaffQueueOps:
+    def test_admit_pops_the_front_and_shifts_the_rest(self, store_id):
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        res = md.mark_no_show(r.reservation_id)
-        assert res.status == "no_show"
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        store = Store(store_id)
+        admitted = store.admit_next(None)
+        assert admitted.name == "Aman"
+        assert admitted.status == "admitted"
+        remaining = store.list_queue(status="waiting")
+        assert len(remaining) == 1
+        assert remaining[0].name == "Bilal"
+        assert remaining[0].position == 1
 
-    def test_invalid_transition_rejected(self, store_id):
+    def test_admit_on_empty_queue_returns_none(self, store_id):
+        assert Store(store_id).admit_next(None) is None
+
+    def test_remove_at_position_shifts_the_rest(self, store_id):
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        md.mark_completed(r.reservation_id)  # confirmed -> completed is allowed once
-        again = md.mark_completed(r.reservation_id)  # already completed
-        assert again is None
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        md.handle_message("+923000000003", "table for 2, it's Cyrus")
+        store = Store(store_id)
+        removed = store.remove_at_position(None, 2)
+        assert removed.name == "Bilal"
+        remaining = store.list_queue(status="waiting")
+        assert [e.name for e in remaining] == ["Aman", "Cyrus"]
+        assert [e.position for e in remaining] == [1, 2]
 
-    def test_door_sweep_auto_completes_finished_visits(self, store_id):
+    def test_insert_at_position_shifts_the_rest_back(self, store_id):
+        from app.agents.maitre_d.models import QueueEntry
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        md.mark_seated(r.reservation_id)
-        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=120))
-        later.store = md.store
-        result = later.run_door_sweep()
-        assert result.completed == 1
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        store = Store(store_id)
+        entry = QueueEntry(phone="+923000000099", name="Inserted", party_size=2)
+        store.insert_at_position(entry, position=1, day_start=FRIDAY_8PM.replace(hour=0, minute=0))
+        ordered = store.list_queue(status="waiting")
+        assert [e.name for e in ordered] == ["Inserted", "Aman", "Bilal"]
+        assert [e.position for e in ordered] == [1, 2, 3]
 
-    def test_door_sweep_flags_no_show(self, store_id):
+    def test_insert_position_clamps_past_the_end(self, store_id):
+        from app.agents.maitre_d.models import QueueEntry
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=45))
-        result = later.run_door_sweep()
-        assert result.no_shows == 1
-        assert result.staff_alerts
-
-
-# ── Offer expiry ─────────────────────────────────────────────────────────────
-
-class TestOfferExpiry:
-    def test_stale_offer_rolls_to_next_in_line(self, store_id):
-        md = _md(store_id)
-        md.config.tables = [("T1", 2)]
-        md.handle_message("+923000000001", "table for 2 friday 8pm, it's Amir")
-        second = "+923000000002"
-        third = "+923000000003"
-        md.handle_message(second, "table for 2 friday 8pm, it's Bilal")
-        md.handle_message(third, "table for 2 friday 8pm, it's Cyrus")
-        md.handle_message("+923000000001", "cancel")  # offers it to `second`
-
-        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=30))
-        later.store = md.store
-        result = later.expire_stale_offers()
-        assert result.offers_expired == 1
-        # the offer should have rolled on to `third`
-        assert any(p == third for p, _ in result.outbound)
-
-
-# ── Reminders ────────────────────────────────────────────────────────────────
-
-class TestReminders:
-    def test_reminder_sent_once(self, store_id):
-        booking_time = FRIDAY_8PM
-        md = _md(store_id, now=booking_time - timedelta(days=2))
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-
-        near = _md(store_id, now=booking_time - timedelta(hours=20))
-        near.store = md.store
-        result = near.send_due_reminders()
-        assert result.reminders_sent == 1
-
-        again = near.send_due_reminders()
-        assert again.reminders_sent == 0
-
-
-# ── Payments ─────────────────────────────────────────────────────────────────
-
-def _seed_high_risk_history(store_id: int, phone: str) -> None:
-    """Two prior no-shows push assess_no_show() reliably into the "high"
-    band regardless of the other (already risk-raising) factors a test
-    scenario picks, so deposit-flow tests don't depend on borderline
-    scoring math to land where they need to."""
-    store = Store(store_id)
-    for _ in range(2):
-        store.add_reservation(Reservation(
-            phone=phone, party_size=4, when=FRIDAY_8PM - timedelta(days=30),
-            status="no_show",
-        ))
-
-
-class TestPayments:
-    def test_deposit_link_then_webhook_confirms(self, store_id):
-        _seed_high_risk_history(store_id, PHONE)
-        booked_far_ahead = FRIDAY_8PM - timedelta(days=10)
-        md = _md(store_id, now=booked_far_ahead)
-        r = md.handle_message(PHONE, "table for 8 friday 8pm, it's Ahmed")
-        assert r.action == "pending"
-        confirm = md.handle_message(PHONE, "yes")
-        assert "http" in confirm.text
-        res = md.store.get_reservation(confirm.reservation_id)
-        payload = {"ref": res.payment_ref, "status": "paid"}
-        webhook_reply = md.handle_payment_webhook(payload)
-        assert webhook_reply is not None
-        confirmed = md.store.get_reservation(confirm.reservation_id)
-        assert confirmed.status == "confirmed"
-        assert confirmed.deposit_paid
-
-    def test_unpaid_webhook_is_ignored(self, store_id):
-        md = _md(store_id)
-        reply = md.handle_payment_webhook({"ref": "nonexistent", "status": "failed"})
-        assert reply is None
-
-    def test_decline_releases_hold(self, store_id):
-        _seed_high_risk_history(store_id, PHONE)
-        booked_far_ahead = FRIDAY_8PM - timedelta(days=10)
-        md = _md(store_id, now=booked_far_ahead)
-        r = md.handle_message(PHONE, "table for 8 friday 8pm, it's Ahmed")
-        assert r.action == "pending"
-        decline = md.handle_message(PHONE, "no")
-        assert decline.action == "cancelled"
-
-    def test_provider_creates_and_parses(self):
-        p = StubPaymentProvider()
-        link = p.create_checkout("res_1", 1000, "PKR")
-        assert link.url and link.ref
-        ref, paid = p.parse_webhook({"ref": link.ref, "status": "paid"})
-        assert paid and ref == link.ref
-
-
-# ── Modify ───────────────────────────────────────────────────────────────────
-
-class TestModify:
-    def test_change_time_frees_old_table(self, store_id):
-        md = _md(store_id)
-        md.config.tables = [("T1", 2)]
-        r1 = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        r2 = md.handle_message(PHONE, "change it to 9pm")
-        assert r2.action == "booked"
-        old = md.store.get_reservation(r1.reservation_id)
-        assert old.status == "cancelled"
-
-    def test_time_only_modify_keeps_the_original_date(self, store_id):
-        """"move it to 9pm" names no date -- confirmed live this used to
-        silently reset the booking to TODAY's date (whatever the parser
-        defaults a bare time mention to) instead of keeping the Friday
-        the guest originally booked. Only the time should change."""
-        md = _md(store_id)
-        r1 = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        r2 = md.handle_message(PHONE, "move it to 9pm")
-        assert r2.action == "booked"
-        new = md.store.get_reservation(r2.reservation_id)
-        assert new.when.date() == FRIDAY_8PM.date()
-        assert new.when.hour == 21
-
-    def test_modify_naming_a_new_date_still_replaces_it(self, store_id):
-        """Contrast case: a modify that DOES name a date must still
-        replace the slot outright, not be treated as time-only."""
-        md = _md(store_id)
-        r1 = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        saturday = FRIDAY_8PM + timedelta(days=1)
-        r2 = md.handle_message(PHONE, f"move it to {saturday.strftime('%A')} 9pm")
-        assert r2.action == "booked"
-        new = md.store.get_reservation(r2.reservation_id)
-        assert new.when.date() == saturday.date()
-        assert new.when.hour == 21
-
-    def test_modify_without_booking_is_graceful(self, store_id):
-        md = _md(store_id)
-        r = md.handle_message(PHONE, "move it to 9pm")
-        # No existing booking -> treated as a fresh booking request
-        assert r.intent in ("book",) or r.action == "need_info"
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        store = Store(store_id)
+        entry = QueueEntry(phone="+923000000099", name="Inserted", party_size=2)
+        saved = store.insert_at_position(entry, position=99, day_start=FRIDAY_8PM.replace(hour=0, minute=0))
+        assert saved.position == 2
 
 
 # ── Conversation TTL ─────────────────────────────────────────────────────────
@@ -406,7 +219,7 @@ class TestModify:
 class TestConversationTTL:
     def test_stale_slot_fill_is_forgotten(self, store_id):
         md = _md(store_id, now=FRIDAY_8PM)
-        md.handle_message(PHONE, "table for 4")  # starts a flow, missing when/name
+        md.handle_message(PHONE, "party of 4")  # starts a flow, missing name
 
         later = _md(store_id, now=FRIDAY_8PM + timedelta(hours=4))  # past 180min TTL
         later.store = md.store
@@ -414,40 +227,23 @@ class TestConversationTTL:
         assert state == {}
 
 
-# ── Maintenance aggregation ──────────────────────────────────────────────────
-
-class TestMaintenance:
-    def test_run_maintenance_aggregates(self, store_id):
-        md = _md(store_id)
-        md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=45))
-        later.store = md.store
-        result = later.run_maintenance()
-        assert result.no_shows == 1
-
-
-# ── Multi-location branches (Anatummy has three; a booking must be tied
+# ── Multi-location branches (Anatummy has three; a queue entry must be tied
 # to one specific branch, not conflated across physically different
 # addresses) ─────────────────────────────────────────────────────────────
 
 def _seed_two_locations(store_id: int) -> tuple[int, int]:
-    """New Blue Area (primary, dine-in) + F-8/2 (delivery-only, no
-    reservations) -- mirrors Anatummy's real setup. Returns (blue_area_id,
-    f82_id). Both locations get their own single "T1" table so a
-    location-scoping bug (capacity checked store-wide instead of per-
-    branch) would show up as a false double-booking conflict."""
+    """New Blue Area (primary, dine-in) + F-8/2 (delivery-only) -- mirrors
+    Anatummy's real setup. Returns (blue_area_id, f82_id)."""
     from app.core.db import SessionLocal, MaitreDLocation
 
     with SessionLocal() as db:
         blue = MaitreDLocation(
             store_id=store_id, branch_key="new_blue_area", name="New Blue Area",
             address="Skyline Tower, G-9/2", is_primary=True, accepts_reservations=True,
-            tables=[["T1", 4]], service_windows=[["dinner", 18, 22]],
         )
         f82 = MaitreDLocation(
             store_id=store_id, branch_key="f82", name="F-8/2 Madina Market",
             address="F-8/2 Madina Market", is_primary=False, accepts_reservations=False,
-            tables=[["T1", 4]], service_windows=[["dinner", 18, 22]],
         )
         db.add_all([blue, f82])
         db.commit()
@@ -466,7 +262,7 @@ class TestMultiLocation:
     def test_asks_which_branch_when_ambiguous(self, store_id):
         _seed_two_locations(store_id)
         md = _md_multi(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
+        r = md.handle_message(PHONE, "table for 2, it's Ahmed")
         assert r.action == "need_info"
         assert "New Blue Area" in r.text
         assert "F-8/2" not in r.text  # delivery-only branch never offered as a booking choice
@@ -474,68 +270,35 @@ class TestMultiLocation:
     def test_naming_branch_upfront_skips_the_question(self, store_id):
         _seed_two_locations(store_id)
         md = _md_multi(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm at New Blue Area, it's Ahmed")
-        assert r.action == "booked"
+        r = md.handle_message(PHONE, "table for 2 at New Blue Area, it's Ahmed")
+        assert r.action == "queued"
 
     def test_branch_answer_resumes_the_booking(self, store_id):
         _seed_two_locations(store_id)
         md = _md_multi(store_id)
-        r1 = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
+        r1 = md.handle_message(PHONE, "table for 2, it's Ahmed")
         assert r1.action == "need_info"
         r2 = md.handle_message(PHONE, "New Blue Area")
-        assert r2.action == "booked"
+        assert r2.action == "queued"
 
     def test_delivery_only_branch_is_declined_with_alternative_offered(self, store_id):
         _seed_two_locations(store_id)
         md = _md_multi(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm at F-8/2, it's Ahmed")
+        r = md.handle_message(PHONE, "table for 2 at F-8/2, it's Ahmed")
         assert r.action == "need_info"
         assert "delivery-only" in r.text.lower()
         assert "New Blue Area" in r.text
 
-    def test_same_table_name_at_different_branches_does_not_conflict(self, store_id):
-        """Both seeded locations have a table called "T1" -- booking it at
-        one branch must not block booking the identically-named table at
-        the other. This is the exact bug being fixed: capacity was
-        previously checked store-wide, so two branches sharing a table
-        name would falsely collide."""
+    def test_queue_numbers_scoped_per_branch(self, store_id):
+        """Both branches start their own numbering at 1 -- a booking
+        number is only unique within its own branch's line."""
         _seed_two_locations(store_id)
         md = _md_multi(store_id)
         r1 = md.handle_message(
-            "+923000000001", "table for 4 friday 8pm at New Blue Area, it's Ahmed",
+            "+923000000001", "table for 2 at New Blue Area, it's Ahmed",
         )
-        assert r1.action == "booked"
-
-        # A second store doesn't exist here -- instead, use the SAME store's
-        # only reservation-taking branch a second time to confirm normal
-        # same-branch capacity still works (waitlists once T1's taken)...
-        r2 = md.handle_message(
-            "+923000000002", "table for 4 friday 8pm at New Blue Area, it's Bilal",
-        )
-        assert r2.action == "waitlisted"
-
-    def test_reservation_carries_the_correct_branch_name(self, store_id):
-        _seed_two_locations(store_id)
-        md = _md_multi(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm at New Blue Area, it's Ahmed")
-        res = md.store.get_reservation(r.reservation_id)
-        assert res.branch_name == "New Blue Area"
-        assert "New Blue Area" in r.text
-
-    def test_waitlist_promotion_respects_branch(self, store_id):
-        """A table freed at New Blue Area must only be offered to guests
-        waiting for New Blue Area, never cross-offered to a different
-        branch's queue."""
-        blue_id, f82_id = _seed_two_locations(store_id)
-        md = _md_multi(store_id)
-        md.handle_message("+923000000001", "table for 4 friday 8pm at New Blue Area, it's Ahmed")
-        waiter = "+923000000002"
-        wl = md.handle_message(waiter, "table for 4 friday 8pm at New Blue Area, it's Bilal")
-        assert wl.action == "waitlisted"
-
-        cancel = md.handle_message("+923000000001", "cancel")
-        assert cancel.outbound
-        assert cancel.outbound[0][0] == waiter
+        assert r1.queue_number == 1
+        assert "New Blue Area" in r1.text
 
     def test_staff_branches_listing(self, store_id):
         _seed_two_locations(store_id)
@@ -545,12 +308,12 @@ class TestMultiLocation:
         assert "F-8/2" in text
         assert "delivery-only" in text.lower()
 
-    def test_staff_reservations_listing_shows_branch_label(self, store_id):
+    def test_staff_queue_listing_shows_branch_label(self, store_id):
         _seed_two_locations(store_id)
         md = _md_multi(store_id, now=datetime.now())
-        md.handle_message(PHONE, "table for 2 tonight 8pm at New Blue Area, it's Ahmed")
-        from app.agents.maitre_d.staff import format_reservations
-        text = format_reservations(store_id)
+        md.handle_message(PHONE, "table for 2 at New Blue Area, it's Ahmed")
+        from app.agents.maitre_d.staff import format_queue
+        text = format_queue(store_id)
         assert "New Blue Area" in text
 
     def test_single_location_store_never_asks_which_branch(self, store_id):
@@ -558,24 +321,35 @@ class TestMultiLocation:
         exactly as before -- no regression for stores that haven't set up
         branches."""
         md = _md_multi(store_id)  # no locations seeded for this store_id
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        assert r.action == "booked"
+        r = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert r.action == "queued"
+
+    def test_staff_admit_requires_a_branch_for_multi_location_stores(self, store_id):
+        _seed_two_locations(store_id)
+        md = _md_multi(store_id)
+        md.handle_message(PHONE, "table for 2 at New Blue Area, it's Ahmed")
+        from app.agents.maitre_d.staff import admit_next_in_queue
+        ambiguous = admit_next_in_queue(store_id, "")
+        assert "which branch" in ambiguous.lower()
+        resolved = admit_next_in_queue(store_id, "at New Blue Area")
+        assert "Admitted" in resolved
+        assert "Ahmed" in resolved
 
 
-# ── Multi-tenancy isolation (new -- didn't exist on the single-tenant branch) ─
+# ── Multi-tenancy isolation ──────────────────────────────────────────────────
 
 class TestMultiTenancy:
-    def test_reservations_are_isolated_per_store(self):
+    def test_queue_is_isolated_per_store(self):
         chain_id = seed_chain("Iso Chain")
         store_a = seed_store(chain_id, name="Store A")
         store_b = seed_store(chain_id, name="Store B")
 
         md_a = _md(store_a)
-        md_a.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
+        md_a.handle_message(PHONE, "table for 2, it's Ahmed")
 
         md_b = _md(store_b)
-        assert md_b.store.list_reservations() == []
-        assert len(md_a.store.list_reservations()) == 1
+        assert md_b.store.list_queue(status="waiting") == []
+        assert len(md_a.store.list_queue(status="waiting")) == 1
 
     def test_vip_list_is_isolated_per_store(self):
         chain_id = seed_chain("Iso VIP Chain")
@@ -592,25 +366,14 @@ class TestMultiTenancy:
         assert cfg_a.vip_for(PHONE) is not None
         assert cfg_b.vip_for(PHONE) is None
 
-    def test_reservation_lookup_does_not_cross_stores(self):
-        chain_id = seed_chain("Iso Lookup Chain")
-        store_a = seed_store(chain_id, name="Lookup A")
-        store_b = seed_store(chain_id, name="Lookup B")
-
-        md_a = _md(store_a)
-        r = md_a.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-
-        store_b_view = Store(store_b)
-        assert store_b_view.get_reservation(r.reservation_id) is None
-
 
 # ── Gateway wiring: customer mode routes booking-shaped messages here ──────
 
 class TestCustomerGatewayRouting:
     def test_booking_keyword_routes_to_maitre_d(self, store_id):
         from app.gateway.customer import handle_customer_for_store
-        reply = handle_customer_for_store(PHONE, "table for 2 friday 8pm, it's Ahmed", store_id)
-        assert "booked" in reply.lower() or "table" in reply.lower()
+        reply = handle_customer_for_store(PHONE, "table for 2, it's Ahmed", store_id)
+        assert "booking number" in reply.lower()
 
     def test_non_booking_message_does_not_route_to_maitre_d(self, store_id):
         from app.gateway.customer import handle_customer_for_store
@@ -619,14 +382,14 @@ class TestCustomerGatewayRouting:
         mock_md.assert_not_called()
 
     def test_active_flow_keeps_routing_to_maitre_d_without_keywords(self, store_id):
-        """"friday 8pm, it's Ahmed" contains no booking keyword on its own --
-        only the in-progress conversation state tells the router this is a
+        """"it's Ahmed" contains no booking keyword on its own -- only the
+        in-progress conversation state tells the router this is a
         continuation of the earlier booking flow, not a fresh community-
         agent message."""
         from app.gateway.customer import handle_customer_for_store
-        handle_customer_for_store(PHONE, "table for 4", store_id)  # starts a flow, no name/time yet
-        reply = handle_customer_for_store(PHONE, "friday 8pm, it's Ahmed", store_id)
-        assert "booked" in reply.lower()
+        handle_customer_for_store(PHONE, "book", store_id)  # starts a flow, no name/party yet
+        reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
+        assert "booking number" in reply.lower()
 
     def test_staff_alert_is_dispatched_to_registered_members(self, store_id):
         from app.core.db import SessionLocal, StoreMember, MaitreDVip
@@ -639,11 +402,11 @@ class TestCustomerGatewayRouting:
 
         from app.gateway.customer import handle_customer_for_store
         # A VIP's own booking always sets staff_alert (see agent.py's
-        # _try_seat), so this deterministically exercises the dispatch path
-        # rather than depending on a random high-risk classification.
+        # _join_queue), so this deterministically exercises the dispatch
+        # path rather than depending on any randomised classification.
         with patch("app.core.outbound.notify_staff") as mock_notify:
             handle_customer_for_store(
-                vip_phone, "table for 2 friday 8pm, it's Ayesha", store_id,
+                vip_phone, "table for 2, it's Ayesha", store_id,
             )
         mock_notify.assert_called_once()
         args = mock_notify.call_args.args
@@ -651,20 +414,20 @@ class TestCustomerGatewayRouting:
         assert "VIP" in args[1]
 
 
-# ── Gateway wiring: staff mode door/listing/NL-Q&A routing ─────────────────
+# ── Gateway wiring: staff mode queue/listing/NL-Q&A routing ────────────────
 
 class TestStaffGatewayRouting:
-    def test_reservations_shorthand_lists_bookings(self, store_id):
+    def test_queue_shorthand_lists_the_line(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         md = _md(store_id, now=datetime.now())
-        md.handle_message(PHONE, "table for 2 tonight 8pm, it's Ahmed")
-        reply = handle_internal_for_store("whatsapp:+923220000000", "reservations", store_id)
-        assert "Ahmed" in reply or "reservation" in reply.lower()
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        reply = handle_internal_for_store("whatsapp:+923220000000", "queue", store_id)
+        assert "Ahmed" in reply
 
-    def test_waitlist_shorthand(self, store_id):
+    def test_queue_shorthand_reports_empty(self, store_id):
         from app.gateway.internal import handle_internal_for_store
-        reply = handle_internal_for_store("whatsapp:+923220000000", "waitlist", store_id)
-        assert "waitlist" in reply.lower() or "empty" in reply.lower()
+        reply = handle_internal_for_store("whatsapp:+923220000000", "queue", store_id)
+        assert "empty" in reply.lower()
 
     def test_add_vip_command(self, store_id):
         from app.gateway.internal import handle_internal_for_store
@@ -675,25 +438,46 @@ class TestStaffGatewayRouting:
         cfg = VenueConfig.load(store_id)
         assert cfg.vip_for("+923001112222") is not None
 
-    def test_door_command_seats_a_reservation(self, store_id):
+    def test_admit_command(self, store_id):
         from app.gateway.internal import handle_internal_for_store
         md = _md(store_id)
-        r = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
-        tag = r.reservation_id.replace("res_", "")[-6:]
-        reply = handle_internal_for_store("whatsapp:+923220000000", f"seat {tag}", store_id)
-        assert "seated" in reply.lower() or "ahmed" in reply.lower()
-        res = md.store.get_reservation(r.reservation_id)
-        assert res.status == "seated"
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        reply = handle_internal_for_store("whatsapp:+923220000000", "admit", store_id)
+        assert "Admitted" in reply
+        assert "Ahmed" in reply
+        assert md.store.list_queue(status="waiting") == []
+
+    def test_remove_position_command(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        reply = handle_internal_for_store("whatsapp:+923220000000", "remove 1", store_id)
+        assert "Removed" in reply
+        remaining = md.store.list_queue(status="waiting")
+        assert [e.name for e in remaining] == ["Bilal"]
+
+    def test_add_position_command(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        reply = handle_internal_for_store(
+            "whatsapp:+923220000000", "add 1 +923009998888 Walked In, party 3", store_id,
+        )
+        assert "Added" in reply
+        ordered = md.store.list_queue(status="waiting")
+        assert [e.name for e in ordered] == ["Walked In", "Aman"]
+        assert ordered[0].party_size == 3
 
     def test_maitre_d_answer_question_uses_shared_persona(self, store_id):
         from app.agents.maitre_d.staff import answer_question
         mock_client = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
         resp = mock_client.chat.completions.create.return_value
         resp.choices = [mock_client.chat.completions.create.return_value.choices[0]]
-        resp.choices[0].message.content = "You have 1 booking tonight."
+        resp.choices[0].message.content = "You have 1 person waiting."
         with patch("app.core.llm.get_client", return_value=mock_client):
-            result = answer_question(store_id, "who's booked tonight")
+            result = answer_question(store_id, "who's in the queue")
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         system_msg = next(m["content"] for m in messages if m["role"] == "system")
         assert "*single asterisks*" in system_msg  # shared persona's WhatsApp formatting rule
-        assert result == "You have 1 booking tonight."
+        assert result == "You have 1 person waiting."

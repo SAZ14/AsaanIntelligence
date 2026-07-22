@@ -41,9 +41,9 @@ def _handle_booking(from_phone: str, body: str, store_id: int) -> str:
     md = get_maitre_d(store_id)
     reply = md.handle_message(from_phone, body)
 
-    # Proactive messages to OTHER guests (waitlist offers freed by this
-    # guest's cancel/decline) -- this turn's own reply still goes back via
-    # the caller's normal send_fn, only side-effect sends happen here.
+    # Proactive messages to OTHER guests, if the agent ever needs to send
+    # one -- this turn's own reply still goes back via the caller's normal
+    # send_fn, only side-effect sends happen here.
     for phone, text in reply.outbound:
         send_from_store(store_id, phone, text)
 

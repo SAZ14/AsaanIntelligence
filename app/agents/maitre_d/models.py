@@ -1,4 +1,4 @@
-"""Pydantic models for the Maitre D domain: guests, reservations, waitlist.
+"""Pydantic models for the Maitre D domain: guests and the live queue.
 
 Kept separate from app.core.db's SQLAlchemy models (mirroring how scout/
 reputation use plain dataclasses/Pydantic models internally and only touch
@@ -13,22 +13,11 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-# Reservation lifecycle
-RESERVATION_STATUSES = {
-    "pending",      # awaiting guest confirmation (e.g. deposit for high no-show risk)
-    "confirmed",    # table held
-    "seated",       # guest has arrived and been seated
-    "completed",    # visit finished
-    "cancelled",    # cancelled by guest or venue
-    "no_show",      # never arrived
-}
-
-WAITLIST_STATUSES = {
-    "waiting",      # in the queue
-    "offered",      # a freed table was offered, awaiting guest reply
-    "converted",    # turned into a confirmed reservation
-    "expired",      # offer lapsed / guest declined
-    "cancelled",
+QUEUE_STATUSES = {
+    "waiting",      # in the live line
+    "admitted",     # staff let them in, seated
+    "removed",      # taken out by staff
+    "cancelled",    # the guest themselves left the queue
 }
 
 
@@ -41,41 +30,19 @@ class Guest(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
-class Reservation(BaseModel):
-    reservation_id: str = ""        # public id, e.g. "res_xxxxxxxxxxxx"
+class QueueEntry(BaseModel):
+    id: int = 0
     store_id: int = 0
     location_id: int = 0
     branch_name: str = ""           # denormalised for display -- avoids a join every time a reply is composed
+    queue_number: int = 0           # permanent for the day, told to the guest, never reused
     phone: str
     name: str = ""
-    party_size: int
-    when: datetime                  # reservation start time
-    status: str = "confirmed"
-    table_id: str = ""
-    is_vip: bool = False
-    vip_tier: str = ""
-    no_show_risk: float = 0.0       # 0..1
-    no_show_band: str = "low"       # "low" | "medium" | "high"
-    deposit_required: bool = False
-    deposit_paid: bool = False
-    payment_ref: str = ""           # provider token/id once a deposit link is issued
-    reminder_sent: bool = False
+    party_size: int = 1
     special_requests: str = ""
-    source: str = "whatsapp"
-    created_at: datetime = Field(default_factory=datetime.now)
-
-
-class WaitlistEntry(BaseModel):
-    waitlist_id: str = ""
-    store_id: int = 0
-    location_id: int = 0
-    branch_name: str = ""
-    phone: str
-    name: str = ""
-    party_size: int
-    requested_when: datetime
     status: str = "waiting"
+    position: int = 0               # 1-based, live ordering among this location's "waiting" rows
     is_vip: bool = False
     vip_tier: str = ""
-    offered_at: datetime | None = None
     created_at: datetime = Field(default_factory=datetime.now)
+    admitted_at: datetime | None = None

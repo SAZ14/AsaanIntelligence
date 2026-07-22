@@ -575,21 +575,14 @@ _REVENUE_KEYWORDS = {"revenue", "sales", "strategy", "upsell", "growth", "pricin
 # message about reservations" needs a cheap deterministic answer.
 _MAITRE_D_KEYWORDS = {
     "table", "reservation", "reservations", "reserve", "book", "booking",
-    "waitlist", "no-show", "noshow", "vip", "vips",
+    "queue", "line", "vip", "vips",
     # "cancel" has no other meaning anywhere in this codebase (no other
-    # cancellable entity exists) -- confirmed live: a guest with a
-    # confirmed booking who just says "cancel" (no other keyword, and no
+    # cancellable entity exists) -- confirmed live: a guest with an active
+    # queue spot who just says "cancel" (no other keyword, and no
     # in-progress conversation state to catch it via _has_active_booking_
     # flow) fell through to the community agent's onboarding flow instead
-    # of MaitreD's own _cancel().
+    # of MaitreD's own _leave_queue().
     "cancel",
-    # Same failure mode, confirmed live for a modify request: "move it to
-    # 9pm" right after a completed booking (conversation state already
-    # cleared) fell through to onboarding too. These mirror exactly the
-    # words nlu.py's own _fallback_intent regex treats as "modify" --
-    # "change" deliberately excluded, too generic/high false-positive risk
-    # on its own without another booking word alongside it.
-    "reschedule", "move",
 }
 
 
@@ -1531,38 +1524,6 @@ async def meta_webhook(request: Request, background_tasks: BackgroundTasks) -> J
 
     # Always 200: Meta retries and eventually disables webhooks that error.
     return JSONResponse({"status": "ok"})
-
-
-# ── Maitre D deposit payment webhook ────────────────────────────────────────
-#
-# NOTE: no real payment gateway is wired anywhere in this codebase yet --
-# app.agents.maitre_d.payments.StubPaymentProvider issues fake checkout
-# links, and this endpoint is what a real gateway's webhook would call once
-# one exists. Until then it's reachable for manual testing (confirming a
-# deposit hold) but nothing calls it automatically.
-
-@app.post("/maitre_d/payment_webhook/{store_id}")
-async def maitre_d_payment_webhook(store_id: int, request: Request) -> JSONResponse:
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = dict(await request.form())
-
-    from app.agents.maitre_d.agent import get_maitre_d
-    from app.core.outbound import send_from_store
-
-    try:
-        md = get_maitre_d(store_id)
-        reply = md.handle_payment_webhook(payload)
-    except Exception as exc:
-        logger.error("maitre_d.payment_webhook: store=%d failed: %s", store_id, exc)
-        return JSONResponse({"ok": False}, status_code=500)
-
-    if reply is None:
-        return JSONResponse({"ok": False, "confirmed": False})
-    for phone, text in reply.outbound:
-        send_from_store(store_id, phone, text)
-    return JSONResponse({"ok": True, "confirmed": True, "reservation_id": reply.reservation_id})
 
 
 # ── Integrity PDF report ───────────────────────────────────────────────────────

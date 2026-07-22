@@ -1,116 +1,141 @@
-"""Staff-facing reservations operations: the door (seat/complete/no-show),
-waitlist/reservation listings, VIP management, and free-form natural-
-language Q&A about bookings. Separate from agent.py's MaitreD engine, which
-is the guest-facing booking conversation only -- mirrors how scout/
-reputation/revenue split their staff-facing surface from the customer-
-facing one.
+"""Staff-facing queue operations: view the live line, admit the next
+guest, remove/insert a position, VIP management, and free-form natural-
+language Q&A about the queue. Separate from agent.py's MaitreD engine,
+which is the guest-facing "join the queue" conversation only -- mirrors
+how scout/reputation/revenue split their staff-facing surface from the
+customer-facing one.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
 
-from app.agents.maitre_d.agent import get_maitre_d
-from app.agents.maitre_d.config import VenueConfig, normalise_phone
+from app.agents.maitre_d.config import VenueConfig, normalise_phone, match_location, _join_or
+from app.agents.maitre_d.models import QueueEntry
 from app.agents.maitre_d.store import Store
 
 logger = logging.getLogger(__name__)
 
 
-# ── door commands ────────────────────────────────────────────────────────────
+# ── branch resolution for staff queue commands ──────────────────────────────
+# "admit"/"remove <position>"/"add <position> ..." all act on ONE location's
+# ordering, so a multi-branch store must say which one -- unlike the guest
+# booking flow (agent.py), which can infer a branch from anywhere in a free-
+# form sentence, staff shorthand uses a plain "... at <branch>" suffix so
+# parsing the position/phone/name in front of it stays unambiguous.
 
-def _resolve_reservation_ref(store: Store, ref: str) -> str | None:
-    """A staff member typing the full "res_xxxxxxxxxxxx" id is impractical
-    over WhatsApp -- accept any suffix that uniquely identifies one active
-    reservation instead (e.g. "seat a1b2c3" or even "seat b3" if that's
-    enough to be unique). Returns the full reservation_id, or None if no
-    active reservation matches (ambiguous or not found)."""
-    ref = ref.strip().lower().removeprefix("res_")
-    if not ref:
-        return None
-    candidates = [
-        r for r in store.list_reservations()
-        if r.status in ("pending", "confirmed", "seated")
-        and r.reservation_id.lower().endswith(ref)
-    ]
-    if len(candidates) == 1:
-        return candidates[0].reservation_id
-    return None
+def _split_branch_suffix(text: str) -> tuple[str, str]:
+    m = re.search(r"\bat\b", text, flags=re.IGNORECASE)
+    if not m:
+        return text.strip(), ""
+    return text[:m.start()].strip(), text[m.end():].strip()
 
 
-def handle_door_command(store_id: int, first_word: str, rest: str) -> str | None:
-    """Try to handle this as a seat/complete/no-show door command. Returns
-    None if `first_word` doesn't match one, so the caller can fall through
-    to something else."""
-    action_map = {"seat": "seated", "complete": "completed", "noshow": "no_show"}
-    if first_word == "no" and rest.lower().startswith("show"):
-        first_word, rest = "noshow", rest[4:].strip()
-    if first_word not in action_map:
-        return None
+def _resolve_queue_location(store_id: int, text: str) -> tuple[int | None, str, str | None]:
+    """Returns (location_id_or_None, remaining_text_with_branch_stripped,
+    error_reply_or_None). Single-location stores never need a branch named
+    -- location_id stays None, matching how a lone-location guest's
+    MaitreDQueueEntry.location_id is stored."""
+    locations = VenueConfig.list_locations(store_id)
+    if len(locations) <= 1:
+        return None, text, None
+    command_part, branch_part = _split_branch_suffix(text)
+    names = _join_or([l.branch_name for l in locations])
+    if not branch_part:
+        return None, text, f"Which branch — {names}? Add \"at <branch>\" to your message."
+    matched = match_location(locations, branch_part)
+    if matched is None:
+        return None, text, f"Didn't recognise that branch. Choices: {names}."
+    return matched.location_id, command_part, None
 
+
+# ── queue commands ───────────────────────────────────────────────────────────
+
+def format_queue(store_id: int) -> str:
     store = Store(store_id)
-    ref = rest.strip()
-    if not ref:
-        return "Which reservation? Reply e.g. \"seat a1b2c3\" using the last few characters of the booking id from *reservations*."
-    reservation_id = _resolve_reservation_ref(store, ref)
-    if reservation_id is None:
-        return f"Couldn't find a unique active reservation matching \"{ref}\". Check *reservations* for the exact id."
-
-    md = get_maitre_d(store_id)
-    action = action_map[first_word]
-    res = {
-        "seated": md.mark_seated, "completed": md.mark_completed, "no_show": md.mark_no_show,
-    }[action](reservation_id)
-    if res is None:
-        return "That reservation isn't in a state that allows that action right now."
-    label = {"seated": "Seated", "completed": "Marked completed", "no_show": "Marked no-show"}[action]
-    return f"{label}: {res.name or res.phone}, party {res.party_size}, table {res.table_id or 'n/a'}."
-
-
-# ── listings ──────────────────────────────────────────────────────────────────
-
-def format_reservations(store_id: int, upcoming_only: bool = True) -> str:
-    from datetime import datetime, timedelta
-    store = Store(store_id)
-    rows = [
-        r for r in store.list_reservations()
-        if r.status in ("pending", "confirmed", "seated")
-    ]
-    if upcoming_only:
-        rows = [r for r in rows if r.when >= datetime.now() - timedelta(hours=6)]
-    rows.sort(key=lambda r: r.when)
+    rows = store.list_queue(status="waiting")
     if not rows:
-        return "No upcoming reservations on the book."
-    lines = ["Upcoming reservations:"]
-    for r in rows:
-        tag = r.reservation_id.replace("res_", "")[-6:]
-        vip = " (VIP)" if r.is_vip else ""
-        dep = " [deposit pending]" if r.status == "pending" else ""
-        branch = f" — {r.branch_name}" if r.branch_name else ""
+        return "The queue is empty."
+    lines = ["Live queue:"]
+    for e in rows:
+        vip = " (VIP)" if e.is_vip else ""
+        branch = f" — {e.branch_name}" if e.branch_name else ""
         lines.append(
-            f"• [{tag}] {r.name or r.phone}, party {r.party_size}, "
-            f"{r.when.strftime('%a %d %b %I:%M %p').replace(' 0', ' ')}, "
-            f"table {r.table_id or 'n/a'}{branch}{vip}{dep}"
+            f"• {e.position}. #{e.queue_number} {e.name or e.phone}, "
+            f"party {e.party_size}{branch}{vip}"
         )
-    lines.append("\nSay \"seat/complete/noshow <id>\" using the bracketed tag to update one.")
+    lines.append(
+        "\nSay \"admit\" to seat the next person, \"remove <position>\" or "
+        "\"add <position> <phone> <name>\" to adjust the line."
+    )
     return "\n".join(lines)
 
 
-def format_waitlist(store_id: int) -> str:
-    store = Store(store_id)
-    rows = store.list_waitlist(status="waiting")
-    if not rows:
-        return "The waitlist is empty."
-    lines = ["Waitlist:"]
-    for w in rows:
-        vip = " (VIP)" if w.is_vip else ""
-        branch = f" — {w.branch_name}" if w.branch_name else ""
-        lines.append(
-            f"• {w.name or w.phone}, party {w.party_size}, wants "
-            f"{w.requested_when.strftime('%a %d %b %I:%M %p').replace(' 0', ' ')}{branch}{vip}"
-        )
-    return "\n".join(lines)
+def admit_next_in_queue(store_id: int, rest: str = "") -> str:
+    location_id, _, error = _resolve_queue_location(store_id, rest)
+    if error:
+        return error
+    entry = Store(store_id).admit_next(location_id)
+    if entry is None:
+        return "The queue is empty — nobody to admit."
+    return f"Admitted #{entry.queue_number}: {entry.name or entry.phone}, party {entry.party_size}."
 
+
+def remove_queue_position(store_id: int, rest: str) -> str:
+    location_id, command_part, error = _resolve_queue_location(store_id, rest)
+    if error:
+        return error
+    parts = command_part.split()
+    if not parts or not parts[0].isdigit():
+        return "Usage: remove <position> — e.g. \"remove 3\"."
+    position = int(parts[0])
+    entry = Store(store_id).remove_at_position(location_id, position)
+    if entry is None:
+        return f"No one at position {position} right now. Say \"queue\" to see the live order."
+    return (f"Removed #{entry.queue_number}: {entry.name or entry.phone} from "
+            f"position {position}. The queue has moved up.")
+
+
+def insert_queue_position(store_id: int, rest: str) -> str:
+    location_id, command_part, error = _resolve_queue_location(store_id, rest)
+    if error:
+        return error
+    parts = command_part.split(None, 2)
+    if len(parts) < 3 or not parts[0].isdigit():
+        return ("Usage: add <position> <phone> <name>[, party <N>] — e.g. "
+                "\"add 2 +923001234567 Ali Khan, party 4\".")
+    position = int(parts[0])
+    phone = normalise_phone(parts[1])
+    if not phone.startswith("+") or len(phone) < 8:
+        return "That doesn't look like a phone number. Usage: add <position> <phone> <name>[, party <N>]"
+
+    name_and_party = parts[2]
+    party = 1
+    m = re.search(r",?\s*party\s+(\d{1,2})\s*$", name_and_party, flags=re.IGNORECASE)
+    name = name_and_party
+    if m:
+        party = int(m.group(1))
+        name = name_and_party[:m.start()].strip().rstrip(",")
+    name = name.strip()
+    if not name:
+        return "Usage: add <position> <phone> <name>[, party <N>]"
+
+    branch_name = ""
+    if location_id:
+        loc = next(
+            (l for l in VenueConfig.list_locations(store_id) if l.location_id == location_id), None,
+        )
+        branch_name = loc.branch_name if loc else ""
+
+    entry = QueueEntry(phone=phone, name=name, party_size=party, location_id=location_id or 0, branch_name=branch_name)
+    day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    saved = Store(store_id).insert_at_position(entry, position, day_start=day_start)
+    return f"Added {name} (party {party}) at position {saved.position}, booking #{saved.queue_number}."
+
+
+# ── VIPs / branches ──────────────────────────────────────────────────────────
 
 def format_vips(store_id: int) -> str:
     cfg = VenueConfig.load(store_id)
@@ -130,7 +155,7 @@ def format_locations(store_id: int) -> str:
     lines = ["Branches:"]
     for loc in locations:
         tag = "primary" if loc.is_primary else "branch"
-        booking = "takes reservations" if loc.accepts_reservations else "delivery-only, no reservations"
+        booking = "takes walk-ins" if loc.accepts_reservations else "delivery-only, no walk-ins"
         addr = f" — {loc.address}" if loc.address else ""
         lines.append(f"• {loc.branch_name} ({tag}, {booking}){addr}")
     return "\n".join(lines)
@@ -170,7 +195,7 @@ def add_vip(store_id: int, rest: str) -> str:
 # ── natural-language Q&A ────────────────────────────────────────────────────
 
 def answer_question(store_id: int, text: str, history: list[dict] | None = None) -> str:
-    """Free-form Q&A grounded in the real reservation/waitlist book, same
+    """Free-form Q&A grounded in the real live queue/VIP book, same
     single-LLM-call pattern as integrity/revenue/reputation's
     answer_question()."""
     try:
@@ -178,15 +203,14 @@ def answer_question(store_id: int, text: str, history: list[dict] | None = None)
         from app.core.persona import staff_persona
         client = get_client()
     except Exception:
-        return "Reservations Q&A is unavailable right now, but you can still ask for *reservations*, *waitlist*, or *vip list*."
+        return "Queue Q&A is unavailable right now, but you can still ask for *queue* or *vip list*."
 
     context = "\n\n".join([
-        format_locations(store_id), format_reservations(store_id),
-        format_waitlist(store_id), format_vips(store_id),
+        format_locations(store_id), format_queue(store_id), format_vips(store_id),
     ])
     system = (
-        staff_persona("You answer staff questions about reservations, the waitlist and VIP guests.", store_id)
-        + "\nCite exact names, times and table numbers from the data; do not invent bookings."
+        staff_persona("You answer staff questions about the live walk-in queue and VIP guests.", store_id)
+        + "\nCite exact names, positions and queue numbers from the data; do not invent entries."
     )
     messages = [{"role": "system", "content": system}]
     messages.extend(history or [])

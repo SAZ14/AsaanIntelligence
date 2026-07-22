@@ -454,24 +454,32 @@ class CustomerChatSession(Base):
 
 
 # ---------------------------------------------------------------------------
-# Maitre D agent (reservations, waitlist, no-show/VIP handling)
+# Maitre D agent (live walk-in queue, VIP handling)
 # ---------------------------------------------------------------------------
 # Ported from the standalone maitre-d-agent branch (single-tenant SQLite,
 # its own FastAPI app) into this server's shared, store_id-partitioned
 # Postgres schema -- same pattern as every other agent's tables here.
 
 class MaitreDLocation(Base):
-    """One row per physical branch a store books tables at -- a store with
-    several branches (like Anatummy's three) gets one row each, so tables/
-    capacity/service-windows/deposit rules are never conflated across
-    physically different addresses. A store with a single location still
-    gets exactly one row here (is_primary=True); app.agents.maitre_d.
-    config falls back to sensible defaults in code for a store with none
-    configured yet, same pattern as POSConnection/RevenueConnection.
+    """One row per physical branch a store runs a queue at -- a store with
+    several branches (like Anatummy's three) gets one row each, so guests
+    at one branch are never conflated with a different physical address.
+    A store with a single location still gets exactly one row here
+    (is_primary=True); app.agents.maitre_d.config falls back to sensible
+    defaults in code for a store with none configured yet, same pattern as
+    POSConnection/RevenueConnection.
 
     accepts_reservations lets a delivery-only branch (no dine-in seating
     at all) be excluded from the branch choice offered to a guest, rather
-    than pretending it has a table to book."""
+    than pretending it has a queue to join.
+
+    tables/service_windows/turn_time_minutes/large_party_*/max_party_size/
+    currency/deposit_amount/offer_ttl_minutes/no_show_grace_minutes/
+    reminder_lead_hours are legacy columns from the earlier date/time
+    table-reservation model (deposits, no-show scoring, service windows) --
+    left in place rather than migrated away since dropping columns is
+    riskier than just retiring the code that read them; app.agents.
+    maitre_d.config.VenueConfig no longer reads any of them."""
     __tablename__ = "maitre_d_locations"
     __table_args__ = (UniqueConstraint("store_id", "branch_key"),)
 
@@ -483,17 +491,17 @@ class MaitreDLocation(Base):
     accepts_reservations = Column(Boolean, default=True)
     is_primary = Column(Boolean, default=False)    # the default when a store has only one, or the fallback
     timezone = Column(String, nullable=False, default="Asia/Karachi")
-    tables = Column(JSON, default=list)              # [[table_id, seats], ...]
-    service_windows = Column(JSON, default=list)      # [[label, open_hour, last_seating_hour], ...]
-    turn_time_minutes = Column(Integer, default=90)
-    large_party_turn_minutes = Column(Integer, default=120)
-    large_party_threshold = Column(Integer, default=6)
-    max_party_size = Column(Integer, default=12)
-    currency = Column(String, default="PKR")
-    deposit_amount = Column(Integer, default=1000)
-    offer_ttl_minutes = Column(Integer, default=15)
-    no_show_grace_minutes = Column(Integer, default=30)
-    reminder_lead_hours = Column(Integer, default=24)
+    tables = Column(JSON, default=list)              # legacy, unused -- see class docstring
+    service_windows = Column(JSON, default=list)      # legacy, unused
+    turn_time_minutes = Column(Integer, default=90)   # legacy, unused
+    large_party_turn_minutes = Column(Integer, default=120)  # legacy, unused
+    large_party_threshold = Column(Integer, default=6)       # legacy, unused
+    max_party_size = Column(Integer, default=12)      # legacy, unused
+    currency = Column(String, default="PKR")          # legacy, unused
+    deposit_amount = Column(Integer, default=1000)    # legacy, unused
+    offer_ttl_minutes = Column(Integer, default=15)   # legacy, unused
+    no_show_grace_minutes = Column(Integer, default=30)  # legacy, unused
+    reminder_lead_hours = Column(Integer, default=24)    # legacy, unused
     conversation_ttl_minutes = Column(Integer, default=180)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -526,50 +534,38 @@ class MaitreDGuest(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class MaitreDReservation(Base):
-    __tablename__ = "maitre_d_reservations"
+class MaitreDQueueEntry(Base):
+    """One row per guest waiting in a branch's live walk-in queue.
+
+    Replaces the earlier date/time table-reservation model (formerly
+    MaitreDReservation/MaitreDWaitlist -- those Postgres tables are left in
+    place, unmanaged, rather than dropped, since a schema drop is riskier
+    than simply retiring the ORM classes that wrote to them; nothing in the
+    app reads or writes them any more). A store like Anatummy is walk-in
+    first, so "book" now means "join today's queue and get a number", not
+    "reserve a future time slot" -- no tables, service windows, deposits or
+    no-show scoring apply any more.
+
+    queue_number is permanent for the day and never reused (it's what the
+    guest is told back). position is the live 1-based ordering among a
+    location's "waiting" rows -- the thing admit/remove/insert reshuffle."""
+    __tablename__ = "maitre_d_queue"
 
     id = Column(Integer, primary_key=True)
-    reservation_uid = Column(String, unique=True, nullable=False)  # "res_xxxxxxxxxxxx", staff-typeable
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
     location_id = Column(Integer, ForeignKey("maitre_d_locations.id"), nullable=True)
-    branch_name = Column(String, default="")  # denormalised at booking time -- avoids a join on every listing
+    branch_name = Column(String, default="")  # denormalised at join time -- avoids a join on every listing
+    queue_number = Column(Integer, nullable=False)
     phone = Column(String, nullable=False)
     name = Column(String, default="")
-    party_size = Column(Integer, nullable=False)
-    when_at = Column(DateTime, nullable=False)
-    status = Column(String, nullable=False, default="confirmed")
-    table_id = Column(String, default="")
-    is_vip = Column(Boolean, default=False)
-    vip_tier = Column(String, default="")
-    no_show_risk = Column(Float, default=0.0)
-    no_show_band = Column(String, default="low")
-    deposit_required = Column(Boolean, default=False)
-    deposit_paid = Column(Boolean, default=False)
-    payment_ref = Column(String, default="")
-    reminder_sent = Column(Boolean, default=False)
+    party_size = Column(Integer, default=1)
     special_requests = Column(Text, default="")
-    source = Column(String, default="whatsapp")
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class MaitreDWaitlist(Base):
-    __tablename__ = "maitre_d_waitlist"
-
-    id = Column(Integer, primary_key=True)
-    waitlist_uid = Column(String, unique=True, nullable=False)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
-    location_id = Column(Integer, ForeignKey("maitre_d_locations.id"), nullable=True)
-    branch_name = Column(String, default="")
-    phone = Column(String, nullable=False)
-    name = Column(String, default="")
-    party_size = Column(Integer, nullable=False)
-    requested_when = Column(DateTime, nullable=False)
-    status = Column(String, nullable=False, default="waiting")
+    status = Column(String, nullable=False, default="waiting")  # waiting | admitted | removed | cancelled
+    position = Column(Integer, default=0)  # 1-based, dense among this location's "waiting" rows
     is_vip = Column(Boolean, default=False)
     vip_tier = Column(String, default="")
-    offered_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    admitted_at = Column(DateTime, nullable=True)
 
 
 class MaitreDConversation(Base):

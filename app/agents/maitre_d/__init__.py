@@ -1,24 +1,22 @@
-"""Maitre D — reservations and the door.
+"""Maitre D — the live walk-in queue and the door.
 
-Takes and confirms bookings over WhatsApp, runs the waitlist, predicts and
-cuts no-shows, and recognises a VIP the moment they book. Ported from the
-standalone maitre-d-agent branch into this server's shared, multi-tenant
-Postgres schema and gateway routing (customer mode for guest bookings,
-staff mode for door/VIP operations) -- see app/gateway/customer.py and
+Takes guests into today's queue over WhatsApp ("book" -> a booking number),
+lets staff admit/remove/insert people in the live line, and recognises a
+VIP the moment they message. Ported from the standalone maitre-d-agent
+branch into this server's shared, multi-tenant Postgres schema and gateway
+routing (customer mode for guests joining the queue, staff mode for
+admit/VIP operations) -- see app/gateway/customer.py and
 app/gateway/internal.py for the wiring.
 
 Layout:
-    config.py    per-store venue capacity + service windows + VIP list (Postgres-backed)
-    models.py    Pydantic models for guests / reservations / waitlist
-    store.py     Postgres persistence (reservations, waitlist, guests, conversations)
-    noshow.py    heuristic no-show risk scoring
+    config.py    per-store venue identity + branch matching + VIP list (Postgres-backed)
+    models.py    Pydantic models for guests / queue entries
+    store.py     Postgres persistence (the live queue, guests, conversations)
     nlu.py       LLM-driven natural-language understanding (ZAI, with deterministic fallback)
-    agent.py     the decision engine — code makes every booking/door decision
-    payments.py  pluggable deposit provider (stub only -- no real gateway wired yet)
+    agent.py     the decision engine — code makes every queue join/leave decision
+    staff.py     staff-facing queue admin (admit/remove/insert, VIP list, Q&A)
 """
 
-from app.agents.maitre_d.agent import (
-    MaitreD, MaitreDReply, get_maitre_d, run_maitre_d_maintenance_all,
-)
+from app.agents.maitre_d.agent import MaitreD, MaitreDReply, get_maitre_d
 
-__all__ = ["MaitreD", "MaitreDReply", "get_maitre_d", "run_maitre_d_maintenance_all"]
+__all__ = ["MaitreD", "MaitreDReply", "get_maitre_d"]
