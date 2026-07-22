@@ -2243,22 +2243,4 @@ async def rebuild_embeddings(store_id: int) -> JSONResponse:
                 "UPDATE knowledge_base SET embedding = CAST(:e AS vector) WHERE id = :id"
             ), {"e": _json.dumps(emb), "id": row[0]})
         db.commit()
-
-
-# TEMPORARY: live verification of the maitre_d queue rewrite. Remove after use.
-
-@app.post("/admin/debug/customer_test")
-async def debug_customer_test(request: Request) -> JSONResponse:
-    from app.gateway.customer import handle_customer_for_store
-    params = await _parse_body(request)
-    reply = handle_customer_for_store(params["phone"], params["body"], int(params["store_id"]))
-    return JSONResponse({"reply": reply})
-
-
-@app.post("/admin/debug/staff_test")
-async def debug_staff_test(request: Request) -> JSONResponse:
-    from app.gateway.internal import handle_internal_for_store
-    params = await _parse_body(request)
-    reply = handle_internal_for_store(params.get("phone", "whatsapp:+923220000000"), params["body"], int(params["store_id"]))
-    return JSONResponse({"reply": reply})
     return JSONResponse({"rebuilt": len(rows), "store_id": store_id})
