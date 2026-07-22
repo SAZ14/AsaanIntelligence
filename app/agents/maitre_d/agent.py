@@ -30,6 +30,15 @@ def _alnum(text: str) -> str:
     """Lowercase, strip everything but letters/digits -- so "F-8/2" and
     "at F-8/2," match regardless of hyphens, slashes or punctuation."""
     return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _join_or(items: list[str]) -> str:
+    """["A"] -> "A"; ["A", "B"] -> "A or B"; ["A", "B", "C"] -> "A, B or C"."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + f" or {items[-1]}"
 from app.agents.maitre_d.payments import PaymentProvider, StubPaymentProvider
 from app.agents.maitre_d.store import Store
 
@@ -208,8 +217,8 @@ class MaitreD:
             matched = self._match_location(parsed.raw)
             if matched is not None:
                 if not matched.accepts_reservations:
-                    others = ", ".join(
-                        l.branch_name for l in self.locations if l.accepts_reservations
+                    others = _join_or(
+                        [l.branch_name for l in self.locations if l.accepts_reservations]
                     )
                     return MaitreDReply(
                         text=(f"{matched.branch_name} is delivery-only and doesn't take "
@@ -766,7 +775,7 @@ class MaitreD:
 
     def _ask_for(self, missing: str, vip) -> str:
         if missing == "location":
-            names = ", ".join(l.branch_name for l in self.locations if l.accepts_reservations)
+            names = _join_or([l.branch_name for l in self.locations if l.accepts_reservations])
             return f"Which branch would you like — {names}?"
         if missing == "party_size":
             return "Happy to help! How many people will be dining?"
