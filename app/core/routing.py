@@ -25,7 +25,7 @@ _REVENUE_KEYWORDS = {
 }
 _MAITRE_D_KEYWORDS = {
     "table", "reservation", "reservations", "reserve", "book", "booking",
-    "waitlist", "vip", "vips",
+    "waitlist", "vip", "vips", "cancel", "reschedule", "move",
 }
 
 

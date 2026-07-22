@@ -583,6 +583,13 @@ _MAITRE_D_KEYWORDS = {
     # flow) fell through to the community agent's onboarding flow instead
     # of MaitreD's own _cancel().
     "cancel",
+    # Same failure mode, confirmed live for a modify request: "move it to
+    # 9pm" right after a completed booking (conversation state already
+    # cleared) fell through to onboarding too. These mirror exactly the
+    # words nlu.py's own _fallback_intent regex treats as "modify" --
+    # "change" deliberately excluded, too generic/high false-positive risk
+    # on its own without another booking word alongside it.
+    "reschedule", "move",
 }
 
 

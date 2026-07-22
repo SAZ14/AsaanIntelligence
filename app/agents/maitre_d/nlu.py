@@ -105,7 +105,16 @@ JSON:"""
         resp = client.chat.completions.create(
             model=model,
             max_tokens=200,
-            timeout=10.0,
+            # get_client()'s underlying OpenAI client has max_retries=1 baked
+            # in at construction -- a per-call timeout is a ceiling PER
+            # ATTEMPT, not overall, so a genuine stall here can cost up to
+            # 2x this value before falling back to the deterministic parser.
+            # Confirmed live: a 10.0 timeout produced two ~20s replies in a
+            # row when the first attempt stalled. Kept tight (matching the
+            # router's fast-classification budget in gateway/internal.py)
+            # since the fallback parser exists precisely so a slow/failed
+            # LLM call never blocks a reply for long.
+            timeout=6.0,
             messages=[{"role": "user", "content": prompt}],
             **nothink_kwargs(model),
         )
