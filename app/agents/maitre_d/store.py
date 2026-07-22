@@ -77,6 +77,7 @@ class Store:
         with SessionLocal() as db:
             db.add(MaitreDReservation(
                 reservation_uid=res.reservation_id, store_id=self.store_id,
+                location_id=res.location_id or None, branch_name=res.branch_name,
                 phone=res.phone, name=res.name, party_size=res.party_size,
                 when_at=res.when, status=res.status, table_id=res.table_id,
                 is_vip=res.is_vip, vip_tier=res.vip_tier,
@@ -146,30 +147,40 @@ class Store:
             return self._row_to_reservation(row) if row else None
 
     def reservations_due(
-        self, statuses: tuple[str, ...], when_le: datetime
+        self, statuses: tuple[str, ...], when_le: datetime, location_id: int | None = None
     ) -> list[Reservation]:
-        """Reservations in `statuses` whose start time is at or before `when_le`."""
+        """Reservations in `statuses` whose start time is at or before
+        `when_le`, optionally scoped to one location (maintenance sweeps a
+        multi-branch store one location's own timers at a time)."""
         from app.core.db import SessionLocal, MaitreDReservation
         with SessionLocal() as db:
-            rows = db.query(MaitreDReservation).filter(
+            q = db.query(MaitreDReservation).filter(
                 MaitreDReservation.store_id == self.store_id,
                 MaitreDReservation.status.in_(statuses),
                 MaitreDReservation.when_at <= when_le,
-            ).order_by(MaitreDReservation.when_at).all()
+            )
+            if location_id:
+                q = q.filter(MaitreDReservation.location_id == location_id)
+            rows = q.order_by(MaitreDReservation.when_at).all()
             return [self._row_to_reservation(r) for r in rows]
 
-    def reminders_due(self, now: datetime, lead_hours: int) -> list[Reservation]:
+    def reminders_due(
+        self, now: datetime, lead_hours: int, location_id: int | None = None
+    ) -> list[Reservation]:
         """Confirmed, unreminded bookings starting within `lead_hours` of now."""
         from app.core.db import SessionLocal, MaitreDReservation
         horizon = now + timedelta(hours=lead_hours)
         with SessionLocal() as db:
-            rows = db.query(MaitreDReservation).filter(
+            q = db.query(MaitreDReservation).filter(
                 MaitreDReservation.store_id == self.store_id,
                 MaitreDReservation.status == "confirmed",
                 MaitreDReservation.reminder_sent.is_(False),
                 MaitreDReservation.when_at > now,
                 MaitreDReservation.when_at <= horizon,
-            ).order_by(MaitreDReservation.when_at).all()
+            )
+            if location_id:
+                q = q.filter(MaitreDReservation.location_id == location_id)
+            rows = q.order_by(MaitreDReservation.when_at).all()
             return [self._row_to_reservation(r) for r in rows]
 
     def get_reservation(self, reservation_id: str) -> Reservation | None:
@@ -201,9 +212,12 @@ class Store:
             return [self._row_to_reservation(r) for r in rows]
 
     def active_reservations_overlapping(
-        self, when: datetime, turn_minutes: int
+        self, location_id: int, when: datetime, turn_minutes: int
     ) -> list[Reservation]:
-        """Active reservations whose hold window overlaps [when, when+turn).
+        """Active reservations at THIS location whose hold window overlaps
+        [when, when+turn) -- scoped by location_id so two different
+        branches' identically-named tables (both have a "T1") never
+        collide with each other.
 
         Two intervals overlap iff each starts before the other ends. We
         over-fetch a day around the target and filter in Python to keep the
@@ -216,6 +230,7 @@ class Store:
         with SessionLocal() as db:
             rows = db.query(MaitreDReservation).filter(
                 MaitreDReservation.store_id == self.store_id,
+                MaitreDReservation.location_id == (location_id or None),
                 MaitreDReservation.status.in_(ACTIVE_RESERVATION_STATUSES),
                 MaitreDReservation.when_at >= lo,
                 MaitreDReservation.when_at <= hi,
@@ -229,18 +244,21 @@ class Store:
                     out.append(res)
             return out
 
-    def list_reservations(self, status: str | None = None) -> list[Reservation]:
+    def list_reservations(self, status: str | None = None, location_id: int | None = None) -> list[Reservation]:
         from app.core.db import SessionLocal, MaitreDReservation
         with SessionLocal() as db:
             q = db.query(MaitreDReservation).filter(MaitreDReservation.store_id == self.store_id)
             if status:
                 q = q.filter(MaitreDReservation.status == status)
+            if location_id:
+                q = q.filter(MaitreDReservation.location_id == location_id)
             rows = q.order_by(MaitreDReservation.when_at).all()
             return [self._row_to_reservation(r) for r in rows]
 
     def _row_to_reservation(self, row) -> Reservation:
         return Reservation(
             reservation_id=row.reservation_uid, store_id=row.store_id,
+            location_id=row.location_id or 0, branch_name=row.branch_name or "",
             phone=row.phone, name=row.name, party_size=row.party_size,
             when=row.when_at, status=row.status, table_id=row.table_id,
             is_vip=row.is_vip, vip_tier=row.vip_tier,
@@ -260,6 +278,7 @@ class Store:
         with SessionLocal() as db:
             db.add(MaitreDWaitlist(
                 waitlist_uid=entry.waitlist_id, store_id=self.store_id,
+                location_id=entry.location_id or None, branch_name=entry.branch_name,
                 phone=entry.phone, name=entry.name, party_size=entry.party_size,
                 requested_when=entry.requested_when, status=entry.status,
                 is_vip=entry.is_vip, vip_tier=entry.vip_tier,
@@ -285,46 +304,67 @@ class Store:
                 db.commit()
 
     def waiting_entries_near(
-        self, when: datetime, window_hours: int = 2
+        self, location_id: int, when: datetime, window_hours: int = 2
     ) -> list[WaitlistEntry]:
-        """People still waiting whose requested time is near `when`.
-        VIPs first, then earliest-requested first (fair queue)."""
+        """People still waiting AT THIS LOCATION whose requested time is
+        near `when` -- a table freed at one branch can't be offered to
+        someone waiting for a different branch. VIPs first, then
+        earliest-requested first (fair queue)."""
         from app.core.db import SessionLocal, MaitreDWaitlist
         lo = when - timedelta(hours=window_hours)
         hi = when + timedelta(hours=window_hours)
         with SessionLocal() as db:
             rows = db.query(MaitreDWaitlist).filter(
                 MaitreDWaitlist.store_id == self.store_id,
+                MaitreDWaitlist.location_id == (location_id or None),
                 MaitreDWaitlist.status == "waiting",
                 MaitreDWaitlist.requested_when >= lo,
                 MaitreDWaitlist.requested_when <= hi,
             ).order_by(MaitreDWaitlist.is_vip.desc(), MaitreDWaitlist.created_at.asc()).all()
             return [self._row_to_waitlist(r) for r in rows]
 
-    def offered_entries_before(self, offered_le: datetime) -> list[WaitlistEntry]:
+    def get_waitlist_entry(self, waitlist_id: str) -> WaitlistEntry | None:
+        from app.core.db import SessionLocal, MaitreDWaitlist
+        with SessionLocal() as db:
+            row = db.query(MaitreDWaitlist).filter(
+                MaitreDWaitlist.store_id == self.store_id,
+                MaitreDWaitlist.waitlist_uid == waitlist_id,
+            ).first()
+            return self._row_to_waitlist(row) if row else None
+
+    def offered_entries_before(
+        self, offered_le: datetime, location_id: int | None = None
+    ) -> list[WaitlistEntry]:
         """Offers made at or before `offered_le` that are still unanswered."""
         from app.core.db import SessionLocal, MaitreDWaitlist
         with SessionLocal() as db:
-            rows = db.query(MaitreDWaitlist).filter(
+            q = db.query(MaitreDWaitlist).filter(
                 MaitreDWaitlist.store_id == self.store_id,
                 MaitreDWaitlist.status == "offered",
                 MaitreDWaitlist.offered_at.isnot(None),
                 MaitreDWaitlist.offered_at <= offered_le,
-            ).order_by(MaitreDWaitlist.offered_at).all()
+            )
+            if location_id:
+                q = q.filter(MaitreDWaitlist.location_id == location_id)
+            rows = q.order_by(MaitreDWaitlist.offered_at).all()
             return [self._row_to_waitlist(r) for r in rows]
 
-    def list_waitlist(self, status: str | None = None) -> list[WaitlistEntry]:
+    def list_waitlist(self, status: str | None = None, location_id: int | None = None) -> list[WaitlistEntry]:
         from app.core.db import SessionLocal, MaitreDWaitlist
         with SessionLocal() as db:
             q = db.query(MaitreDWaitlist).filter(MaitreDWaitlist.store_id == self.store_id)
             if status:
                 q = q.filter(MaitreDWaitlist.status == status)
+            if location_id:
+                q = q.filter(MaitreDWaitlist.location_id == location_id)
             rows = q.order_by(MaitreDWaitlist.created_at).all()
             return [self._row_to_waitlist(r) for r in rows]
 
     def _row_to_waitlist(self, row) -> WaitlistEntry:
         return WaitlistEntry(
-            waitlist_id=row.waitlist_uid, store_id=row.store_id, phone=row.phone,
+            waitlist_id=row.waitlist_uid, store_id=row.store_id,
+            location_id=row.location_id or 0, branch_name=row.branch_name or "",
+            phone=row.phone,
             name=row.name, party_size=row.party_size,
             requested_when=row.requested_when, status=row.status,
             is_vip=row.is_vip, vip_tier=row.vip_tier, offered_at=row.offered_at,

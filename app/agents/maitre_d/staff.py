@@ -86,10 +86,11 @@ def format_reservations(store_id: int, upcoming_only: bool = True) -> str:
         tag = r.reservation_id.replace("res_", "")[-6:]
         vip = " (VIP)" if r.is_vip else ""
         dep = " [deposit pending]" if r.status == "pending" else ""
+        branch = f" — {r.branch_name}" if r.branch_name else ""
         lines.append(
             f"• [{tag}] {r.name or r.phone}, party {r.party_size}, "
             f"{r.when.strftime('%a %d %b %I:%M %p').replace(' 0', ' ')}, "
-            f"table {r.table_id or 'n/a'}{vip}{dep}"
+            f"table {r.table_id or 'n/a'}{branch}{vip}{dep}"
         )
     lines.append("\nSay \"seat/complete/noshow <id>\" using the bracketed tag to update one.")
     return "\n".join(lines)
@@ -103,9 +104,10 @@ def format_waitlist(store_id: int) -> str:
     lines = ["Waitlist:"]
     for w in rows:
         vip = " (VIP)" if w.is_vip else ""
+        branch = f" — {w.branch_name}" if w.branch_name else ""
         lines.append(
             f"• {w.name or w.phone}, party {w.party_size}, wants "
-            f"{w.requested_when.strftime('%a %d %b %I:%M %p').replace(' 0', ' ')}{vip}"
+            f"{w.requested_when.strftime('%a %d %b %I:%M %p').replace(' 0', ' ')}{branch}{vip}"
         )
     return "\n".join(lines)
 
@@ -118,6 +120,19 @@ def format_vips(store_id: int) -> str:
     for phone, v in cfg.vips.items():
         notes = f" — {v.notes}" if v.notes else ""
         lines.append(f"• {v.name or phone} ({v.tier}), {phone}{notes}")
+    return "\n".join(lines)
+
+
+def format_locations(store_id: int) -> str:
+    locations = VenueConfig.list_locations(store_id)
+    if not locations:
+        return "This restaurant has a single location, no separate branches configured."
+    lines = ["Branches:"]
+    for loc in locations:
+        tag = "primary" if loc.is_primary else "branch"
+        booking = "takes reservations" if loc.accepts_reservations else "delivery-only, no reservations"
+        addr = f" — {loc.address}" if loc.address else ""
+        lines.append(f"• {loc.branch_name} ({tag}, {booking}){addr}")
     return "\n".join(lines)
 
 
@@ -165,7 +180,10 @@ def answer_question(store_id: int, text: str, history: list[dict] | None = None)
     except Exception:
         return "Reservations Q&A is unavailable right now, but you can still ask for *reservations*, *waitlist*, or *vip list*."
 
-    context = "\n\n".join([format_reservations(store_id), format_waitlist(store_id), format_vips(store_id)])
+    context = "\n\n".join([
+        format_locations(store_id), format_reservations(store_id),
+        format_waitlist(store_id), format_vips(store_id),
+    ])
     system = (
         staff_persona("You answer staff questions about reservations, the waitlist and VIP guests.", store_id)
         + "\nCite exact names, times and table numbers from the data; do not invent bookings."

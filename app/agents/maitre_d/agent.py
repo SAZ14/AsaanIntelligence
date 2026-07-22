@@ -16,6 +16,7 @@ original single-tenant SQLite ones.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -23,6 +24,12 @@ from app.agents.maitre_d.config import VenueConfig, normalise_phone
 from app.agents.maitre_d.models import Guest, Reservation, WaitlistEntry
 from app.agents.maitre_d.noshow import assess_no_show
 from app.agents.maitre_d.nlu import ParsedMessage, parse_message
+
+
+def _alnum(text: str) -> str:
+    """Lowercase, strip everything but letters/digits -- so "F-8/2" and
+    "at F-8/2," match regardless of hyphens, slashes or punctuation."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 from app.agents.maitre_d.payments import PaymentProvider, StubPaymentProvider
 from app.agents.maitre_d.store import Store
 
@@ -60,6 +67,7 @@ class MaitreD:
         client=None,
         now_fn=None,
         payments: PaymentProvider | None = None,
+        locations: list[VenueConfig] | None = None,
     ) -> None:
         self.store = store
         self.config = config or VenueConfig.load(store.store_id)
@@ -67,6 +75,16 @@ class MaitreD:
         # Default clock is the *venue's* wall time, not the server's.
         self._now_fn = now_fn or self.config.now
         self.payments = payments or StubPaymentProvider()
+        # All of this store's branches, if it has configured more than one
+        # (see app.core.db.MaitreDLocation) -- an empty/single-item list
+        # means "this store has one implicit/configured location", so the
+        # booking flow never needs to ask which branch. Not auto-fetched
+        # when a caller passes `locations` explicitly (tests construct
+        # single-location scenarios without seeding MaitreDLocation rows).
+        self.locations = (
+            locations if locations is not None
+            else VenueConfig.list_locations(store.store_id)
+        )
 
     def _now(self) -> datetime:
         return self._now_fn()
@@ -182,6 +200,24 @@ class MaitreD:
             elif profile_name:
                 slots["name"] = profile_name
 
+        # Multi-branch stores: try to auto-fill "location" from what the
+        # guest just said before asking for it as a missing slot -- "table
+        # for 4 at Bahria Town" shouldn't need a follow-up question just
+        # because the branch happened to be named up front.
+        if len(self.locations) > 1 and not slots.get("location"):
+            matched = self._match_location(parsed.raw)
+            if matched is not None:
+                if not matched.accepts_reservations:
+                    others = ", ".join(
+                        l.branch_name for l in self.locations if l.accepts_reservations
+                    )
+                    return MaitreDReply(
+                        text=(f"{matched.branch_name} is delivery-only and doesn't take "
+                              f"table reservations. Would {others} work instead?"),
+                        intent="book", action="need_info", is_vip=bool(vip),
+                    )
+                slots["location"] = matched.branch_key
+
         # What's still missing?
         missing = self._missing_slot(slots)
         if missing:
@@ -193,6 +229,15 @@ class MaitreD:
                 text=self._ask_for(missing, vip), intent="book", action="need_info",
                 is_vip=bool(vip),
             )
+
+        # Multi-branch stores: switch to the resolved location's own
+        # tables/service-windows/deposit rules for everything below.
+        if len(self.locations) > 1:
+            location = next(
+                (l for l in self.locations if l.branch_key == slots.get("location")), None
+            )
+            if location is not None:
+                self.config = location
 
         # All slots present → make the call.
         party = int(slots["party_size"])
@@ -246,6 +291,7 @@ class MaitreD:
             no_show_band=assessment.band,
             deposit_required=assessment.require_deposit,
             special_requests=requests, created_at=self._now(),
+            location_id=self.config.location_id, branch_name=self.config.branch_name,
         )
         res = self.store.add_reservation(res)
 
@@ -285,7 +331,7 @@ class MaitreD:
             extras += f" Noted: {requests}."
         reply = MaitreDReply(
             text=(f"You're booked, {name or 'see you soon'}! Table for {party} on "
-                  f"{self._fmt_when(when)} at {self.config.name}.{extras} "
+                  f"{self._fmt_when(when)} at {self.config.display_name()}.{extras} "
                   "Reply CANCEL any time if your plans change."),
             intent="book", action="booked", reservation_id=res.reservation_id,
             is_vip=bool(vip), no_show_band=assessment.band, staff_alert=staff_alert,
@@ -300,7 +346,16 @@ class MaitreD:
         old = self.store.get_reservation(replace_id)
         if old and old.status in ("pending", "confirmed", "seated"):
             self.store.update_reservation_status(replace_id, "cancelled")
-            self._promote_waitlist(old.when, reply)
+            self._promote_waitlist(old.location_id, old.when, reply)
+
+    def _resolve_location_config(self, location_id: int) -> VenueConfig | None:
+        """The specific location a given reservation/waitlist entry
+        belongs to, looked up from self.locations. Returns None for
+        single-location stores (location_id is meaningless there --
+        self.config is already correct) or if it can't be found."""
+        if not location_id or len(self.locations) <= 1:
+            return None
+        return next((l for l in self.locations if l.location_id == location_id), None)
 
     def _add_to_waitlist(
         self, phone: str, name: str, party: int, when: datetime, vip,
@@ -310,6 +365,7 @@ class MaitreD:
             waitlist_id="", phone=phone, name=name, party_size=party,
             requested_when=when, status="waiting", is_vip=bool(vip),
             vip_tier=vip.tier if vip else "", created_at=self._now(),
+            location_id=self.config.location_id, branch_name=self.config.branch_name,
         )
         entry = self.store.add_waitlist(entry)
         self.store.clear_conversation(phone)
@@ -347,7 +403,7 @@ class MaitreD:
                   "is cancelled. We hope to see you another time!"),
             intent="cancel", action="cancelled", reservation_id=res.reservation_id,
         )
-        self._promote_waitlist(res.when, reply)
+        self._promote_waitlist(res.location_id, res.when, reply)
         return reply
 
     def _modify(
@@ -369,6 +425,10 @@ class MaitreD:
         }
         if old.special_requests:
             slots["special_requests"] = old.special_requests
+        old_location = self._resolve_location_config(old.location_id)
+        if old_location is not None:
+            slots["location"] = old_location.branch_key
+            self.config = old_location  # same branch's tables/rules apply to the replacement too
         self._save_conversation(phone, {
             "flow": "book",
             "slots": slots,
@@ -387,6 +447,9 @@ class MaitreD:
         if not res:
             return MaitreDReply(text="That hold has expired — shall we start again?",
                                 intent=intent, action="noop")
+        location = self._resolve_location_config(res.location_id)
+        if location is not None:
+            self.config = location
         if intent == "confirm":
             # Issue a real checkout link; the table stays *pending* until the
             # payment webhook confirms it (see handle_payment_webhook).
@@ -408,14 +471,17 @@ class MaitreD:
             text="No problem, I've released that table. Message me any time to book.",
             intent=intent, action="cancelled", reservation_id=res_id,
         )
-        self._promote_waitlist(res.when, reply)
+        self._promote_waitlist(res.location_id, res.when, reply)
         return reply
 
     # ── waitlist promotion ──
 
-    def _promote_waitlist(self, freed_when: datetime, reply: MaitreDReply) -> None:
+    def _promote_waitlist(self, location_id: int, freed_when: datetime, reply: MaitreDReply) -> None:
         """Offer a freed slot to the best waiting guest (VIP first, then FIFO)."""
-        candidates = self.store.waiting_entries_near(freed_when)
+        location = self._resolve_location_config(location_id)
+        if location is not None:
+            self.config = location  # this freed table's own branch, not whatever self.config last was
+        candidates = self.store.waiting_entries_near(location_id, freed_when)
         for entry in candidates:
             table_id = self._find_table(entry.requested_when, entry.party_size)
             if table_id is None:
@@ -430,11 +496,12 @@ class MaitreD:
                     "party_size": entry.party_size,
                     "when": entry.requested_when.isoformat(),
                     "name": entry.name,
+                    "location_id": entry.location_id,
                 },
             })
             msg = (f"Good news{', ' + entry.name if entry.name else ''}! A table for "
                    f"{entry.party_size} just opened on {self._fmt_when(entry.requested_when)} "
-                   f"at {self.config.name}. Reply YES in the next "
+                   f"at {self.config.display_name()}. Reply YES in the next "
                    f"{self.config.offer_ttl_minutes} minutes and it's yours.")
             reply.outbound.append((entry.phone, msg))
             if entry.is_vip:
@@ -447,6 +514,10 @@ class MaitreD:
     ) -> MaitreDReply:
         wl_id = state.get("waitlist_id", "")
         slots = state.get("slots", {})
+        location_id = slots.get("location_id", 0)
+        location = self._resolve_location_config(location_id)
+        if location is not None:
+            self.config = location
         self.store.clear_conversation(phone)
         if intent == "decline":
             self.store.update_waitlist_status(wl_id, "expired")
@@ -455,7 +526,7 @@ class MaitreD:
                 intent=intent, action="cancelled", waitlist_id=wl_id,
             )
             when = datetime.fromisoformat(slots["when"]) if slots.get("when") else self._now()
-            self._promote_waitlist(when, reply)  # pass it on to the next in line
+            self._promote_waitlist(location_id, when, reply)  # pass it on to the next in line
             return reply
 
         # confirm → convert to a real reservation
@@ -473,6 +544,7 @@ class MaitreD:
             reservation_id="", phone=phone, name=slots.get("name", ""),
             party_size=party, when=when, status="confirmed", table_id=table_id,
             is_vip=bool(vip), vip_tier=vip.tier if vip else "",
+            location_id=self.config.location_id, branch_name=self.config.branch_name,
             created_at=self._now(),
         ))
         return MaitreDReply(
@@ -523,11 +595,14 @@ class MaitreD:
                else self.store.get_by_payment_ref(payment_ref))
         if not res:
             return None
+        location = self._resolve_location_config(res.location_id)
+        if location is not None:
+            self.config = location
         self.store.mark_deposit_paid(res.reservation_id)
         if res.status == "pending":
             self.store.update_reservation_status(res.reservation_id, "confirmed")
         text = (f"Payment received — your table for {res.party_size} on "
-                f"{self._fmt_when(res.when)} at {self.config.name} is confirmed. "
+                f"{self._fmt_when(res.when)} at {self.config.display_name()} is confirmed. "
                 "See you soon!")
         return MaitreDReply(
             text=text, intent="confirm", action="booked",
@@ -553,24 +628,35 @@ class MaitreD:
             merged.staff_alerts.extend(part.staff_alerts)
         return merged
 
+    def _each_location(self):
+        """Locations to sweep, one at a time -- a multi-branch store's
+        offer/no-show/reminder timers can differ per branch, so maintenance
+        runs once per location (switching self.config each time) rather
+        than once for the whole store under a single arbitrary config.
+        Single-location stores just get one pass with self.config
+        unchanged, exactly as before."""
+        return self.locations if len(self.locations) > 1 else [self.config]
+
     def expire_stale_offers(self) -> MaintenanceResult:
         """Release waitlist offers that went unanswered and roll them onward."""
         result = MaintenanceResult()
         now = self._now()
-        cutoff = now - timedelta(minutes=self.config.offer_ttl_minutes)
-        for entry in self.store.offered_entries_before(cutoff):
-            self.store.update_waitlist_status(entry.waitlist_id, "expired")
-            self.store.clear_conversation(entry.phone)
-            result.offers_expired += 1
-            result.outbound.append((
-                entry.phone,
-                "Your table offer has lapsed, but you're welcome to book again any time.",
-            ))
-            carrier = MaitreDReply(text="")
-            self._promote_waitlist(entry.requested_when, carrier)  # next in line
-            result.outbound.extend(carrier.outbound)
-            if carrier.staff_alert:
-                result.staff_alerts.append(carrier.staff_alert)
+        for location in self._each_location():
+            self.config = location
+            cutoff = now - timedelta(minutes=self.config.offer_ttl_minutes)
+            for entry in self.store.offered_entries_before(cutoff, location_id=location.location_id):
+                self.store.update_waitlist_status(entry.waitlist_id, "expired")
+                self.store.clear_conversation(entry.phone)
+                result.offers_expired += 1
+                result.outbound.append((
+                    entry.phone,
+                    "Your table offer has lapsed, but you're welcome to book again any time.",
+                ))
+                carrier = MaitreDReply(text="")
+                self._promote_waitlist(entry.location_id, entry.requested_when, carrier)  # next in line
+                result.outbound.extend(carrier.outbound)
+                if carrier.staff_alert:
+                    result.staff_alerts.append(carrier.staff_alert)
         return result
 
     def run_door_sweep(self) -> MaintenanceResult:
@@ -578,53 +664,59 @@ class MaitreD:
         result = MaintenanceResult()
         now = self._now()
 
-        # Seated guests whose turn time has elapsed → completed.
-        for r in self.store.reservations_due(("seated",), now):
-            turn = self.config.turn_time_for(r.party_size)
-            if r.when + timedelta(minutes=turn) <= now:
-                self.store.update_reservation_status(r.reservation_id, "completed")
-                result.completed += 1
+        for location in self._each_location():
+            self.config = location
+            loc_id = location.location_id
 
-        # Confirmed but unseated past the grace window → no-show.
-        ns_cutoff = now - timedelta(minutes=self.config.no_show_grace_minutes)
-        for r in self.store.reservations_due(("confirmed",), ns_cutoff):
-            self.store.update_reservation_status(r.reservation_id, "no_show")
-            result.no_shows += 1
-            result.staff_alerts.append(
-                f"No-show: {r.name or r.phone}, party {r.party_size}, "
-                f"{self._fmt_when(r.when)} (table {r.table_id})."
-            )
+            # Seated guests whose turn time has elapsed → completed.
+            for r in self.store.reservations_due(("seated",), now, location_id=loc_id):
+                turn = self.config.turn_time_for(r.party_size)
+                if r.when + timedelta(minutes=turn) <= now:
+                    self.store.update_reservation_status(r.reservation_id, "completed")
+                    result.completed += 1
 
-        # Pending deposit never paid by the booking time → release the hold.
-        for r in self.store.reservations_due(("pending",), now):
-            self.store.update_reservation_status(r.reservation_id, "cancelled")
-            self.store.clear_conversation(r.phone)
-            result.deposits_expired += 1
-            result.outbound.append((
-                r.phone,
-                "We couldn't confirm your deposit in time, so the table was released. "
-                "Message me to try again any time.",
-            ))
-            carrier = MaitreDReply(text="")
-            self._promote_waitlist(r.when, carrier)
-            result.outbound.extend(carrier.outbound)
-            if carrier.staff_alert:
-                result.staff_alerts.append(carrier.staff_alert)
+            # Confirmed but unseated past the grace window → no-show.
+            ns_cutoff = now - timedelta(minutes=self.config.no_show_grace_minutes)
+            for r in self.store.reservations_due(("confirmed",), ns_cutoff, location_id=loc_id):
+                self.store.update_reservation_status(r.reservation_id, "no_show")
+                result.no_shows += 1
+                result.staff_alerts.append(
+                    f"No-show: {r.name or r.phone}, party {r.party_size}, "
+                    f"{self._fmt_when(r.when)} (table {r.table_id})."
+                )
+
+            # Pending deposit never paid by the booking time → release the hold.
+            for r in self.store.reservations_due(("pending",), now, location_id=loc_id):
+                self.store.update_reservation_status(r.reservation_id, "cancelled")
+                self.store.clear_conversation(r.phone)
+                result.deposits_expired += 1
+                result.outbound.append((
+                    r.phone,
+                    "We couldn't confirm your deposit in time, so the table was released. "
+                    "Message me to try again any time.",
+                ))
+                carrier = MaitreDReply(text="")
+                self._promote_waitlist(r.location_id, r.when, carrier)
+                result.outbound.extend(carrier.outbound)
+                if carrier.staff_alert:
+                    result.staff_alerts.append(carrier.staff_alert)
         return result
 
     def send_due_reminders(self) -> MaintenanceResult:
         """Send the day-before reminder for confirmed bookings coming up."""
         result = MaintenanceResult()
         now = self._now()
-        for r in self.store.reminders_due(now, self.config.reminder_lead_hours):
-            result.outbound.append((
-                r.phone,
-                f"Reminder: your table for {r.party_size} at {self.config.name} is on "
-                f"{self._fmt_when(r.when)}. Reply CANCEL if your plans change — "
-                "otherwise we look forward to seeing you!",
-            ))
-            self.store.mark_reminder_sent(r.reservation_id)
-            result.reminders_sent += 1
+        for location in self._each_location():
+            self.config = location
+            for r in self.store.reminders_due(now, self.config.reminder_lead_hours, location_id=location.location_id):
+                result.outbound.append((
+                    r.phone,
+                    f"Reminder: your table for {r.party_size} at {self.config.display_name()} is on "
+                    f"{self._fmt_when(r.when)}. Reply CANCEL if your plans change — "
+                    "otherwise we look forward to seeing you!",
+                ))
+                self.store.mark_reminder_sent(r.reservation_id)
+                result.reminders_sent += 1
         return result
 
     # ── helpers ──
@@ -633,7 +725,9 @@ class MaitreD:
         self, when: datetime, party_size: int, exclude_reservation_id: str = ""
     ) -> str | None:
         turn = self.config.turn_time_for(party_size)
-        overlapping = self.store.active_reservations_overlapping(when, turn)
+        overlapping = self.store.active_reservations_overlapping(
+            self.config.location_id, when, turn
+        )
         taken = {
             r.table_id for r in overlapping
             if r.table_id and r.reservation_id != exclude_reservation_id
@@ -644,6 +738,8 @@ class MaitreD:
         return None
 
     def _missing_slot(self, slots: dict) -> str | None:
+        if len(self.locations) > 1 and not slots.get("location"):
+            return "location"
         if not slots.get("party_size"):
             return "party_size"
         if not slots.get("when") or slots.get("date_only"):
@@ -652,7 +748,26 @@ class MaitreD:
             return "name"
         return None
 
+    def _match_location(self, text: str) -> VenueConfig | None:
+        """Cheap keyword match against this store's own branch names/keys.
+        Branch names are store-specific vocabulary (e.g. "Bahria Town",
+        "F-8/2"), not something the generic NLU module (nlu.py) can know
+        about, so this stays here rather than being taught to
+        parse_message(). Punctuation-insensitive on both sides ("F-8/2"
+        must match "at F-8/2" and "at f82" alike). Checks ALL locations,
+        including ones that don't take reservations, so _book_flow can
+        give a specific "that branch is delivery-only" answer instead of
+        silently failing to match."""
+        needle = _alnum(text)
+        for loc in self.locations:
+            if _alnum(loc.branch_key) in needle or _alnum(loc.branch_name) in needle:
+                return loc
+        return None
+
     def _ask_for(self, missing: str, vip) -> str:
+        if missing == "location":
+            names = ", ".join(l.branch_name for l in self.locations if l.accepts_reservations)
+            return f"Which branch would you like — {names}?"
         if missing == "party_size":
             return "Happy to help! How many people will be dining?"
         if missing == "when":

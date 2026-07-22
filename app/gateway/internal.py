@@ -53,9 +53,10 @@ def staff_help_text(store_name: str) -> str:
         "  ignore: skip current review\n"
         "  edit <text>: rewrite suggested reply\n\n"
         "*Reservations*: The book & the door\n"
-        "  reservations: upcoming bookings\n"
+        "  reservations: upcoming bookings (all branches)\n"
         "  waitlist: who's waiting for a table\n"
         "  vip list: your VIP guests\n"
+        "  branches: your locations and what they take\n"
         "  add vip <phone> <name>[, notes]: add a VIP\n"
         "  seat/complete/noshow <id>: update a booking (id from *reservations*)\n\n"
         "You can also just write in plain language, e.g. \"how did we do this "
@@ -431,7 +432,7 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         logger.info("internal.routing: store=%d agent=maitre_d trigger=door from=%s", store_id, from_number)
         reply = door_reply
 
-    elif text.lower().strip() in ("waitlist", "vip", "vips", "vip list", "reservations", "bookings"):
+    elif text.lower().strip() in ("waitlist", "vip", "vips", "vip list", "reservations", "bookings", "locations", "branches"):
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=listing from=%s", store_id, from_number)
         reply = _maitre_d_listing(store_id, text.lower().strip())
@@ -611,11 +612,13 @@ def _maitre_d_door_shorthand(store_id: int, first: str, text: str) -> str | None
 
 def _maitre_d_listing(store_id: int, cmd: str) -> str:
     try:
-        from app.agents.maitre_d.staff import format_reservations, format_waitlist, format_vips
+        from app.agents.maitre_d.staff import format_reservations, format_waitlist, format_vips, format_locations
         if cmd == "waitlist":
             return format_waitlist(store_id)
         if cmd in ("vip", "vips", "vip list"):
             return format_vips(store_id)
+        if cmd in ("locations", "branches"):
+            return format_locations(store_id)
         return format_reservations(store_id)
     except Exception as e:
         logger.warning("internal._maitre_d_listing: store=%d error=%s", store_id, e)

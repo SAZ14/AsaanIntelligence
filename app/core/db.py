@@ -460,14 +460,28 @@ class CustomerChatSession(Base):
 # its own FastAPI app) into this server's shared, store_id-partitioned
 # Postgres schema -- same pattern as every other agent's tables here.
 
-class MaitreDVenueConfig(Base):
-    """Per-store reservation settings -- one row per store, sensible
-    defaults applied in code (app/agents/maitre_d/config.py) for any store
-    without a row yet, same pattern as POSConnection/RevenueConnection."""
-    __tablename__ = "maitre_d_venue_config"
+class MaitreDLocation(Base):
+    """One row per physical branch a store books tables at -- a store with
+    several branches (like Anatummy's three) gets one row each, so tables/
+    capacity/service-windows/deposit rules are never conflated across
+    physically different addresses. A store with a single location still
+    gets exactly one row here (is_primary=True); app.agents.maitre_d.
+    config falls back to sensible defaults in code for a store with none
+    configured yet, same pattern as POSConnection/RevenueConnection.
+
+    accepts_reservations lets a delivery-only branch (no dine-in seating
+    at all) be excluded from the branch choice offered to a guest, rather
+    than pretending it has a table to book."""
+    __tablename__ = "maitre_d_locations"
+    __table_args__ = (UniqueConstraint("store_id", "branch_key"),)
 
     id = Column(Integer, primary_key=True)
-    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, unique=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    branch_key = Column(String, nullable=False)   # short slug, e.g. "new_blue_area"
+    name = Column(String, nullable=False)          # display name, e.g. "New Blue Area"
+    address = Column(String, default="")
+    accepts_reservations = Column(Boolean, default=True)
+    is_primary = Column(Boolean, default=False)    # the default when a store has only one, or the fallback
     timezone = Column(String, nullable=False, default="Asia/Karachi")
     tables = Column(JSON, default=list)              # [[table_id, seats], ...]
     service_windows = Column(JSON, default=list)      # [[label, open_hour, last_seating_hour], ...]
@@ -518,6 +532,8 @@ class MaitreDReservation(Base):
     id = Column(Integer, primary_key=True)
     reservation_uid = Column(String, unique=True, nullable=False)  # "res_xxxxxxxxxxxx", staff-typeable
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    location_id = Column(Integer, ForeignKey("maitre_d_locations.id"), nullable=True)
+    branch_name = Column(String, default="")  # denormalised at booking time -- avoids a join on every listing
     phone = Column(String, nullable=False)
     name = Column(String, default="")
     party_size = Column(Integer, nullable=False)
@@ -543,6 +559,8 @@ class MaitreDWaitlist(Base):
     id = Column(Integer, primary_key=True)
     waitlist_uid = Column(String, unique=True, nullable=False)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    location_id = Column(Integer, ForeignKey("maitre_d_locations.id"), nullable=True)
+    branch_name = Column(String, default="")
     phone = Column(String, nullable=False)
     name = Column(String, default="")
     party_size = Column(Integer, nullable=False)

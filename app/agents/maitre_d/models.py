@@ -44,6 +44,8 @@ class Guest(BaseModel):
 class Reservation(BaseModel):
     reservation_id: str = ""        # public id, e.g. "res_xxxxxxxxxxxx"
     store_id: int = 0
+    location_id: int = 0
+    branch_name: str = ""           # denormalised for display -- avoids a join every time a reply is composed
     phone: str
     name: str = ""
     party_size: int
@@ -66,6 +68,8 @@ class Reservation(BaseModel):
 class WaitlistEntry(BaseModel):
     waitlist_id: str = ""
     store_id: int = 0
+    location_id: int = 0
+    branch_name: str = ""
     phone: str
     name: str = ""
     party_size: int
