@@ -373,7 +373,7 @@ def test_health(client):
     assert "agents" in data
     assert "checks" in data
     # All agent modules must import cleanly regardless of API key state
-    for name in ("scout", "integrity", "reputation", "revenue", "customer"):
+    for name in ("scout", "integrity", "reputation", "revenue", "customer", "maitre_d"):
         assert name in data["agents"], f"Agent {name!r} missing from health response"
         assert data["agents"][name] == "ok", f"Agent {name!r} failed to import: {data['agents'][name]}"
 

@@ -793,6 +793,7 @@ def health():
         "integrity":  "app.agents.integrity.agents.integrity_agent",
         "revenue":    "app.agents.revenue.whatsapp",
         "customer":   "app.agents.customer.agents.community_customer",
+        "maitre_d":   "app.agents.maitre_d.agent",
     }
     agent_status: dict[str, str] = {}
     for name, module in agents.items():
