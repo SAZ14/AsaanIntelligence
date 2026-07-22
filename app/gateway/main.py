@@ -576,6 +576,13 @@ _REVENUE_KEYWORDS = {"revenue", "sales", "strategy", "upsell", "growth", "pricin
 _MAITRE_D_KEYWORDS = {
     "table", "reservation", "reservations", "reserve", "book", "booking",
     "waitlist", "no-show", "noshow", "vip", "vips",
+    # "cancel" has no other meaning anywhere in this codebase (no other
+    # cancellable entity exists) -- confirmed live: a guest with a
+    # confirmed booking who just says "cancel" (no other keyword, and no
+    # in-progress conversation state to catch it via _has_active_booking_
+    # flow) fell through to the community agent's onboarding flow instead
+    # of MaitreD's own _cancel().
+    "cancel",
 }
 
 
