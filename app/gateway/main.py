@@ -117,7 +117,7 @@ def _mode_menu(store_name: str) -> str:
     return (
         f"Welcome to {store_name}!\n\n"
         "Reply with:\n"
-        "  1: Staff tools (integrity, revenue, scout, reputation)\n"
+        "  1: Staff tools (integrity, revenue, scout, reputation, reservations)\n"
         "  2: Customer app (stamps, deals, loyalty)\n\n"
         "Type *menu* anytime to return here."
     )
