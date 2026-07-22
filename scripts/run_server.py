@@ -127,6 +127,19 @@ def _start_scheduler() -> BackgroundScheduler:
 
 
 if __name__ == "__main__":
+    # Create any missing tables ONCE, before workers fork -- not per-worker
+    # in app/gateway/main.py's lifespan() (still called there too, as a
+    # safety net for anything started outside this script). Confirmed
+    # live: 4 workers all calling Base.metadata.create_all() concurrently
+    # the first time a brand-new table appeared raced Postgres's own
+    # catalog ("duplicate key value violates unique constraint
+    # pg_type_typname_nsp_index") and crashed the entire boot -- uvicorn's
+    # multi-worker supervisor treats any one worker failing to start as
+    # fatal and tears down every already-started worker with it, not just
+    # the one that failed.
+    from app.core.db import init_db
+    init_db()
+
     scheduler = _start_scheduler()
     logger.info("Scheduler started")
     dev_mode = os.environ.get("DEV", "false").lower() == "true"

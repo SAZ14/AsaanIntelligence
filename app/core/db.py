@@ -698,5 +698,24 @@ def get_db():
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    """Create any tables that don't exist yet. scripts/run_server.py calls
+    this once, before spawning worker processes -- that's the primary
+    guard. Also called per-worker from app/gateway/main.py's lifespan()
+    as a safety net for anything started outside run_server.py, so this
+    stays resilient to being invoked concurrently from multiple processes
+    too: confirmed live, several workers all calling create_all() at once
+    the first time a brand-new table appears raced Postgres's own
+    catalog and crashed startup with "duplicate key value violates unique
+    constraint pg_type_typname_nsp_index" (SQLAlchemy's create_all does
+    its own existence check, but that check-then-create isn't atomic
+    across processes). Once a table exists, create_all() is a no-op for
+    it, so this can only race on genuinely new tables, and only until the
+    first process wins."""
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        if "already exists" in str(exc) or "duplicate key" in str(exc):
+            logger.info("Central DB tables: another process created them concurrently (%s)", exc.__class__.__name__)
+        else:
+            raise
     logger.info("Central DB tables created/verified")
