@@ -28,7 +28,8 @@ def staff_help_text(store_name: str) -> str:
     the LLM classifier into one specific agent (usually integrity, whose own
     handle_message() had its own "hi"/"hello" special case returning ONLY
     its own commands) instead of ever reaching either of them. One function,
-    always the full command list across all four agents."""
+    always the full command list across every agent (integrity, revenue,
+    scout, reputation, and reservations/maitre_d)."""
     return (
         f"Staff tools: {store_name}\n\n"
         "*Integrity*: POS audit & leakage\n"
