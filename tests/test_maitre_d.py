@@ -160,6 +160,13 @@ class TestLeaveQueue:
         assert len(remaining) == 1
         assert remaining[0].position == 1
 
+    def test_cancel_notifies_the_guest_behind_of_their_new_position(self, store_id):
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        cancel = md.handle_message("+923000000001", "cancel")
+        assert cancel.outbound == [("+923000000002", "You're now #1 in line at MD Test Cafe.")]
+
 
 # ── Staff: admit / remove / insert ──────────────────────────────────────────
 
@@ -169,16 +176,18 @@ class TestStaffQueueOps:
         md.handle_message("+923000000001", "table for 2, it's Aman")
         md.handle_message("+923000000002", "table for 2, it's Bilal")
         store = Store(store_id)
-        admitted = store.admit_next(None)
+        admitted, moved_up = store.admit_next(None)
         assert admitted.name == "Aman"
         assert admitted.status == "admitted"
+        assert [e.name for e in moved_up] == ["Bilal"]
+        assert moved_up[0].position == 1
         remaining = store.list_queue(status="waiting")
         assert len(remaining) == 1
         assert remaining[0].name == "Bilal"
         assert remaining[0].position == 1
 
     def test_admit_on_empty_queue_returns_none(self, store_id):
-        assert Store(store_id).admit_next(None) is None
+        assert Store(store_id).admit_next(None) == (None, [])
 
     def test_remove_at_position_shifts_the_rest(self, store_id):
         md = _md(store_id)
@@ -186,8 +195,9 @@ class TestStaffQueueOps:
         md.handle_message("+923000000002", "table for 2, it's Bilal")
         md.handle_message("+923000000003", "table for 2, it's Cyrus")
         store = Store(store_id)
-        removed = store.remove_at_position(None, 2)
+        removed, moved_up = store.remove_at_position(None, 2)
         assert removed.name == "Bilal"
+        assert [e.name for e in moved_up] == ["Cyrus"]
         remaining = store.list_queue(status="waiting")
         assert [e.name for e in remaining] == ["Aman", "Cyrus"]
         assert [e.position for e in remaining] == [1, 2]
@@ -199,7 +209,8 @@ class TestStaffQueueOps:
         md.handle_message("+923000000002", "table for 2, it's Bilal")
         store = Store(store_id)
         entry = QueueEntry(phone="+923000000099", name="Inserted", party_size=2)
-        store.insert_at_position(entry, position=1, day_start=FRIDAY_8PM.replace(hour=0, minute=0))
+        _new, pushed_back = store.insert_at_position(entry, position=1, day_start=FRIDAY_8PM.replace(hour=0, minute=0))
+        assert [e.name for e in pushed_back] == ["Aman", "Bilal"]
         ordered = store.list_queue(status="waiting")
         assert [e.name for e in ordered] == ["Inserted", "Aman", "Bilal"]
         assert [e.position for e in ordered] == [1, 2, 3]
@@ -210,8 +221,45 @@ class TestStaffQueueOps:
         md.handle_message("+923000000001", "table for 2, it's Aman")
         store = Store(store_id)
         entry = QueueEntry(phone="+923000000099", name="Inserted", party_size=2)
-        saved = store.insert_at_position(entry, position=99, day_start=FRIDAY_8PM.replace(hour=0, minute=0))
+        saved, pushed_back = store.insert_at_position(entry, position=99, day_start=FRIDAY_8PM.replace(hour=0, minute=0))
         assert saved.position == 2
+        assert pushed_back == []
+
+
+# ── Notifications on every queue mutation ───────────────────────────────────
+
+class TestQueueNotifications:
+    def test_admit_notifies_the_admitted_guest_and_the_rest(self, store_id):
+        from app.agents.maitre_d.staff import admit_next_in_queue
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        with patch("app.core.outbound.send_from_store") as mock_send:
+            admit_next_in_queue(store_id)
+        calls = {c.args[1]: c.args[2] for c in mock_send.call_args_list}
+        assert "seated" in calls["+923000000001"].lower()
+        assert calls["+923000000002"] == "You're now #1 in line at MD Test Cafe."
+
+    def test_remove_position_does_not_notify_the_removed_guest(self, store_id):
+        from app.agents.maitre_d.staff import remove_queue_position
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        md.handle_message("+923000000002", "table for 2, it's Bilal")
+        with patch("app.core.outbound.send_from_store") as mock_send:
+            remove_queue_position(store_id, "1")
+        calls = {c.args[1]: c.args[2] for c in mock_send.call_args_list}
+        assert "+923000000001" not in calls  # removed guest stays silent
+        assert calls["+923000000002"] == "You're now #1 in line at MD Test Cafe."
+
+    def test_insert_notifies_everyone_pushed_back(self, store_id):
+        from app.agents.maitre_d.staff import insert_queue_position
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        with patch("app.core.outbound.send_from_store") as mock_send:
+            insert_queue_position(store_id, "1 +923009998888 Walked In, party 2")
+        calls = {c.args[1]: c.args[2] for c in mock_send.call_args_list}
+        assert calls["+923000000001"] == "You're now #2 in line at MD Test Cafe."
+        assert "+923009998888" not in calls  # the newly-inserted guest isn't separately notified here
 
 
 # ── Conversation TTL ─────────────────────────────────────────────────────────
@@ -280,6 +328,25 @@ class TestMultiLocation:
         assert r1.action == "need_info"
         r2 = md.handle_message(PHONE, "New Blue Area")
         assert r2.action == "queued"
+
+    def test_branch_question_is_numbered_and_a_number_reply_resolves_it(self, store_id):
+        """Two branches that BOTH take walk-ins -- a real numbered choice,
+        not the single-option case _seed_two_locations gives."""
+        from app.core.db import SessionLocal, MaitreDLocation
+        with SessionLocal() as db:
+            db.add_all([
+                MaitreDLocation(store_id=store_id, branch_key="blue", name="Blue Area", is_primary=True, accepts_reservations=True),
+                MaitreDLocation(store_id=store_id, branch_key="bahria", name="Bahria Town", accepts_reservations=True),
+            ])
+            db.commit()
+        md = _md_multi(store_id)
+        r1 = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert r1.action == "need_info"
+        assert "1. Blue Area" in r1.text
+        assert "2. Bahria Town" in r1.text
+        r2 = md.handle_message(PHONE, "2")
+        assert r2.action == "queued"
+        assert "Bahria Town" in r2.text
 
     def test_delivery_only_branch_is_declined_with_alternative_offered(self, store_id):
         _seed_two_locations(store_id)

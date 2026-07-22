@@ -143,6 +143,7 @@ class MaitreD:
     ) -> MaitreDReply:
         state = self._conversation(phone)
         slots = state.get("slots", {})
+        prior_options = state.get("location_options", [])
 
         if parsed.party_size:
             slots["party_size"] = parsed.party_size
@@ -170,27 +171,38 @@ class MaitreD:
         # Multi-branch stores: try to auto-fill "location" from what the
         # guest just said before asking for it as a missing slot -- "table
         # for 4 at Bahria Town" shouldn't need a follow-up question just
-        # because the branch happened to be named up front.
-        if len(self.locations) > 1 and not slots.get("location"):
-            matched = match_location(self.locations, parsed.raw)
-            if matched is not None:
-                if not matched.accepts_reservations:
-                    others = _join_or(
-                        [l.branch_name for l in self.locations if l.accepts_reservations]
-                    )
-                    return MaitreDReply(
-                        text=(f"{matched.branch_name} is delivery-only and doesn't take "
-                              f"walk-ins. Would {others} work instead?"),
-                        intent="book", action="need_info", is_vip=bool(vip),
-                    )
-                slots["location"] = matched.branch_key
+        # because the branch happened to be named up front. A bare number
+        # ("2") is only ever treated as a branch pick when we're actually
+        # waiting on one (prior_options set from the last "which branch"
+        # question) -- location is always resolved before party_size is
+        # ever asked (see _missing_slot's ordering), so there's no turn
+        # where a numeric reply could mean either.
+        location_options: list[str] = []
+        if len(self.locations) > 1:
+            location_options = [l.branch_key for l in self.locations if l.accepts_reservations]
+            if not slots.get("location"):
+                matched = self._match_location_reply(parsed.raw, prior_options)
+                if matched is not None:
+                    if not matched.accepts_reservations:
+                        others = _join_or(
+                            [l.branch_name for l in self.locations if l.accepts_reservations]
+                        )
+                        return MaitreDReply(
+                            text=(f"{matched.branch_name} is delivery-only and doesn't take "
+                                  f"walk-ins. Would {others} work instead?"),
+                            intent="book", action="need_info", is_vip=bool(vip),
+                        )
+                    slots["location"] = matched.branch_key
 
         # What's still missing?
         missing = self._missing_slot(slots)
         if missing:
-            self._save_conversation(phone, {"flow": "book", "slots": slots})
+            new_state = {"flow": "book", "slots": slots}
+            if location_options:
+                new_state["location_options"] = location_options
+            self._save_conversation(phone, new_state)
             return MaitreDReply(
-                text=self._ask_for(missing, vip), intent="book", action="need_info",
+                text=self._ask_for(missing, vip, location_options), intent="book", action="need_info",
                 is_vip=bool(vip),
             )
 
@@ -250,14 +262,19 @@ class MaitreD:
         location = self._resolve_location_config(entry.location_id)
         if location is not None:
             self.config = location
-        self.store.remove_by_id(entry.id, new_status="cancelled")
+        _removed, moved_up = self.store.remove_by_id(entry.id, new_status="cancelled")
         self.store.clear_conversation(phone)
-        return MaitreDReply(
+        reply = MaitreDReply(
             text=(f"Done — you've been removed from the queue at "
                   f"{self.config.display_name()} (you were #{entry.queue_number}). "
                   "Message \"book\" any time to rejoin."),
             intent="cancel", action="cancelled", queue_number=entry.queue_number,
         )
+        for e in moved_up:
+            reply.outbound.append((
+                e.phone, f"You're now #{e.position} in line at {self.config.display_name()}.",
+            ))
+        return reply
 
     def _resolve_location_config(self, location_id: int) -> VenueConfig | None:
         """The specific location a given queue entry belongs to, looked up
@@ -279,10 +296,31 @@ class MaitreD:
             return "party_size"
         return None
 
-    def _ask_for(self, missing: str, vip) -> str:
+    def _match_location_reply(self, raw: str, prior_options: list[str]) -> VenueConfig | None:
+        """A number (e.g. "2") picks the branch at that position in the
+        numbered list we just showed -- deterministic, no name-typing
+        ambiguity. Falls back to free-text name/key matching so a guest
+        who names the branch unprompted (or ignores the number) still
+        works."""
+        stripped = raw.strip()
+        if prior_options and stripped.isdigit():
+            idx = int(stripped)
+            if 1 <= idx <= len(prior_options):
+                key = prior_options[idx - 1]
+                found = next((l for l in self.locations if l.branch_key == key), None)
+                if found is not None:
+                    return found
+        return match_location(self.locations, raw)
+
+    def _ask_for(self, missing: str, vip, location_options: list[str] | None = None) -> str:
         if missing == "location":
-            names = _join_or([l.branch_name for l in self.locations if l.accepts_reservations])
-            return f"Which branch would you like — {names}?"
+            names = []
+            for key in location_options or []:
+                loc = next((l for l in self.locations if l.branch_key == key), None)
+                if loc is not None:
+                    names.append(loc.branch_name)
+            numbered = "\n".join(f"{i}. {name}" for i, name in enumerate(names, start=1))
+            return f"Which branch would you like?\n{numbered}\nJust reply with the number."
         if missing == "name":
             return "Happy to add you to the queue! What name should I put it under?"
         if missing == "party_size":

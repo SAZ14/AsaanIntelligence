@@ -96,12 +96,13 @@ class Store:
 
     def insert_at_position(
         self, entry: QueueEntry, position: int, day_start: datetime,
-    ) -> QueueEntry:
+    ) -> tuple[QueueEntry, list[QueueEntry]]:
         """Staff-driven insert: pushes everyone already at `position` or
         later back by one, then places `entry` there. `position` is
         clamped into [1, current_count + 1] so an out-of-range number
         (e.g. "add 99 ...") just appends to the end instead of leaving a
-        gap or erroring."""
+        gap or erroring. Returns (new_entry, pushed_back) -- `pushed_back`
+        is everyone whose position moved, for the caller to notify."""
         from sqlalchemy import func
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
@@ -118,9 +119,9 @@ class Store:
                 MaitreDQueueEntry.status == "waiting",
             ).all()
             position = max(1, min(position, len(waiting) + 1))
-            for row in waiting:
-                if row.position >= position:
-                    row.position += 1
+            pushed_back = [row for row in waiting if row.position >= position]
+            for row in pushed_back:
+                row.position += 1
 
             new_row = MaitreDQueueEntry(
                 store_id=self.store_id, location_id=loc_id, branch_name=entry.branch_name,
@@ -132,12 +133,16 @@ class Store:
             db.add(new_row)
             db.commit()
             db.refresh(new_row)
-            return self._row_to_queue_entry(new_row)
+            for row in pushed_back:
+                db.refresh(row)
+            return self._row_to_queue_entry(new_row), [self._row_to_queue_entry(r) for r in pushed_back]
 
-    def _close_gap(self, db, row) -> None:
+    def _close_gap(self, db, row) -> list:
         """After `row` (already updated in-session, still holding its old
         position) leaves the "waiting" set, shifts everyone behind it at
-        the same location down by one so positions stay dense from 1."""
+        the same location down by one so positions stay dense from 1.
+        Returns the (still session-attached) ORM rows that were shifted,
+        for the caller to notify once committed."""
         from app.core.db import MaitreDQueueEntry
         behind = db.query(MaitreDQueueEntry).filter(
             MaitreDQueueEntry.store_id == self.store_id,
@@ -147,10 +152,13 @@ class Store:
         ).all()
         for r in behind:
             r.position -= 1
+        return behind
 
-    def admit_next(self, location_id: int | None) -> QueueEntry | None:
+    def admit_next(self, location_id: int | None) -> tuple[QueueEntry | None, list[QueueEntry]]:
         """Pops position 1 (the guest who's been waiting longest at the
-        front) -- the "restaurant has given them seating" action."""
+        front) -- the "restaurant has given them seating" action. Returns
+        (admitted_entry_or_None, moved_up) -- `moved_up` is everyone whose
+        position advanced, for the caller to notify."""
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
             row = db.query(MaitreDQueueEntry).filter(
@@ -159,15 +167,19 @@ class Store:
                 MaitreDQueueEntry.status == "waiting",
             ).order_by(MaitreDQueueEntry.position).first()
             if not row:
-                return None
-            self._close_gap(db, row)
+                return None, []
+            moved_up = self._close_gap(db, row)
             row.status = "admitted"
             row.admitted_at = datetime.utcnow()
             db.commit()
             db.refresh(row)
-            return self._row_to_queue_entry(row)
+            for r in moved_up:
+                db.refresh(r)
+            return self._row_to_queue_entry(row), [self._row_to_queue_entry(r) for r in moved_up]
 
-    def remove_at_position(self, location_id: int | None, position: int) -> QueueEntry | None:
+    def remove_at_position(
+        self, location_id: int | None, position: int,
+    ) -> tuple[QueueEntry | None, list[QueueEntry]]:
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
             row = db.query(MaitreDQueueEntry).filter(
@@ -177,14 +189,18 @@ class Store:
                 MaitreDQueueEntry.position == position,
             ).first()
             if not row:
-                return None
-            self._close_gap(db, row)
+                return None, []
+            moved_up = self._close_gap(db, row)
             row.status = "removed"
             db.commit()
             db.refresh(row)
-            return self._row_to_queue_entry(row)
+            for r in moved_up:
+                db.refresh(r)
+            return self._row_to_queue_entry(row), [self._row_to_queue_entry(r) for r in moved_up]
 
-    def remove_by_id(self, entry_id: int, new_status: str = "cancelled") -> QueueEntry | None:
+    def remove_by_id(
+        self, entry_id: int, new_status: str = "cancelled",
+    ) -> tuple[QueueEntry | None, list[QueueEntry]]:
         """Guest-initiated leave ("cancel") -- looked up by row id, not
         position, since the guest doesn't know or care about their numeric
         slot."""
@@ -196,12 +212,14 @@ class Store:
                 MaitreDQueueEntry.status == "waiting",
             ).first()
             if not row:
-                return None
-            self._close_gap(db, row)
+                return None, []
+            moved_up = self._close_gap(db, row)
             row.status = new_status
             db.commit()
             db.refresh(row)
-            return self._row_to_queue_entry(row)
+            for r in moved_up:
+                db.refresh(r)
+            return self._row_to_queue_entry(row), [self._row_to_queue_entry(r) for r in moved_up]
 
     def latest_waiting_entry_for(self, phone: str) -> QueueEntry | None:
         from app.core.db import SessionLocal, MaitreDQueueEntry

@@ -73,13 +73,41 @@ def format_queue(store_id: int) -> str:
     return "\n".join(lines)
 
 
+def _restaurant_name(store_id: int) -> str:
+    return VenueConfig.load(store_id).name
+
+
+def _display_for(store_name: str, branch_name: str) -> str:
+    return f"{store_name} ({branch_name})" if branch_name else store_name
+
+
+def _notify_position_changes(store_id: int, store_name: str, shifted: list[QueueEntry]) -> None:
+    """Every guest whose position moved (a queue mutation upstream of
+    this) gets told their new spot in a short WhatsApp message."""
+    if not shifted:
+        return
+    from app.core.outbound import send_from_store
+    for e in shifted:
+        send_from_store(
+            store_id, e.phone,
+            f"You're now #{e.position} in line at {_display_for(store_name, e.branch_name)}.",
+        )
+
+
 def admit_next_in_queue(store_id: int, rest: str = "") -> str:
     location_id, _, error = _resolve_queue_location(store_id, rest)
     if error:
         return error
-    entry = Store(store_id).admit_next(location_id)
+    entry, moved_up = Store(store_id).admit_next(location_id)
     if entry is None:
         return "The queue is empty — nobody to admit."
+    store_name = _restaurant_name(store_id)
+    from app.core.outbound import send_from_store
+    send_from_store(
+        store_id, entry.phone,
+        f"You're being seated now at {_display_for(store_name, entry.branch_name)}. Enjoy your meal!",
+    )
+    _notify_position_changes(store_id, store_name, moved_up)
     return f"Admitted #{entry.queue_number}: {entry.name or entry.phone}, party {entry.party_size}."
 
 
@@ -91,9 +119,10 @@ def remove_queue_position(store_id: int, rest: str) -> str:
     if not parts or not parts[0].isdigit():
         return "Usage: remove <position> — e.g. \"remove 3\"."
     position = int(parts[0])
-    entry = Store(store_id).remove_at_position(location_id, position)
+    entry, moved_up = Store(store_id).remove_at_position(location_id, position)
     if entry is None:
         return f"No one at position {position} right now. Say \"queue\" to see the live order."
+    _notify_position_changes(store_id, _restaurant_name(store_id), moved_up)
     return (f"Removed #{entry.queue_number}: {entry.name or entry.phone} from "
             f"position {position}. The queue has moved up.")
 
@@ -131,7 +160,8 @@ def insert_queue_position(store_id: int, rest: str) -> str:
 
     entry = QueueEntry(phone=phone, name=name, party_size=party, location_id=location_id or 0, branch_name=branch_name)
     day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    saved = Store(store_id).insert_at_position(entry, position, day_start=day_start)
+    saved, pushed_back = Store(store_id).insert_at_position(entry, position, day_start=day_start)
+    _notify_position_changes(store_id, _restaurant_name(store_id), pushed_back)
     return f"Added {name} (party {party}) at position {saved.position}, booking #{saved.queue_number}."
 
 
