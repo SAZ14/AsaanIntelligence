@@ -192,7 +192,24 @@ class MaitreD:
         if parsed.party_size:
             slots["party_size"] = parsed.party_size
         if parsed.when:
-            slots["when"] = parsed.when.isoformat()
+            # A follow-up that names only a TIME ("move it to 9pm", with no
+            # weekday/today/tomorrow/explicit date) still parses to *some*
+            # concrete date (today or tomorrow, whichever the parser
+            # defaults to) -- confirmed live: naively overwriting the
+            # whole slot on a modify silently moved a guest's Saturday
+            # booking to today just because they only mentioned the time.
+            # Keep the date already on file and only replace the time in
+            # that case; a message that actually names a date still
+            # replaces the slot outright.
+            from app.agents.maitre_d.nlu import mentions_date
+            if (slots.get("when") and not parsed.date_only
+                    and not mentions_date(parsed.raw, self._now())):
+                old_when = datetime.fromisoformat(slots["when"])
+                slots["when"] = parsed.when.replace(
+                    year=old_when.year, month=old_when.month, day=old_when.day,
+                ).isoformat()
+            else:
+                slots["when"] = parsed.when.isoformat()
             slots["date_only"] = parsed.date_only
         if parsed.name:
             slots["name"] = parsed.name

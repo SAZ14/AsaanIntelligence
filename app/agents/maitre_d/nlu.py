@@ -60,6 +60,18 @@ class ParsedMessage:
     raw: str = ""
 
 
+def mentions_date(text: str, now: datetime | None = None) -> bool:
+    """Whether `text` names an actual date (weekday, today/tomorrow, an
+    explicit day/month) as opposed to only a time. Used by the booking
+    flow to tell "move it to 9pm" (time only -- keep the existing date)
+    apart from "move it to Saturday 9pm" (both -- replace outright).
+    Independent of which parser (LLM or fallback) produced the
+    ParsedMessage, since either way a bare time mention still resolves to
+    *some* concrete date (today/tomorrow) that a caller shouldn't mistake
+    for an explicit choice."""
+    return _extract_date(text.lower(), now or datetime.now()) is not None
+
+
 def parse_message(
     text: str, *, now: datetime | None = None, client=None,
 ) -> ParsedMessage:

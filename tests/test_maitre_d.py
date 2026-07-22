@@ -369,6 +369,31 @@ class TestModify:
         old = md.store.get_reservation(r1.reservation_id)
         assert old.status == "cancelled"
 
+    def test_time_only_modify_keeps_the_original_date(self, store_id):
+        """"move it to 9pm" names no date -- confirmed live this used to
+        silently reset the booking to TODAY's date (whatever the parser
+        defaults a bare time mention to) instead of keeping the Friday
+        the guest originally booked. Only the time should change."""
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
+        r2 = md.handle_message(PHONE, "move it to 9pm")
+        assert r2.action == "booked"
+        new = md.store.get_reservation(r2.reservation_id)
+        assert new.when.date() == FRIDAY_8PM.date()
+        assert new.when.hour == 21
+
+    def test_modify_naming_a_new_date_still_replaces_it(self, store_id):
+        """Contrast case: a modify that DOES name a date must still
+        replace the slot outright, not be treated as time-only."""
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "table for 2 friday 8pm, it's Ahmed")
+        saturday = FRIDAY_8PM + timedelta(days=1)
+        r2 = md.handle_message(PHONE, f"move it to {saturday.strftime('%A')} 9pm")
+        assert r2.action == "booked"
+        new = md.store.get_reservation(r2.reservation_id)
+        assert new.when.date() == saturday.date()
+        assert new.when.hour == 21
+
     def test_modify_without_booking_is_graceful(self, store_id):
         md = _md(store_id)
         r = md.handle_message(PHONE, "move it to 9pm")
