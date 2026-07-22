@@ -78,3 +78,29 @@ def send_from_store(store_id: int, to: str, body: str) -> bool:
     send_fn(to, body)
     logger.info("outbound: store=%d provider=%s to=...%s", store_id, provider, _digits(to)[-4:])
     return True
+
+
+def notify_staff(store_id: int, message: str) -> int:
+    """Push a proactive alert to every registered staff/owner number for
+    this store -- used for events staff need to know about without asking
+    (a VIP just booked, a high no-show-risk hold, a no-show at the door).
+    Returns how many numbers it reached; best-effort, a failed send to one
+    staff member doesn't block the others."""
+    from app.core.db import SessionLocal, StoreMember
+
+    with SessionLocal() as db:
+        numbers = [
+            m.whatsapp for m in
+            db.query(StoreMember).filter(StoreMember.store_id == store_id).all()
+        ]
+    sent = 0
+    for number in numbers:
+        try:
+            if send_from_store(store_id, number, message):
+                sent += 1
+        except Exception:
+            logger.warning(
+                "notify_staff: failed to alert store=%d to=...%s",
+                store_id, _digits(number)[-4:],
+            )
+    return sent

@@ -23,6 +23,10 @@ _REVENUE_KEYWORDS = {
     "trend", "growth", "segment", "analyse", "analyze",
     "upsell", "campaign", "campaigns", "menu", "pricing",
 }
+_MAITRE_D_KEYWORDS = {
+    "table", "reservation", "reservations", "reserve", "book", "booking",
+    "waitlist", "vip", "vips",
+}
 
 
 def classify_agent(text: str) -> str | None:
@@ -30,6 +34,8 @@ def classify_agent(text: str) -> str | None:
     words = set(re.sub(r"[^\w\s]", "", text.lower()).split())
     if words & _SCOUT_KEYWORDS:
         return "scout"
+    if words & _MAITRE_D_KEYWORDS:
+        return "maitre_d"
     if words & _INTEGRITY_KEYWORDS:
         return "integrity"
     if words & _REVENUE_KEYWORDS:

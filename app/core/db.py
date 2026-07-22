@@ -454,6 +454,122 @@ class CustomerChatSession(Base):
 
 
 # ---------------------------------------------------------------------------
+# Maitre D agent (reservations, waitlist, no-show/VIP handling)
+# ---------------------------------------------------------------------------
+# Ported from the standalone maitre-d-agent branch (single-tenant SQLite,
+# its own FastAPI app) into this server's shared, store_id-partitioned
+# Postgres schema -- same pattern as every other agent's tables here.
+
+class MaitreDVenueConfig(Base):
+    """Per-store reservation settings -- one row per store, sensible
+    defaults applied in code (app/agents/maitre_d/config.py) for any store
+    without a row yet, same pattern as POSConnection/RevenueConnection."""
+    __tablename__ = "maitre_d_venue_config"
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, unique=True)
+    timezone = Column(String, nullable=False, default="Asia/Karachi")
+    tables = Column(JSON, default=list)              # [[table_id, seats], ...]
+    service_windows = Column(JSON, default=list)      # [[label, open_hour, last_seating_hour], ...]
+    turn_time_minutes = Column(Integer, default=90)
+    large_party_turn_minutes = Column(Integer, default=120)
+    large_party_threshold = Column(Integer, default=6)
+    max_party_size = Column(Integer, default=12)
+    currency = Column(String, default="PKR")
+    deposit_amount = Column(Integer, default=1000)
+    offer_ttl_minutes = Column(Integer, default=15)
+    no_show_grace_minutes = Column(Integer, default=30)
+    reminder_lead_hours = Column(Integer, default=24)
+    conversation_ttl_minutes = Column(Integer, default=180)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MaitreDVip(Base):
+    """A store's manually-curated VIP list, phone -> profile. Replaces the
+    original branch's config-file dict so staff can manage it live."""
+    __tablename__ = "maitre_d_vips"
+    __table_args__ = (UniqueConstraint("store_id", "phone"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    phone = Column(String, nullable=False)   # normalised E.164, no "whatsapp:" prefix
+    name = Column(String, default="")
+    tier = Column(String, default="vip")     # "vip" | "regular" | "press" | "owner_friend" ...
+    notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MaitreDGuest(Base):
+    __tablename__ = "maitre_d_guests"
+    __table_args__ = (UniqueConstraint("store_id", "phone"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    phone = Column(String, nullable=False)
+    name = Column(String, default="")
+    vip_tier = Column(String, default="")
+    vip_notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MaitreDReservation(Base):
+    __tablename__ = "maitre_d_reservations"
+
+    id = Column(Integer, primary_key=True)
+    reservation_uid = Column(String, unique=True, nullable=False)  # "res_xxxxxxxxxxxx", staff-typeable
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    phone = Column(String, nullable=False)
+    name = Column(String, default="")
+    party_size = Column(Integer, nullable=False)
+    when_at = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False, default="confirmed")
+    table_id = Column(String, default="")
+    is_vip = Column(Boolean, default=False)
+    vip_tier = Column(String, default="")
+    no_show_risk = Column(Float, default=0.0)
+    no_show_band = Column(String, default="low")
+    deposit_required = Column(Boolean, default=False)
+    deposit_paid = Column(Boolean, default=False)
+    payment_ref = Column(String, default="")
+    reminder_sent = Column(Boolean, default=False)
+    special_requests = Column(Text, default="")
+    source = Column(String, default="whatsapp")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MaitreDWaitlist(Base):
+    __tablename__ = "maitre_d_waitlist"
+
+    id = Column(Integer, primary_key=True)
+    waitlist_uid = Column(String, unique=True, nullable=False)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    phone = Column(String, nullable=False)
+    name = Column(String, default="")
+    party_size = Column(Integer, nullable=False)
+    requested_when = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False, default="waiting")
+    is_vip = Column(Boolean, default=False)
+    vip_tier = Column(String, default="")
+    offered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MaitreDConversation(Base):
+    """Slot-filling state for an in-progress booking, per store+phone --
+    separate from the staff/customer chat-session history tables since this
+    holds structured flow state (which slots are filled), not a message
+    transcript."""
+    __tablename__ = "maitre_d_conversations"
+    __table_args__ = (UniqueConstraint("store_id", "phone"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    phone = Column(String, nullable=False)
+    state = Column(JSON, default=dict)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

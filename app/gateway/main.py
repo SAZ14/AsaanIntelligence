@@ -569,6 +569,14 @@ _REVIEW_KEYWORDS = {
 # integrity one; it was giving a "running your POS audit" ack immediately
 # before a revenue-advice reply, which read as a mismatched non-sequitur.
 _REVENUE_KEYWORDS = {"revenue", "sales", "strategy", "upsell", "growth", "pricing", "campaign"}
+# Shared by both the guest-facing booking route (gateway/customer.py) and
+# the staff-facing reservations/door route (gateway/internal.py's
+# continuity safety net) -- one keyword set, reused everywhere "is this
+# message about reservations" needs a cheap deterministic answer.
+_MAITRE_D_KEYWORDS = {
+    "table", "reservation", "reservations", "reserve", "book", "booking",
+    "waitlist", "no-show", "noshow", "vip", "vips",
+}
 
 
 def _internal_ack(body: str) -> str:
@@ -1508,6 +1516,38 @@ async def meta_webhook(request: Request, background_tasks: BackgroundTasks) -> J
 
     # Always 200: Meta retries and eventually disables webhooks that error.
     return JSONResponse({"status": "ok"})
+
+
+# ── Maitre D deposit payment webhook ────────────────────────────────────────
+#
+# NOTE: no real payment gateway is wired anywhere in this codebase yet --
+# app.agents.maitre_d.payments.StubPaymentProvider issues fake checkout
+# links, and this endpoint is what a real gateway's webhook would call once
+# one exists. Until then it's reachable for manual testing (confirming a
+# deposit hold) but nothing calls it automatically.
+
+@app.post("/maitre_d/payment_webhook/{store_id}")
+async def maitre_d_payment_webhook(store_id: int, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = dict(await request.form())
+
+    from app.agents.maitre_d.agent import get_maitre_d
+    from app.core.outbound import send_from_store
+
+    try:
+        md = get_maitre_d(store_id)
+        reply = md.handle_payment_webhook(payload)
+    except Exception as exc:
+        logger.error("maitre_d.payment_webhook: store=%d failed: %s", store_id, exc)
+        return JSONResponse({"ok": False}, status_code=500)
+
+    if reply is None:
+        return JSONResponse({"ok": False, "confirmed": False})
+    for phone, text in reply.outbound:
+        send_from_store(store_id, phone, text)
+    return JSONResponse({"ok": True, "confirmed": True, "reservation_id": reply.reservation_id})
 
 
 # ── Integrity PDF report ───────────────────────────────────────────────────────
