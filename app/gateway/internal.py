@@ -431,7 +431,7 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         logger.info("internal.routing: store=%d agent=maitre_d trigger=door from=%s", store_id, from_number)
         reply = door_reply
 
-    elif text.lower().strip() in ("waitlist", "vip", "vips", "vip list"):
+    elif text.lower().strip() in ("waitlist", "vip", "vips", "vip list", "reservations", "bookings"):
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=listing from=%s", store_id, from_number)
         reply = _maitre_d_listing(store_id, text.lower().strip())
