@@ -132,6 +132,16 @@ class TestDashboardAuth:
         assert r.status_code == 200
         assert "Dashboard Test Cafe" in r.text
 
+    def test_owner_role_still_displays_as_staff(self, client, store_id):
+        """The dashboard never surfaces the DB's owner/manager/staff role
+        distinction to the person signed in -- STAFF_PHONE is seeded with
+        role="owner" (see the store_id fixture), but the page must always
+        say "(staff)", never "(owner)"."""
+        _login(client, store_id)
+        r = client.get("/dashboard/queue")
+        assert "Signed in (staff)" in r.text
+        assert "(owner)" not in r.text
+
     def test_multi_store_staff_is_asked_to_choose(self, client, store_id):
         chain_id = seed_chain("Second Chain")
         store_b = seed_store(chain_id, name="Second Cafe")

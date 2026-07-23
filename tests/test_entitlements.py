@@ -287,3 +287,94 @@ class TestCronEntitlementFiltering:
         )
         md_agent.run_maitre_d_maintenance_all()
         assert called == []
+
+
+# ── LLM router only ever proposes a licensed agent ───────────────────────────
+# ZAI_API_KEY="" in the test environment (see conftest.py), so get_client()
+# always raises and _classify_with_llm falls to its keyword fallback --
+# exactly the path these tests exercise. The LLM-prompt-restriction
+# behavior itself (the `restriction` string built into the system prompt)
+# is verified directly against the mocked client below.
+
+class TestLLMRouterEntitlementAwareness:
+    def test_keyword_fallback_never_returns_a_disallowed_agent(self):
+        from app.gateway.internal import _classify_with_llm
+        # "pricing strategy" keyword-classifies as revenue (see
+        # app.core.routing._REVENUE_KEYWORDS) -- with only integrity
+        # licensed, it must come back as integrity instead.
+        agent, _ = _classify_with_llm("what's our pricing strategy", licensed_agents={"integrity"})
+        assert agent == "integrity"
+
+    def test_keyword_fallback_picks_an_allowed_non_integrity_agent_when_integrity_isnt_licensed(self):
+        from app.gateway.internal import _classify_with_llm
+        agent, _ = _classify_with_llm("random unclassifiable message", licensed_agents={"scout"})
+        assert agent == "scout"
+
+    def test_full_package_leaves_classification_unconstrained(self):
+        """licensed_agents=None (or the full set) must behave exactly as
+        before -- no regression for the common, fully-licensed case."""
+        from app.gateway.internal import _classify_with_llm, _ROUTABLE_AGENTS
+        agent, _ = _classify_with_llm("what's our pricing strategy", licensed_agents=None)
+        assert agent == "revenue"
+        agent2, _ = _classify_with_llm("what's our pricing strategy", licensed_agents=_ROUTABLE_AGENTS)
+        assert agent2 == "revenue"
+
+    def test_system_prompt_carries_the_restriction_when_package_is_narrowed(self):
+        from unittest.mock import MagicMock, patch
+        from app.gateway.internal import _classify_with_llm
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="integrity/summary")),
+        ]
+        with patch("app.core.llm.get_client", return_value=fake_client), \
+             patch("app.core.llm.get_fast_model", return_value="fast-model"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            _classify_with_llm("how are we doing", licensed_agents={"integrity", "maitre_d"})
+        sent_messages = fake_client.chat.completions.create.call_args.kwargs["messages"]
+        system_msg = sent_messages[0]["content"]
+        assert "only includes these agents" in system_msg
+        assert "integrity" in system_msg and "maitre_d" in system_msg
+
+    def test_system_prompt_has_no_restriction_for_a_full_package(self):
+        from unittest.mock import MagicMock, patch
+        from app.gateway.internal import _classify_with_llm, _ROUTABLE_AGENTS
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="integrity/summary")),
+        ]
+        with patch("app.core.llm.get_client", return_value=fake_client), \
+             patch("app.core.llm.get_fast_model", return_value="fast-model"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            _classify_with_llm("how are we doing", licensed_agents=_ROUTABLE_AGENTS)
+        sent_messages = fake_client.chat.completions.create.call_args.kwargs["messages"]
+        assert "only includes these agents" not in sent_messages[0]["content"]
+
+    def test_model_ignoring_the_restriction_still_falls_back_to_keyword_routing(self):
+        """If the LLM names a disallowed agent anyway (rare, but the model
+        isn't guaranteed to follow instructions), _classify_with_llm must
+        not return it -- it should fall through to the keyword fallback,
+        which is itself also constrained."""
+        from unittest.mock import MagicMock, patch
+        from app.gateway.internal import _classify_with_llm
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="revenue/general")),
+        ]
+        with patch("app.core.llm.get_client", return_value=fake_client), \
+             patch("app.core.llm.get_fast_model", return_value="fast-model"), \
+             patch("app.core.llm.nothink_kwargs", return_value={}):
+            agent, _ = _classify_with_llm("what's our pricing strategy", licensed_agents={"integrity"})
+        assert agent == "integrity"
+
+    def test_end_to_end_via_handle_internal_for_store_never_says_not_licensed_when_an_alternative_exists(self, store_id):
+        """A revenue-shaped natural-language question, on a store licensed
+        for integrity only, must get an actual (integrity) answer, not a
+        "not included in your plan" bounce -- there IS a licensed agent
+        available, it's just not the one the message would naively match."""
+        set_store_agents(store_id, {"integrity"})
+        from app.gateway.internal import handle_internal_for_store
+        reply = handle_internal_for_store(STAFF_PHONE, "what's our pricing strategy", store_id)
+        assert "plan" not in reply.lower()

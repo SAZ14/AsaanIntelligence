@@ -253,19 +253,50 @@ def _is_shorthand(text: str) -> bool:
     )
 
 
-def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[str, str]:
-    """Return (agent, command) via ZAI. Falls back to keyword routing."""
+# The 5 agents this router can actually name as a route (distinct from
+# app.core.entitlements.AGENT_NAMES, which also includes "customer" --
+# never a staff-routing target here).
+_ROUTABLE_AGENTS = {"integrity", "revenue", "reputation", "scout", "maitre_d"}
+
+
+def _classify_with_llm(
+    text: str, history: list[dict] | None = None, licensed_agents: set[str] | None = None,
+) -> tuple[str, str]:
+    """Return (agent, command) via ZAI. Falls back to keyword routing.
+
+    licensed_agents (this store's package, see app.core.entitlements) --
+    when it's a PROPER SUBSET of _ROUTABLE_AGENTS, the classifier is told
+    to only ever choose among those, so a restricted-package store's
+    ambiguous query naturally lands on the closest AVAILABLE agent instead
+    of naming one it doesn't have. This is a UX improvement, not the
+    security boundary -- every per-agent wrapper below (_integrity,
+    _revenue, etc.) independently refuses to run a disallowed agent
+    regardless of what this function returns (see _require_agent), so a
+    model that ignores this instruction (or the keyword fallback landing
+    on a disallowed agent) is still safely caught, just less helpfully."""
+    allowed = (licensed_agents & _ROUTABLE_AGENTS) if licensed_agents is not None else _ROUTABLE_AGENTS
     try:
         from app.core.llm import get_client, get_fast_model, nothink_kwargs
         client = get_client()
         fast_model = get_fast_model()
 
+        restriction = ""
+        if allowed != _ROUTABLE_AGENTS:
+            restriction = (
+                "\nIMPORTANT: this restaurant's plan only includes these agents: "
+                f"{', '.join(sorted(allowed)) if allowed else 'none'}. You MUST choose "
+                "a route belonging to ONLY one of those agents, even when a different "
+                "agent would otherwise be the closer match -- pick whichever allowed "
+                "agent comes closest instead.\n"
+            )
+
         # FIX: hardcoded system prompt for message router -> store in module or config
         system = (
             "You are a message router for a restaurant management AI.\n"
             "A staff member sent a WhatsApp message — it may be English, Urdu, or Roman Urdu. Route by meaning.\n"
-            "Reply with EXACTLY one route in the format agent/command — nothing else, no punctuation.\n\n"
-            "ROUTES:\n"
+            "Reply with EXACTLY one route in the format agent/command — nothing else, no punctuation.\n"
+            f"{restriction}"
+            "\nROUTES:\n"
             "integrity/summary   – executive overview, general performance, 'how did we do', full audit\n"
             "integrity/leakage   – theft, voids, comps, discount abuse, missing cash, suspicious transactions\n"
             "integrity/profit    – margins, COGS, cost breakdown, gross profit (NOT growth strategy)\n"
@@ -362,15 +393,26 @@ def _classify_with_llm(text: str, history: list[dict] | None = None) -> tuple[st
             agent, command = result.split("/", 1)
             agent = agent.strip()
             command = command.strip()
-            if agent in ("integrity", "revenue", "reputation", "scout", "maitre_d"):
+            if agent in allowed:
                 logger.info("internal.llm_classify: agent=%s command=%s", agent, command)
                 return agent, command
+            # The model named a real agent, just not one this store is
+            # licensed for (despite the added instruction) -- fall through
+            # to the keyword fallback below rather than returning it, since
+            # _require_agent would just refuse it anyway with no chance to
+            # try a better-fitting available agent first.
+            logger.info(
+                "internal.llm_classify: agent=%s not licensed (allowed=%s) — keyword fallback",
+                agent, sorted(allowed),
+            )
     except Exception as exc:
         logger.warning("internal.llm_classify: failed (%s) — keyword fallback", exc)
 
     # Keyword fallback
     from app.core.routing import classify_agent
     agent = classify_agent(text) or "integrity"
+    if agent not in allowed:
+        agent = "integrity" if "integrity" in allowed else next(iter(sorted(allowed)), "integrity")
     first = text.lower().split()[0] if text else ""
     return agent, first
 
@@ -503,8 +545,11 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         reply = _maitre_d_add_vip(store_id, text.split(None, 2)[2] if len(text.split(None, 2)) > 2 else "")
 
     else:
-        # LLM classification
-        agent, command = _classify_with_llm(text, history=history)
+        # LLM classification, constrained to this store's own package (see
+        # _classify_with_llm's docstring -- the wrapper-level guards below
+        # are the actual security boundary regardless of this).
+        from app.core.entitlements import get_store_agents
+        agent, command = _classify_with_llm(text, history=history, licensed_agents=get_store_agents(store_id))
 
         # Continuity safety net: a short, keyword-free continuation
         # ("draft a reply I can send them") has been confirmed live to
