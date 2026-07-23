@@ -1151,8 +1151,10 @@ def _check_reviews(store_id: int, store_name: str) -> str:
 
 def _active_store_ids() -> list[int]:
     from app.core.db import SessionLocal, Store
+    from app.core.entitlements import filter_entitled
     with SessionLocal() as db:
-        return [s.id for s in db.query(Store).all()]
+        store_ids = [s.id for s in db.query(Store).all()]
+    return filter_entitled(store_ids, "reputation")
 
 
 # Bounded worker count for run_reputation_check_all()'s cron loop -- kept

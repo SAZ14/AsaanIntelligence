@@ -158,25 +158,40 @@ def _handle_booking(from_phone: str, body: str, store_id: int) -> str:
 
 
 def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
-    """Invoke the customer agent for a known store. Returns reply text."""
+    """Invoke the customer agent for a known store. Returns reply text.
+
+    Both branches below are gated by this store's package (see
+    app.core.entitlements) -- a guest whose store hasn't licensed maitre_d
+    or the community agent gets no reply at all rather than a partial or
+    confusing one (see main.py's `if reply:` guard around the caller: an
+    empty/falsy return here sends nothing back)."""
     try:
-        from app.agents.maitre_d.config import is_booking_enabled
+        from app.core.entitlements import has_agent_access
 
         text = (body or "").strip()
-        active_flow = _has_active_booking_flow(store_id, from_phone)
-        wants_cancel = _is_cancel_message(text)
-        wants_modify = _wants_to_modify_queue_entry(store_id, from_phone, text)
-        # A fresh trigger only starts a flow when booking is actually
-        # switched on -- staff's "disable booking" for a quiet walk-in day
-        # (see internal.py). Deliberately checked ONLY for the fresh-start
-        # case: an already-active flow finishes even if staff flip the
-        # toggle mid-conversation (less confusing than abandoning a guest
-        # partway through), and "cancel"/"modify" always work regardless
-        # (neither can create a queue entry, see their own docstrings).
-        wants_new_booking = _is_booking_trigger(text) and is_booking_enabled(store_id)
 
-        if active_flow or wants_cancel or wants_modify or wants_new_booking:
-            return _handle_booking(from_phone, text, store_id)
+        # maitre_d (the walk-in queue) is only even considered if this
+        # store's package includes it -- otherwise none of the booking-
+        # related triggers below (including "Join the Queue" itself) are
+        # allowed to start or continue a flow, exactly as if the queue
+        # feature didn't exist for this store at all.
+        if has_agent_access(store_id, "maitre_d"):
+            from app.agents.maitre_d.config import is_booking_enabled
+
+            active_flow = _has_active_booking_flow(store_id, from_phone)
+            wants_cancel = _is_cancel_message(text)
+            wants_modify = _wants_to_modify_queue_entry(store_id, from_phone, text)
+            # A fresh trigger only starts a flow when booking is actually
+            # switched on -- staff's "disable booking" for a quiet walk-in day
+            # (see internal.py). Deliberately checked ONLY for the fresh-start
+            # case: an already-active flow finishes even if staff flip the
+            # toggle mid-conversation (less confusing than abandoning a guest
+            # partway through), and "cancel"/"modify" always work regardless
+            # (neither can create a queue entry, see their own docstrings).
+            wants_new_booking = _is_booking_trigger(text) and is_booking_enabled(store_id)
+
+            if active_flow or wants_cancel or wants_modify or wants_new_booking:
+                return _handle_booking(from_phone, text, store_id)
 
         # Not a recognised booking trigger (including a disabled "Join the
         # Queue", or plain text like "book"/"table for 2" typed by someone
@@ -185,6 +200,8 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         # maitre_d doesn't handle. No "booking is off" reply; the guest
         # never needs to know the queue exists at all if they didn't scan
         # the right QR.
+        if not has_agent_access(store_id, "customer"):
+            return ""
         from app.agents.customer.agents.community_customer import handle_customer_message
         reply = handle_customer_message(from_phone, body, store_id=store_id)
         return reply.body

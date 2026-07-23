@@ -474,6 +474,13 @@ def _bg_scout(store_id: int, from_number: str, send_fn, body: str, ack: str | No
     _reraise – propagate failures instead of apologising; the durable job
                queue uses this so failed jobs get retried before giving up.
     """
+    from app.core.entitlements import has_agent_access, not_licensed_message
+    if not has_agent_access(store_id, "scout"):
+        # Defense in depth -- every enqueue site already checks this before
+        # dispatching here, but a durable job replayed after a package
+        # downgrade should still refuse to run, not just the original request.
+        send_fn(not_licensed_message("scout"))
+        return
     if ack:
         send_fn(ack)
     from app.agents.scout.analysis import classify_intent
@@ -529,6 +536,10 @@ def _bg_scout_cached_only(store_id: int, from_number: str, send_fn, body: str, a
     guaranteed-fail call against an account that's already rate-limited.
     answer_from_cache() serves whatever's on record however old, same as
     the natural-language fallback in gateway/internal.py's _scout()."""
+    from app.core.entitlements import has_agent_access, not_licensed_message
+    if not has_agent_access(store_id, "scout"):
+        send_fn(not_licensed_message("scout"))
+        return
     if ack:
         send_fn(ack)
     from app.agents.scout.pipeline import answer_from_cache
@@ -880,7 +891,13 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
 
     # Reputation action commands work regardless of session state — owners reply
     # to review alerts from any context and must not hit the mode-selection screen.
-    if first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body.split()) > 1):
+    # Gated on entitlement: if not licensed, don't shortcut -- fall through to
+    # the normal flow below, whose eventual internal.py dispatch is itself
+    # guarded and returns the correct "not licensed" reply if this really was
+    # a reputation-shaped message.
+    from app.core.entitlements import has_agent_access
+    if (first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body.split()) > 1)) \
+            and has_agent_access(store_id, "reputation"):
         logger.info("gateway.webhook: reputation_action=%s store=%d from=%s", first_word, store_id, from_number)
         from app.agents.reputation import process_reputation_owner_reply
         reply = process_reputation_owner_reply(from_number, body, store_id=store_id)
@@ -902,7 +919,10 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
         logger.info("gateway.webhook: store=%d mode=internal from=%s", store_id, from_number)
 
         # Scout is long-running (7-45 min, confirmed live) — dispatch async, return immediate ack
-        if _is_scout_message(body):
+        # Gated on entitlement, same reasoning as the reputation shortcut above:
+        # if not licensed, skip this whole fast path and fall through to the
+        # guarded general dispatch instead of a store-specific early return.
+        if _is_scout_message(body) and has_agent_access(store_id, "scout"):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
             from app.core import cache as _cache
@@ -985,7 +1005,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
             )
 
         # Reputation check — serve cache hit via TwiML instantly (same pattern as scout)
-        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")):
+        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")) and has_agent_access(store_id, "reputation"):
             from app.agents.reputation import check_reputation_cache
             hit, cached_text = check_reputation_cache(store_id, store_name)
             if hit:
@@ -1110,7 +1130,9 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
         background_tasks.add_task(send_fn, _mode_menu(store_name))
         return "ok"
 
-    if first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body_text.split()) > 1):
+    from app.core.entitlements import has_agent_access
+    if (first_word in ("post", "ignore", "done", "exit") or (first_word == "edit" and len(body_text.split()) > 1)) \
+            and has_agent_access(store_id, "reputation"):
         logger.info("%s: reputation_action=%s store=%d from=%s", log_prefix, first_word, store_id, from_number)
         def _do_reputation_action() -> None:
             from app.agents.reputation import process_reputation_owner_reply
@@ -1137,7 +1159,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
         if typing_fn:
             background_tasks.add_task(typing_fn)
 
-        if _is_scout_message(body_text):
+        if _is_scout_message(body_text) and has_agent_access(store_id, "scout"):
             from app.core.db import SessionLocal, ScoutRun as Run
             from datetime import datetime, timedelta
             from app.core import cache as _cache
@@ -1213,7 +1235,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
             return "ok"
 
         # Reputation cache check
-        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")):
+        if any(kw in cmd for kw in ("check", "scrape", "crawl", "sync")) and has_agent_access(store_id, "reputation"):
             from app.agents.reputation import check_reputation_cache
             hit, cached_text = check_reputation_cache(store_id, store_name)
             if hit:
@@ -1532,6 +1554,9 @@ async def meta_webhook(request: Request, background_tasks: BackgroundTasks) -> J
 
 @app.get("/report/{store_id}.pdf")
 async def integrity_pdf(store_id: int) -> Response:
+    from app.core.entitlements import has_agent_access
+    if not has_agent_access(store_id, "integrity"):
+        return Response(status_code=404, content="no POS configured for this store")
     from app.agents.integrity.service import get_service
     from app.agents.integrity.report.pdf import build_audit_pdf
     from app.agents.integrity.agents.integrity_agent import run_integrity_agent
@@ -1636,6 +1661,37 @@ async def remove_member(store_id: int, request: Request) -> JSONResponse:
     if deleted:
         return JSONResponse({"status": "removed", "count": deleted})
     return JSONResponse({"status": "not_found"}, status_code=404)
+
+
+@app.post("/admin/stores/{store_id}/agents", status_code=200)
+async def set_store_agents_endpoint(store_id: int, request: Request) -> JSONResponse:
+    """Sets a store's ENTIRE package in one shot -- body: {"agents": [...]}
+    from app.core.entitlements.AGENT_NAMES (integrity, revenue, scout,
+    reputation, maitre_d, customer). Replaces whatever was there before;
+    pass the full intended list every time, not a delta."""
+    from app.core.db import SessionLocal, Store
+    from app.core.entitlements import AGENT_NAMES, set_store_agents
+    params = await _parse_body(request)
+    agents = params.get("agents", [])
+    if not isinstance(agents, list):
+        return JSONResponse({"error": "agents must be a list"}, status_code=400)
+    invalid = set(agents) - AGENT_NAMES
+    if invalid:
+        return JSONResponse(
+            {"error": f"unknown agent(s): {sorted(invalid)}", "valid": sorted(AGENT_NAMES)},
+            status_code=400,
+        )
+    with SessionLocal() as db:
+        if not db.query(Store).filter(Store.id == store_id).first():
+            return JSONResponse({"error": "store not found"}, status_code=404)
+    set_store_agents(store_id, set(agents))
+    return JSONResponse({"status": "updated", "store_id": store_id, "agents": sorted(agents)})
+
+
+@app.get("/admin/stores/{store_id}/agents")
+async def get_store_agents_endpoint(store_id: int) -> JSONResponse:
+    from app.core.entitlements import get_store_agents
+    return JSONResponse({"store_id": store_id, "agents": sorted(get_store_agents(store_id))})
 
 
 @app.post("/admin/stores/{store_id}/locations", status_code=201)

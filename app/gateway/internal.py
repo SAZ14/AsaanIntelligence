@@ -20,7 +20,59 @@ _GREETINGS = {
 }
 
 
-def staff_help_text(store_name: str) -> str:
+_INTEGRITY_HELP = (
+    "*Integrity*: POS audit & leakage\n"
+    "  summary: full overview\n"
+    "  leakage: theft & voids breakdown\n"
+    "  profit: margins & COGS\n"
+    "  staff: per-staff anomalies\n"
+    "  daily / weekly: period report\n"
+    "  refresh: re-sync latest POS data\n\n"
+)
+_REVENUE_HELP = (
+    "*Revenue*: Sales & strategy\n"
+    "  revenue: overall sales performance\n"
+    "  sales: item & category breakdown\n"
+    "  pricing: price optimisation tips\n"
+    "  strategy: growth recommendations\n\n"
+)
+_SCOUT_HELP = (
+    "*Scout*: Competitor intelligence\n"
+    "  scout: scrape rivals (cached 24h)\n\n"
+)
+_REPUTATION_HELP = (
+    "*Reputation*: Review management\n"
+    "  check: scrape latest reviews (cached 24h)\n"
+    "  positive reviews / negative reviews / all reviews: list reviews, 10 at a time\n"
+    "  next: see the next 10\n"
+    "  post: mark suggested reply as replied (post it yourself first)\n"
+    "  ignore: skip current review\n"
+    "  edit <text>: rewrite suggested reply\n\n"
+)
+_MAITRE_D_HELP = (
+    "*Queue*: The live line & the door\n"
+    "  queue: who's waiting right now (all branches)\n"
+    "  vip list: your VIP guests\n"
+    "  branches: your locations and what they take\n"
+    "  add vip <phone> <name>[, notes]: add a VIP\n"
+    "  admit [at <branch>]: seat the next person in line\n"
+    "  remove <position> [at <branch>]: take someone out of the line\n"
+    "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n"
+    "  disable booking / enable booking: pause or resume guests joining the queue\n"
+    "  seated grace <minutes>: how long an admitted guest is blocked from rejoining (default 120)\n"
+    "  queue timeout <minutes>: how long an unclaimed queue spot is auto-released (default 90)\n\n"
+)
+
+_HELP_SECTIONS = (
+    ("integrity", _INTEGRITY_HELP),
+    ("revenue", _REVENUE_HELP),
+    ("scout", _SCOUT_HELP),
+    ("reputation", _REPUTATION_HELP),
+    ("maitre_d", _MAITRE_D_HELP),
+)
+
+
+def staff_help_text(store_name: str, store_id: int | None = None) -> str:
     """The one canonical staff-tools message -- shown after selecting mode 1,
     on a bare "help", and on any greeting. Previously main.py's mode-select
     welcome and this module's HELP_TEXT were two separate, drifting copies
@@ -29,41 +81,25 @@ def staff_help_text(store_name: str) -> str:
     handle_message() had its own "hi"/"hello" special case returning ONLY
     its own commands) instead of ever reaching either of them. One function,
     always the full command list across every agent (integrity, revenue,
-    scout, reputation, and reservations/maitre_d)."""
+    scout, reputation, and reservations/maitre_d) THIS STORE actually has
+    access to -- staff shouldn't be shown commands for agents outside their
+    package (store_id=None, used by a couple of tests/legacy callers, shows
+    every section -- real callers always pass store_id)."""
+    if store_id is None:
+        sections = "".join(text for _, text in _HELP_SECTIONS)
+    else:
+        from app.core.entitlements import has_agent_access
+        sections = "".join(
+            text for agent, text in _HELP_SECTIONS if has_agent_access(store_id, agent)
+        )
+    if not sections:
+        return (
+            f"Staff tools: {store_name}\n\n"
+            "No agents are included in your plan yet. Contact support to set up your package."
+        )
     return (
         f"Staff tools: {store_name}\n\n"
-        "*Integrity*: POS audit & leakage\n"
-        "  summary: full overview\n"
-        "  leakage: theft & voids breakdown\n"
-        "  profit: margins & COGS\n"
-        "  staff: per-staff anomalies\n"
-        "  daily / weekly: period report\n"
-        "  refresh: re-sync latest POS data\n\n"
-        "*Revenue*: Sales & strategy\n"
-        "  revenue: overall sales performance\n"
-        "  sales: item & category breakdown\n"
-        "  pricing: price optimisation tips\n"
-        "  strategy: growth recommendations\n\n"
-        "*Scout*: Competitor intelligence\n"
-        "  scout: scrape rivals (cached 24h)\n\n"
-        "*Reputation*: Review management\n"
-        "  check: scrape latest reviews (cached 24h)\n"
-        "  positive reviews / negative reviews / all reviews: list reviews, 10 at a time\n"
-        "  next: see the next 10\n"
-        "  post: mark suggested reply as replied (post it yourself first)\n"
-        "  ignore: skip current review\n"
-        "  edit <text>: rewrite suggested reply\n\n"
-        "*Queue*: The live line & the door\n"
-        "  queue: who's waiting right now (all branches)\n"
-        "  vip list: your VIP guests\n"
-        "  branches: your locations and what they take\n"
-        "  add vip <phone> <name>[, notes]: add a VIP\n"
-        "  admit [at <branch>]: seat the next person in line\n"
-        "  remove <position> [at <branch>]: take someone out of the line\n"
-        "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n"
-        "  disable booking / enable booking: pause or resume guests joining the queue\n"
-        "  seated grace <minutes>: how long an admitted guest is blocked from rejoining (default 120)\n"
-        "  queue timeout <minutes>: how long an unclaimed queue spot is auto-released (default 90)\n\n"
+        f"{sections}"
         "You can also just write in plain language, e.g. \"how did we do this "
         "week\" or \"what are competitors offering\", no need to remember exact "
         "commands.\n\n"
@@ -403,7 +439,7 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         return "Cleared, starting fresh. What do you need?"
 
     if not text or text.lower() in ("help", *_GREETINGS):
-        return staff_help_text(_get_store_name(store_id))
+        return staff_help_text(_get_store_name(store_id), store_id)
 
     first = text.lower().split()[0]
     is_natural = not _is_shorthand(text)
@@ -464,8 +500,7 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     elif first == "add" and len(text.split()) > 1 and text.split()[1].lower() == "vip":
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=add_vip from=%s", store_id, from_number)
-        from app.agents.maitre_d.staff import add_vip
-        reply = add_vip(store_id, text.split(None, 2)[2] if len(text.split(None, 2)) > 2 else "")
+        reply = _maitre_d_add_vip(store_id, text.split(None, 2)[2] if len(text.split(None, 2)) > 2 else "")
 
     else:
         # LLM classification
@@ -552,7 +587,23 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     return reply
 
 
+def _require_agent(store_id: int, agent: str) -> str | None:
+    """Returns the "not licensed" message if this store's package doesn't
+    include `agent`, else None. Called at the top of every internal.py
+    function that actually invokes an agent module -- the true execution
+    boundary for staff WhatsApp commands, regardless of which of the many
+    routing branches above got there (exact-command shorthand, queue-cmd
+    pre-check, or the LLM classifier's fallthrough)."""
+    from app.core.entitlements import has_agent_access, not_licensed_message
+    if has_agent_access(store_id, agent):
+        return None
+    return not_licensed_message(agent)
+
+
 def _integrity(store_id: int, from_number: str, text: str, history: list[dict] | None = None) -> str:
+    denied = _require_agent(store_id, "integrity")
+    if denied:
+        return denied
     try:
         from app.agents.integrity.service import get_service
         return get_service().handle_message(store_id, from_number, text, history=history)
@@ -562,6 +613,9 @@ def _integrity(store_id: int, from_number: str, text: str, history: list[dict] |
 
 
 def _revenue(store_id: int, from_number: str, text: str) -> str:
+    denied = _require_agent(store_id, "revenue")
+    if denied:
+        return denied
     try:
         from app.agents.revenue.registry import get_registry
         reply = get_registry().handle(store_id, from_number, text)
@@ -572,6 +626,9 @@ def _revenue(store_id: int, from_number: str, text: str) -> str:
 
 
 def _revenue_answer(store_id: int, text: str, history: list[dict] | None = None) -> str:
+    denied = _require_agent(store_id, "revenue")
+    if denied:
+        return denied
     try:
         from app.agents.revenue.registry import get_registry
         return get_registry().answer_question(store_id, text, history=history)
@@ -599,6 +656,9 @@ def _scout(store_id: int, from_number: str, text: str, history: list[dict] | Non
     Run/ScoutReport row, so a targeted single-competitor answer can no
     longer overwrite what a later plain "scout" request serves.
     """
+    denied = _require_agent(store_id, "scout")
+    if denied:
+        return denied
     try:
         from app.agents.scout.pipeline import answer_from_cache
         return answer_from_cache(store_id, text, history=history)
@@ -608,6 +668,9 @@ def _scout(store_id: int, from_number: str, text: str, history: list[dict] | Non
 
 
 def _reputation(store_id: int, from_number: str, text: str, history: list[dict] | None = None) -> str:
+    denied = _require_agent(store_id, "reputation")
+    if denied:
+        return denied
     try:
         from app.agents.reputation import process_reputation_owner_reply
         return process_reputation_owner_reply(from_number, text, store_id=store_id, history=history)
@@ -622,6 +685,9 @@ def _reputation(store_id: int, from_number: str, text: str, history: list[dict] 
 def _maitre_d_admit(store_id: int, rest: str) -> str | None:
     """"admit [at <branch>]" — seat the next person in line, skip the LLM
     entirely (same reasoning as reputation's post/edit/ignore)."""
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     try:
         from app.agents.maitre_d.staff import admit_next_in_queue
         return admit_next_in_queue(store_id, rest)
@@ -632,6 +698,9 @@ def _maitre_d_admit(store_id: int, rest: str) -> str | None:
 
 def _maitre_d_remove(store_id: int, rest: str) -> str | None:
     """"remove <position> [at <branch>]" — take someone out of the line."""
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     try:
         from app.agents.maitre_d.staff import remove_queue_position
         return remove_queue_position(store_id, rest)
@@ -643,6 +712,9 @@ def _maitre_d_remove(store_id: int, rest: str) -> str | None:
 def _maitre_d_insert(store_id: int, rest: str) -> str | None:
     """"add <position> <phone> <name>[, party <N>] [at <branch>]" — insert
     someone into the line at a specific spot."""
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     try:
         from app.agents.maitre_d.staff import insert_queue_position
         return insert_queue_position(store_id, rest)
@@ -651,7 +723,23 @@ def _maitre_d_insert(store_id: int, rest: str) -> str | None:
         return None
 
 
+def _maitre_d_add_vip(store_id: int, rest: str) -> str:
+    """"add vip <phone> <name>[, notes]"."""
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
+    try:
+        from app.agents.maitre_d.staff import add_vip
+        return add_vip(store_id, rest)
+    except Exception as e:
+        logger.warning("internal._maitre_d_add_vip: store=%d error=%s", store_id, e)
+        return "Queue agent is unavailable right now. Please try again shortly."
+
+
 def _maitre_d_toggle_booking(store_id: int, enable: bool) -> str:
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     try:
         from app.agents.maitre_d.config import set_booking_enabled
         set_booking_enabled(store_id, enable)
@@ -675,6 +763,9 @@ _MAX_THRESHOLD_MINUTES = 1440
 
 
 def _maitre_d_set_seated_grace(store_id: int, minutes: int) -> str:
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     if not (_MIN_THRESHOLD_MINUTES <= minutes <= _MAX_THRESHOLD_MINUTES):
         return f"Please pick a value between {_MIN_THRESHOLD_MINUTES} and {_MAX_THRESHOLD_MINUTES} minutes."
     try:
@@ -687,6 +778,9 @@ def _maitre_d_set_seated_grace(store_id: int, minutes: int) -> str:
 
 
 def _maitre_d_set_queue_timeout(store_id: int, minutes: int) -> str:
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     if not (_MIN_THRESHOLD_MINUTES <= minutes <= _MAX_THRESHOLD_MINUTES):
         return f"Please pick a value between {_MIN_THRESHOLD_MINUTES} and {_MAX_THRESHOLD_MINUTES} minutes."
     try:
@@ -699,6 +793,9 @@ def _maitre_d_set_queue_timeout(store_id: int, minutes: int) -> str:
 
 
 def _maitre_d_listing(store_id: int, cmd: str) -> str:
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     try:
         from app.agents.maitre_d.staff import format_queue, format_vips, format_locations
         if cmd in ("vip", "vips", "vip list"):
@@ -715,6 +812,9 @@ def _maitre_d(store_id: int, from_number: str, text: str, history: list[dict] | 
     """Natural-language questions about the queue/VIPs that the router
     classified as maitre_d but didn't match a queue-command/listing
     shorthand -- e.g. "who's in the queue right now", "any VIPs waiting"."""
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
     try:
         from app.agents.maitre_d.staff import answer_question
         return answer_question(store_id, text, history=history)

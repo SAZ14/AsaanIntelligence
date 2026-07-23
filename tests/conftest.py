@@ -97,7 +97,22 @@ def seed_store(chain_id, name="Test Store", location="Main St, Karachi", categor
         db.add(s)
         db.commit()
         db.refresh(s)
-        return s.id
+        store_id = s.id
+    # Every existing test predates the per-store agent-entitlement gate
+    # (app.core.entitlements) and exercises agent behavior assuming it's
+    # simply available -- grandfather every test store into the full
+    # package by default (mirrors the real prod backfill for existing
+    # stores) so only tests specifically ABOUT entitlement need to touch
+    # seed_agent_access() to narrow it.
+    seed_agent_access(store_id)
+    return store_id
+
+
+def seed_agent_access(store_id, agents=None):
+    """Grants `agents` (default: all 6) to a store. Pass a smaller set
+    (or an empty set) to test entitlement-denial behavior."""
+    from app.core.entitlements import AGENT_NAMES, set_store_agents
+    set_store_agents(store_id, set(AGENT_NAMES) if agents is None else set(agents))
 
 
 def seed_twilio(store_id, number):

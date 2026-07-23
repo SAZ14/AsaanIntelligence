@@ -39,17 +39,30 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates" / 
 
 def _session_or_redirect(request: Request):
     """Returns (session_dict, None) if the request has a full session
-    (logged in AND a store chosen), or (None, RedirectResponse) pointing
-    wherever they need to go next. Plain helper, not a FastAPI Depends --
-    a dependency can't redirect without extra exception-handler plumbing,
-    and every route here needs the same three-way branch (not logged in /
-    logged in but no store yet / good to go)."""
+    (logged in AND a store chosen) for a store that's actually licensed for
+    maitre_d, or (None, Response) pointing wherever they need to go next --
+    login, store selection, or (a store is chosen but its package doesn't
+    include the queue) a plain "not included in your plan" page. Plain
+    helper, not a FastAPI Depends -- a dependency can't redirect without
+    extra exception-handler plumbing, and every route here needs the same
+    branches (not logged in / logged in but no store yet / store chosen but
+    not entitled / good to go).
+
+    Every single dashboard route is maitre_d functionality (queue, VIPs,
+    branches, settings all wrap app.agents.maitre_d.* directly) -- so this
+    one chokepoint is enough to gate the entire feature, unlike internal.py
+    where each agent's commands need their own check."""
     token = request.cookies.get(SESSION_COOKIE_NAME)
     session = get_session(token)
     if not session:
         return None, RedirectResponse("/dashboard/login", status_code=303)
     if not session.get("store_id"):
         return None, RedirectResponse("/dashboard/select-store", status_code=303)
+    from app.core.entitlements import has_agent_access
+    if not has_agent_access(session["store_id"], "maitre_d"):
+        return None, templates.TemplateResponse(
+            request, "not_licensed.html", {}, status_code=403,
+        )
     return session, None
 
 

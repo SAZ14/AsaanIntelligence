@@ -536,6 +536,9 @@ def run_maitre_d_maintenance_all() -> None:
     with SessionLocal() as db:
         store_ids = [s.id for s in db.query(StoreModel).all()]
 
+    from app.core.entitlements import filter_entitled
+    store_ids = filter_entitled(store_ids, "maitre_d")
+
     for store_id in store_ids:
         try:
             result = get_maitre_d(store_id).expire_stale_entries()

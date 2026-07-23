@@ -11,8 +11,10 @@ logger = logging.getLogger(__name__)
 
 def _active_store_ids() -> list[int]:
     from app.core.db import SessionLocal, Store
+    from app.core.entitlements import filter_entitled
     with SessionLocal() as db:
-        return [s.id for s in db.query(Store).all()]
+        store_ids = [s.id for s in db.query(Store).all()]
+    return filter_entitled(store_ids, "customer")
 
 
 def broadcast_for_store(store_id: int) -> int:

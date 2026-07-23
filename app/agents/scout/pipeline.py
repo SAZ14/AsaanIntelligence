@@ -714,6 +714,9 @@ def run_scout_all() -> None:
     with SessionLocal() as db:
         store_ids = [s.id for s in db.query(Store).all()]
 
+    from app.core.entitlements import filter_entitled
+    store_ids = filter_entitled(store_ids, "scout")
+
     def _run_one(store_id: int) -> None:
         if _is_scout_fresh(store_id):
             logger.info("scout.cron: store=%d already fresh, skipping", store_id)

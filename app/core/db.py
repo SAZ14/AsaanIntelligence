@@ -108,6 +108,26 @@ class StoreMember(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StoreAgentAccess(Base):
+    """Which of the 6 agents (integrity, revenue, scout, reputation,
+    maitre_d, customer) a store's package includes. One row per granted
+    agent -- a store with NO rows here has access to NOTHING. Deliberately
+    fail-CLOSED, unlike most other per-store tables in this file (whose
+    "no row yet" default is some sensible always-on behavior): entitlement
+    is the one thing here that must never silently default to "on" just
+    because nobody explicitly configured it yet. See app.core.entitlements
+    for the single source of truth that reads/writes this table -- every
+    staff/customer dispatch point (WhatsApp, the staff web dashboard, and
+    background crons) checks it before running any agent logic."""
+    __tablename__ = "store_agent_access"
+    __table_args__ = (UniqueConstraint("store_id", "agent"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    agent = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class UserSession(Base):
     """Tracks which store an internal user is currently querying."""
     __tablename__ = "user_sessions"
