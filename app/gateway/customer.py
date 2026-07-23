@@ -5,17 +5,46 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# The ONLY thing that starts a fresh queue-join: the exact prefilled text
+# of the entrance/booking-area QR code's wa.me link, e.g.
+#   https://wa.me/<number>?text=Join%20the%20Queue
+# Deliberately NOT a keyword match on "book"/"table"/"reservation" (that
+# used to be the trigger) -- a table's own QR code can be scanned by
+# someone already seated there, and a wa.me link's prefilled text is just
+# a suggestion the sender can edit or ignore, so nothing in the message
+# itself can prove "this came from the entrance QR". Restricting the
+# trigger to one specific, non-conversational phrase is the practical
+# mitigation: nobody accidentally types "Join the Queue" while chatting,
+# unlike the single common word "book" ("I need to book a table sometime"
+# used to accidentally start a queue-join). It's not cryptographically
+# unforgeable -- nothing over plain WhatsApp can be -- but it closes the
+# casual/accidental case, which is the actual threat model here (a guest
+# already seated by staff, no prior interaction with the bot at all,
+# shouldn't be able to just type their way into the queue).
+BOOKING_TRIGGER_PHRASE = "Join the Queue"
 
-def _wants_booking(text: str) -> bool:
-    """Keyword pre-check for routing to the Maitre D, mirroring gateway/
-    main.py's _is_scout_message pattern: cheap and deterministic, just
-    enough to decide WHICH agent handles this turn. Once routed there,
-    Maitre D's own LLM/fallback NLU (app.agents.maitre_d.nlu) does the
-    real understanding. Shares _MAITRE_D_KEYWORDS with internal.py's
-    staff-side routing -- see main.py's definition."""
-    from app.gateway.main import _MAITRE_D_KEYWORDS
-    words = set(re.sub(r"[^\w\s]", "", text.lower()).split())
-    return bool(words & _MAITRE_D_KEYWORDS)
+
+def _alnum(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+_BOOKING_TRIGGER_NORM = _alnum(BOOKING_TRIGGER_PHRASE)
+
+
+def _is_booking_trigger(text: str) -> bool:
+    """Alnum-normalised exact match -- tolerant of surrounding emoji/
+    punctuation a restaurant might decorate the printed QR text with
+    ("🎫 Join the Queue!"), but still a specific phrase, not a loose
+    keyword-in-free-text match."""
+    return _alnum(text) == _BOOKING_TRIGGER_NORM
+
+
+def _is_cancel_message(text: str) -> bool:
+    """"cancel" is always allowed, trigger-phrase or not -- it only ever
+    removes an EXISTING queue entry (see agent.py's _leave_queue), never
+    creates one, so it carries none of the "typed their way into the
+    queue" risk the booking trigger above guards against."""
+    return bool(re.search(r"\bcancel\b", text.lower()))
 
 
 def _has_active_booking_flow(store_id: int, phone: str) -> bool:
@@ -56,10 +85,30 @@ def _handle_booking(from_phone: str, body: str, store_id: int) -> str:
 def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
     """Invoke the customer agent for a known store. Returns reply text."""
     try:
+        from app.agents.maitre_d.config import is_booking_enabled
+
         text = (body or "").strip()
-        if _wants_booking(text) or _has_active_booking_flow(store_id, from_phone):
+        active_flow = _has_active_booking_flow(store_id, from_phone)
+        wants_cancel = _is_cancel_message(text)
+        # A fresh trigger only starts a flow when booking is actually
+        # switched on -- staff's "disable booking" for a quiet walk-in day
+        # (see internal.py). Deliberately checked ONLY for the fresh-start
+        # case: an already-active flow finishes even if staff flip the
+        # toggle mid-conversation (less confusing than abandoning a guest
+        # partway through), and "cancel" always works regardless (it only
+        # removes, see _is_cancel_message).
+        wants_new_booking = _is_booking_trigger(text) and is_booking_enabled(store_id)
+
+        if active_flow or wants_cancel or wants_new_booking:
             return _handle_booking(from_phone, text, store_id)
 
+        # Not a recognised booking trigger (including a disabled "Join the
+        # Queue", or plain text like "book"/"table for 2" typed by someone
+        # who never scanned the entrance QR) -- silently falls through to
+        # the normal community agent below, exactly like any other message
+        # maitre_d doesn't handle. No "booking is off" reply; the guest
+        # never needs to know the queue exists at all if they didn't scan
+        # the right QR.
         from app.agents.customer.agents.community_customer import handle_customer_message
         reply = handle_customer_message(from_phone, body, store_id=store_id)
         return reply.body

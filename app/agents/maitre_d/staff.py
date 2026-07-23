@@ -69,11 +69,14 @@ def _resolve_queue_location(store_id: int, text: str) -> tuple[int | None, str, 
 # ── queue commands ───────────────────────────────────────────────────────────
 
 def format_queue(store_id: int) -> str:
+    from app.agents.maitre_d.config import is_booking_enabled
+
     store = Store(store_id)
     rows = store.list_queue(status="waiting")
+    off_notice = "" if is_booking_enabled(store_id) else "Booking is currently OFF.\n\n"
     if not rows:
-        return "The queue is empty."
-    lines = ["Live queue:"]
+        return off_notice + "The queue is empty."
+    lines = [off_notice + "Live queue:"] if off_notice else ["Live queue:"]
     for e in rows:
         vip = " (VIP)" if e.is_vip else ""
         branch = f" — {e.branch_name}" if e.branch_name else ""

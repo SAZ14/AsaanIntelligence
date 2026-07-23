@@ -106,16 +106,19 @@ class MaitreD:
         if parsed.intent == "book" or flow == "book":
             return self._book_flow(phone, parsed, vip, profile_name)
 
-        # Fall back gracefully.
+        # Fall back gracefully. Deliberately doesn't say "type book" --
+        # the queue-join trigger is meant to be scanned from the entrance
+        # QR, not something the bot teaches every casual texter (see
+        # gateway/customer.py's BOOKING_TRIGGER_PHRASE for why).
         if vip:
             return MaitreDReply(
-                text=(f"Hello {vip.name}! Say \"book\" any time and I'll add you "
-                      "to today's queue."),
+                text=(f"Hello {vip.name}! To join today's queue, please scan the "
+                      "QR code at our entrance."),
                 intent="unknown", action="info", is_vip=True,
             )
         return MaitreDReply(
-            text=(f"Hi! I'm the host at {self.config.name}. Say \"book\" and "
-                  "I'll add you to today's live queue."),
+            text=(f"Hi! I'm the host at {self.config.name}. To join today's "
+                  "queue, please scan the QR code at our entrance."),
             intent="unknown", action="info",
         )
 
@@ -124,22 +127,22 @@ class MaitreD:
     def _greet(self, phone: str, vip) -> MaitreDReply:
         if vip:
             return MaitreDReply(
-                text=(f"Welcome back, {vip.name}! Say \"book\" any time and I'll "
-                      "add you to today's queue."),
+                text=(f"Welcome back, {vip.name}! To join today's queue, please "
+                      "scan the QR code at our entrance."),
                 intent="greeting", action="greeting", is_vip=True,
                 staff_alert=f"VIP {vip.name} ({vip.tier}) just messaged. {vip.notes}",
             )
         return MaitreDReply(
-            text=(f"Hello and welcome to {self.config.name}! Say \"book\" and "
-                  "I'll add you to today's live queue and give you a booking number."),
+            text=(f"Hello and welcome to {self.config.name}! Scan the QR code "
+                  "at our entrance to join today's queue and get a booking number."),
             intent="greeting", action="greeting",
         )
 
     def _info(self) -> MaitreDReply:
         return MaitreDReply(
-            text=(f"{self.config.name} runs on a live walk-in queue — say "
-                  "\"book\" and I'll add you with a booking number. Say "
-                  "\"cancel\" any time to leave the queue."),
+            text=(f"{self.config.name} runs on a live walk-in queue — scan the "
+                  "QR code at our entrance to join and get a booking number. "
+                  "Say \"cancel\" any time to leave the queue."),
             intent="help", action="info",
         )
 
@@ -293,7 +296,7 @@ class MaitreD:
         reply = MaitreDReply(
             text=(f"Done — you've been removed from the queue at "
                   f"{self.config.display_name()} (you were #{entry.queue_number}). "
-                  "Message \"book\" any time to rejoin."),
+                  "Scan the QR code at our entrance any time to rejoin."),
             intent="cancel", action="cancelled", queue_number=entry.queue_number,
         )
         for e in moved_up:

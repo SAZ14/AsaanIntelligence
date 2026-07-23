@@ -583,6 +583,20 @@ class MaitreDConversation(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MaitreDSettings(Base):
+    """One row per store of toggle-able queue settings -- currently just
+    booking_enabled (staff's "disable booking"/"enable booking" command,
+    for a quiet day where they're seating people directly instead of
+    running the queue). A store with no row yet behaves as if
+    booking_enabled=True (see app.agents.maitre_d.config.is_booking_enabled)
+    -- no admin step required before the queue works, same pattern as
+    every other maitre_d table here."""
+    __tablename__ = "maitre_d_settings"
+
+    store_id = Column(Integer, ForeignKey("stores.id"), primary_key=True)
+    booking_enabled = Column(Boolean, nullable=False, default=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -60,7 +60,8 @@ def staff_help_text(store_name: str) -> str:
         "  add vip <phone> <name>[, notes]: add a VIP\n"
         "  admit [at <branch>]: seat the next person in line\n"
         "  remove <position> [at <branch>]: take someone out of the line\n"
-        "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n\n"
+        "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n"
+        "  disable booking / enable booking: pause or resume guests joining the queue\n\n"
         "You can also just write in plain language, e.g. \"how did we do this "
         "week\" or \"what are competitors offering\", no need to remember exact "
         "commands.\n\n"
@@ -443,6 +444,11 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         logger.info("internal.routing: store=%d agent=maitre_d trigger=listing from=%s", store_id, from_number)
         reply = _maitre_d_listing(store_id, text.lower().strip())
 
+    elif text.lower().strip() in ("disable booking", "enable booking"):
+        agent = "maitre_d"
+        logger.info("internal.routing: store=%d agent=maitre_d trigger=booking_toggle from=%s", store_id, from_number)
+        reply = _maitre_d_toggle_booking(store_id, text.lower().strip() == "enable booking")
+
     elif first == "add" and len(text.split()) > 1 and text.split()[1].lower() == "vip":
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=add_vip from=%s", store_id, from_number)
@@ -631,6 +637,19 @@ def _maitre_d_insert(store_id: int, rest: str) -> str | None:
     except Exception as e:
         logger.warning("internal._maitre_d_insert: store=%d error=%s", store_id, e)
         return None
+
+
+def _maitre_d_toggle_booking(store_id: int, enable: bool) -> str:
+    try:
+        from app.agents.maitre_d.config import set_booking_enabled
+        set_booking_enabled(store_id, enable)
+        if enable:
+            return "Booking is back ON — guests scanning the entrance QR can join the queue again."
+        return ("Booking is now OFF — guests scanning the entrance QR won't be added to "
+                "the queue until you turn it back on with \"enable booking\".")
+    except Exception as e:
+        logger.warning("internal._maitre_d_toggle_booking: store=%d error=%s", store_id, e)
+        return "Queue agent is unavailable right now. Please try again shortly."
 
 
 def _maitre_d_listing(store_id: int, cmd: str) -> str:

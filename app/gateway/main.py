@@ -569,20 +569,19 @@ _REVIEW_KEYWORDS = {
 # integrity one; it was giving a "running your POS audit" ack immediately
 # before a revenue-advice reply, which read as a mismatched non-sequitur.
 _REVENUE_KEYWORDS = {"revenue", "sales", "strategy", "upsell", "growth", "pricing", "campaign"}
-# Shared by both the guest-facing booking route (gateway/customer.py) and
-# the staff-facing reservations/door route (gateway/internal.py's
-# continuity safety net) -- one keyword set, reused everywhere "is this
-# message about reservations" needs a cheap deterministic answer.
+# STAFF-facing only -- gateway/internal.py's continuity safety net (is a
+# short staff follow-up still about the queue/VIPs?) and app.core.routing's
+# keyword fallback for the staff router. The guest-facing route (gateway/
+# customer.py) deliberately does NOT use this any more: "book"/"table"
+# etc. used to be enough to start a queue-join from anywhere, but that let
+# someone already seated at a table (or just texting from home) type their
+# way into the queue. Guests now start a fresh queue-join only via the
+# exact QR-code trigger phrase (see customer.py's BOOKING_TRIGGER_PHRASE);
+# "cancel" is the one exception (see customer.py's _is_cancel_message) --
+# it only ever removes an existing entry, so it carries none of that risk.
 _MAITRE_D_KEYWORDS = {
     "table", "reservation", "reservations", "reserve", "book", "booking",
-    "queue", "line", "vip", "vips",
-    # "cancel" has no other meaning anywhere in this codebase (no other
-    # cancellable entity exists) -- confirmed live: a guest with an active
-    # queue spot who just says "cancel" (no other keyword, and no
-    # in-progress conversation state to catch it via _has_active_booking_
-    # flow) fell through to the community agent's onboarding flow instead
-    # of MaitreD's own _leave_queue().
-    "cancel",
+    "queue", "line", "vip", "vips", "cancel",
 }
 
 

@@ -480,10 +480,33 @@ class TestMultiTenancy:
 # ── Gateway wiring: customer mode routes booking-shaped messages here ──────
 
 class TestCustomerGatewayRouting:
-    def test_booking_keyword_routes_to_maitre_d(self, store_id):
-        from app.gateway.customer import handle_customer_for_store
-        reply = handle_customer_for_store(PHONE, "table for 2, it's Ahmed", store_id)
+    def test_qr_trigger_phrase_starts_the_queue_flow(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        r1 = handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        assert r1 != "Something went wrong, please try again."
+        assert "queue" in r1.lower() or "name" in r1.lower() or "many" in r1.lower()
+        reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "booking number" in reply.lower()
+
+    def test_decorated_trigger_phrase_still_matches(self, store_id):
+        """The printed QR text can be decorated ("\U0001f3ab Join the Queue!")
+        without breaking the match -- see customer.py's alnum-normalised
+        comparison."""
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(PHONE, "\U0001f3ab Join the Queue!", store_id)
+        reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
+        assert "booking number" in reply.lower()
+
+    def test_bare_book_keyword_no_longer_routes_to_maitre_d(self, store_id):
+        """The old free-text trigger ("book"/"table for 2") must NOT start
+        a queue join any more -- otherwise someone already seated at a
+        table (or just texting from home) could type their way into the
+        queue. Only the exact QR trigger phrase, or an already-active
+        flow, may."""
+        from app.gateway.customer import handle_customer_for_store
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            handle_customer_for_store(PHONE, "table for 2, it's Ahmed", store_id)
+        mock_md.assert_not_called()
 
     def test_non_booking_message_does_not_route_to_maitre_d(self, store_id):
         from app.gateway.customer import handle_customer_for_store
@@ -491,13 +514,43 @@ class TestCustomerGatewayRouting:
             handle_customer_for_store(PHONE, "hi", store_id)
         mock_md.assert_not_called()
 
-    def test_active_flow_keeps_routing_to_maitre_d_without_keywords(self, store_id):
-        """"it's Ahmed" contains no booking keyword on its own -- only the
+    def test_active_flow_keeps_routing_to_maitre_d_without_the_trigger(self, store_id):
+        """"it's Ahmed" is not the trigger phrase on its own -- only the
         in-progress conversation state tells the router this is a
         continuation of the earlier booking flow, not a fresh community-
         agent message."""
-        from app.gateway.customer import handle_customer_for_store
-        handle_customer_for_store(PHONE, "book", store_id)  # starts a flow, no name/party yet
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)  # starts a flow, no name/party yet
+        reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
+        assert "booking number" in reply.lower()
+
+    def test_cancel_always_works_regardless_of_the_trigger_phrase(self, store_id):
+        """"cancel" only ever removes an existing entry, so it's exempt
+        from the trigger-phrase restriction (see _is_cancel_message)."""
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
+        reply = handle_customer_for_store(PHONE, "cancel please", store_id)
+        assert "removed" in reply.lower()
+
+    def test_disabled_booking_silently_falls_through(self, store_id):
+        """A disabled store's guests get routed to the normal community
+        agent with NO "booking is off" message -- they should never even
+        learn the queue exists if staff have switched it off."""
+        from app.agents.maitre_d.config import set_booking_enabled
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        set_booking_enabled(store_id, False)
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            reply = handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        mock_md.assert_not_called()
+        assert "off" not in reply.lower() and "disabled" not in reply.lower()
+
+    def test_re_enabled_booking_works_again(self, store_id):
+        from app.agents.maitre_d.config import set_booking_enabled
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        set_booking_enabled(store_id, False)
+        set_booking_enabled(store_id, True)
+        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "booking number" in reply.lower()
 
@@ -510,14 +563,13 @@ class TestCustomerGatewayRouting:
             db.add(MaitreDVip(store_id=store_id, phone=vip_phone, name="Ayesha", tier="vip"))
             db.commit()
 
-        from app.gateway.customer import handle_customer_for_store
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
         # A VIP's own booking always sets staff_alert (see agent.py's
         # _join_queue), so this deterministically exercises the dispatch
         # path rather than depending on any randomised classification.
+        handle_customer_for_store(vip_phone, BOOKING_TRIGGER_PHRASE, store_id)
         with patch("app.core.outbound.notify_staff") as mock_notify:
-            handle_customer_for_store(
-                vip_phone, "table for 2, it's Ayesha", store_id,
-            )
+            handle_customer_for_store(vip_phone, "it's Ayesha, party of 2", store_id)
         mock_notify.assert_called_once()
         args = mock_notify.call_args.args
         assert args[0] == store_id
@@ -538,6 +590,25 @@ class TestStaffGatewayRouting:
         from app.gateway.internal import handle_internal_for_store
         reply = handle_internal_for_store("whatsapp:+923220000000", "queue", store_id)
         assert "empty" in reply.lower()
+
+    def test_disable_and_enable_booking_commands(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from app.agents.maitre_d.config import is_booking_enabled
+
+        assert is_booking_enabled(store_id) is True  # never toggled -> on by default
+        off_reply = handle_internal_for_store("whatsapp:+923220000000", "disable booking", store_id)
+        assert "off" in off_reply.lower()
+        assert is_booking_enabled(store_id) is False
+
+        on_reply = handle_internal_for_store("whatsapp:+923220000000", "enable booking", store_id)
+        assert "on" in on_reply.lower()
+        assert is_booking_enabled(store_id) is True
+
+    def test_queue_listing_flags_when_booking_is_off(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        handle_internal_for_store("whatsapp:+923220000000", "disable booking", store_id)
+        reply = handle_internal_for_store("whatsapp:+923220000000", "queue", store_id)
+        assert "off" in reply.lower()
 
     def test_add_vip_command(self, store_id):
         from app.gateway.internal import handle_internal_for_store

@@ -139,6 +139,29 @@ class VenueConfig:
             return configs
 
 
+def is_booking_enabled(store_id: int) -> bool:
+    """Whether guests can currently join this store's queue -- staff's
+    "disable booking"/"enable booking" command flips this for a quiet day
+    where they're seating people directly instead of running the queue.
+    No row yet means never toggled, i.e. enabled (the default, matching
+    every other maitre_d setting's "no admin step required first")."""
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        return row.booking_enabled if row else True
+
+
+def set_booking_enabled(store_id: int, enabled: bool) -> None:
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        if row:
+            row.booking_enabled = enabled
+        else:
+            db.add(MaitreDSettings(store_id=store_id, booking_enabled=enabled))
+        db.commit()
+
+
 def _apply_location_row(cfg: VenueConfig, row) -> None:
     cfg.location_id = row.id
     cfg.branch_key = row.branch_key
