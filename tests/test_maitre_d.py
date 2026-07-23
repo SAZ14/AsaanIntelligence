@@ -262,6 +262,49 @@ class TestQueueNotifications:
         assert "+923009998888" not in calls  # the newly-inserted guest isn't separately notified here
 
 
+# ── "Already seated" guard (a table's own QR code can't stop someone
+# seated there from typing "book" -- this is the server-side guard) ────────
+
+class TestSeatedGuard:
+    def test_book_declined_while_recently_seated(self, store_id):
+        md = _md(store_id, now=FRIDAY_8PM)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        Store(store_id).admit_next(None, now=FRIDAY_8PM)  # staff seats Ahmed
+
+        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=30))
+        later.store = md.store
+        r = later.handle_message(PHONE, "book")
+        assert r.action == "already_seated"
+        assert "already seated" in r.text.lower()
+
+    def test_seated_guest_does_not_get_a_new_queue_entry(self, store_id):
+        md = _md(store_id, now=FRIDAY_8PM)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        Store(store_id).admit_next(None, now=FRIDAY_8PM)
+
+        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=30))
+        later.store = md.store
+        later.handle_message(PHONE, "book")
+        assert later.store.list_queue(status="waiting") == []
+
+    def test_book_allowed_again_after_the_grace_window_passes(self, store_id):
+        md = _md(store_id, now=FRIDAY_8PM)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        Store(store_id).admit_next(None, now=FRIDAY_8PM)
+
+        much_later = _md(store_id, now=FRIDAY_8PM + timedelta(hours=3))
+        much_later.store = md.store
+        r = much_later.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert r.action == "queued"
+
+    def test_waiting_but_not_yet_admitted_guest_is_unaffected(self, store_id):
+        """Still in line, never seated -- the guard only fires on an
+        actual admission, not merely having a booking already."""
+        md = _md(store_id)
+        r = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert r.action == "queued"
+
+
 # ── Conversation TTL ─────────────────────────────────────────────────────────
 
 class TestConversationTTL:

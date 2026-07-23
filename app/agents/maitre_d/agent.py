@@ -17,19 +17,26 @@ the Postgres-backed, store_id-scoped versions in this package.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.agents.maitre_d.config import VenueConfig, normalise_phone, match_location, _join_or
 from app.agents.maitre_d.models import Guest, QueueEntry
 from app.agents.maitre_d.nlu import ParsedMessage, parse_message
 from app.agents.maitre_d.store import Store
 
+# How long after being admitted a guest is still treated as "currently
+# dining" and blocked from rejoining the queue -- see MaitreD._seated_entry.
+# A typical sit-down visit; tune freely, this is a heuristic, not a precise
+# table-turnover signal (there's no "mark this table done" step in this
+# walk-in-queue model, unlike the old timed-reservation system's turn times).
+SEATED_GRACE_MINUTES = 120
+
 
 @dataclass
 class MaitreDReply:
     text: str                                   # message to send back to the guest
     intent: str = "unknown"
-    action: str = "noop"                        # queued | cancelled | need_info | info | greeting | noop
+    action: str = "noop"                        # queued | cancelled | need_info | info | already_seated | greeting | noop
     queue_number: int = 0
     position: int = 0
     is_vip: bool = False
@@ -141,6 +148,25 @@ class MaitreD:
     def _book_flow(
         self, phone: str, parsed: ParsedMessage, vip, profile_name: str
     ) -> MaitreDReply:
+        # A table's own QR code can't stop someone already seated from
+        # scanning it and typing "book" -- WhatsApp lets a guest edit or
+        # replace a QR's prefilled text, so nothing in the message itself
+        # can tell "just walked in" apart from "already at table 5". The
+        # only reliable signal is server-side: were they admitted recently
+        # and not yet past a normal dining duration? If so, decline instead
+        # of creating a second queue entry for the same visit.
+        seated = self._seated_entry(phone)
+        if seated is not None:
+            self.store.clear_conversation(phone)
+            location = self._resolve_location_config(seated.location_id)
+            if location is not None:
+                self.config = location
+            return MaitreDReply(
+                text=(f"You're already seated at {self.config.display_name()} — "
+                      "enjoy your meal! Let us know if you need anything."),
+                intent="book", action="already_seated", is_vip=bool(vip),
+            )
+
         state = self._conversation(phone)
         slots = state.get("slots", {})
         prior_options = state.get("location_options", [])
@@ -284,6 +310,18 @@ class MaitreD:
         if not location_id or len(self.locations) <= 1:
             return None
         return next((l for l in self.locations if l.location_id == location_id), None)
+
+    def _seated_entry(self, phone: str) -> QueueEntry | None:
+        """This phone's most recent admitted queue entry, if it's still
+        within the "probably still dining" grace window -- None once
+        SEATED_GRACE_MINUTES has passed, so a genuinely later visit is
+        never permanently blocked from booking again."""
+        entry = self.store.latest_admitted_entry_for(phone)
+        if not entry or not entry.admitted_at:
+            return None
+        if self._now() - entry.admitted_at > timedelta(minutes=SEATED_GRACE_MINUTES):
+            return None
+        return entry
 
     # ── helpers ──
 

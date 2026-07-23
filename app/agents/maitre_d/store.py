@@ -154,11 +154,19 @@ class Store:
             r.position -= 1
         return behind
 
-    def admit_next(self, location_id: int | None) -> tuple[QueueEntry | None, list[QueueEntry]]:
+    def admit_next(
+        self, location_id: int | None, now: datetime | None = None,
+    ) -> tuple[QueueEntry | None, list[QueueEntry]]:
         """Pops position 1 (the guest who's been waiting longest at the
         front) -- the "restaurant has given them seating" action. Returns
         (admitted_entry_or_None, moved_up) -- `moved_up` is everyone whose
-        position advanced, for the caller to notify."""
+        position advanced, for the caller to notify.
+
+        `now` should be the VENUE-local clock (VenueConfig.now()), not raw
+        UTC -- admitted_at is later compared against MaitreD._seated_entry's
+        self._now(), which is also venue-local. Mixing UTC here with a
+        UTC+5 (Asia/Karachi) venue clock there would skew the "still
+        seated" grace window by the timezone offset."""
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
             row = db.query(MaitreDQueueEntry).filter(
@@ -170,7 +178,7 @@ class Store:
                 return None, []
             moved_up = self._close_gap(db, row)
             row.status = "admitted"
-            row.admitted_at = datetime.utcnow()
+            row.admitted_at = now or datetime.utcnow()
             db.commit()
             db.refresh(row)
             for r in moved_up:
@@ -229,6 +237,19 @@ class Store:
                 MaitreDQueueEntry.phone == phone,
                 MaitreDQueueEntry.status == "waiting",
             ).order_by(MaitreDQueueEntry.created_at.desc()).first()
+            return self._row_to_queue_entry(row) if row else None
+
+    def latest_admitted_entry_for(self, phone: str) -> QueueEntry | None:
+        """Most recent entry this phone was actually seated from -- the
+        "are they currently dining" signal a table QR's "book" guard reads
+        (see MaitreD._seated_entry)."""
+        from app.core.db import SessionLocal, MaitreDQueueEntry
+        with SessionLocal() as db:
+            row = db.query(MaitreDQueueEntry).filter(
+                MaitreDQueueEntry.store_id == self.store_id,
+                MaitreDQueueEntry.phone == phone,
+                MaitreDQueueEntry.status == "admitted",
+            ).order_by(MaitreDQueueEntry.admitted_at.desc()).first()
             return self._row_to_queue_entry(row) if row else None
 
     def list_queue(self, location_id: int | None = None, status: str = "waiting") -> list[QueueEntry]:

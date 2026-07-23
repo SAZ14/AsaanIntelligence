@@ -33,6 +33,21 @@ def _split_branch_suffix(text: str) -> tuple[str, str]:
     return text[:m.start()].strip(), text[m.end():].strip()
 
 
+def _venue_now(store_id: int, location_id: int | None) -> datetime:
+    """The specific location's own venue-local clock (falls back to the
+    store's primary/default location if `location_id` doesn't resolve) --
+    staff actions have no MaitreD instance's self._now() to reuse, but
+    still need the SAME clock the guest-side guards compare against
+    (see Store.admit_next's docstring on why raw UTC would skew things)."""
+    if location_id:
+        loc = next(
+            (l for l in VenueConfig.list_locations(store_id) if l.location_id == location_id), None,
+        )
+        if loc is not None:
+            return loc.now()
+    return VenueConfig.load(store_id).now()
+
+
 def _resolve_queue_location(store_id: int, text: str) -> tuple[int | None, str, str | None]:
     """Returns (location_id_or_None, remaining_text_with_branch_stripped,
     error_reply_or_None). Single-location stores never need a branch named
@@ -98,7 +113,7 @@ def admit_next_in_queue(store_id: int, rest: str = "") -> str:
     location_id, _, error = _resolve_queue_location(store_id, rest)
     if error:
         return error
-    entry, moved_up = Store(store_id).admit_next(location_id)
+    entry, moved_up = Store(store_id).admit_next(location_id, now=_venue_now(store_id, location_id))
     if entry is None:
         return "The queue is empty — nobody to admit."
     store_name = _restaurant_name(store_id)
@@ -159,7 +174,7 @@ def insert_queue_position(store_id: int, rest: str) -> str:
         branch_name = loc.branch_name if loc else ""
 
     entry = QueueEntry(phone=phone, name=name, party_size=party, location_id=location_id or 0, branch_name=branch_name)
-    day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = _venue_now(store_id, location_id).replace(hour=0, minute=0, second=0, microsecond=0)
     saved, pushed_back = Store(store_id).insert_at_position(entry, position, day_start=day_start)
     _notify_position_changes(store_id, _restaurant_name(store_id), pushed_back)
     return f"Added {name} (party {party}) at position {saved.position}, booking #{saved.queue_number}."
