@@ -50,16 +50,22 @@ def _is_cancel_message(text: str) -> bool:
 _MODIFY_TRIGGER_RE = re.compile(r"\b(?:party of\s*\d|change|update|actually|make it)\b", re.IGNORECASE)
 
 
-def _is_modify_message(text: str) -> bool:
+def _wants_to_modify_queue_entry(store_id: int, phone: str, text: str) -> bool:
     """A guest already in the queue changing their party size or name --
-    e.g. "actually we're 5 now", "change it to 5 people", "put it under
-    Bilal instead". Safe to allow broadly, same reasoning as "cancel"
-    above: agent.py's _modify_queue_entry can only ever update an
-    EXISTING waiting entry, never create one, so there's no create-power
-    to abuse -- worst case for an unrelated message that happens to match
-    is a "you don't have an active entry" reply instead of reaching the
-    community agent."""
-    return bool(_MODIFY_TRIGGER_RE.search(text))
+    e.g. "actually we're 5 now", "change it to 5 people". The trigger
+    words here ("change", "update", "actually", "make it") are ordinary
+    English, not a distinctive phrase like the booking trigger -- a
+    customer asking the COMMUNITY agent to "update my phone number" or
+    just saying "actually never mind" would match too. Confirmed live:
+    without the has-an-entry check below, every one of those got
+    hijacked into a maitre_d "no active queue entry" reply instead of
+    reaching the community agent. Requiring an actual waiting entry
+    first means the check only ever fires for someone genuinely in the
+    queue -- unrelated chatter never touches maitre_d at all."""
+    if not _MODIFY_TRIGGER_RE.search(text):
+        return False
+    from app.agents.maitre_d.store import Store
+    return Store(store_id).latest_waiting_entry_for(phone) is not None
 
 
 def _has_active_booking_flow(store_id: int, phone: str) -> bool:
@@ -114,7 +120,7 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         text = (body or "").strip()
         active_flow = _has_active_booking_flow(store_id, from_phone)
         wants_cancel = _is_cancel_message(text)
-        wants_modify = _is_modify_message(text)
+        wants_modify = _wants_to_modify_queue_entry(store_id, from_phone, text)
         # A fresh trigger only starts a flow when booking is actually
         # switched on -- staff's "disable booking" for a quiet walk-in day
         # (see internal.py). Deliberately checked ONLY for the fresh-start

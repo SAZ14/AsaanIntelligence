@@ -858,6 +858,19 @@ class TestModifyQueueEntry:
         reply = handle_customer_for_store(PHONE, "actually we're 5 now", store_id)
         assert "updated" in reply.lower()
 
+    def test_unrelated_message_with_no_queue_entry_never_reaches_maitre_d(self, store_id):
+        """Regression, found via review: the modify trigger words ("change",
+        "update", "actually", "make it") are ordinary English a customer
+        with NO queue entry at all would plausibly use with the community
+        agent ("can you update my phone number", "actually never mind").
+        Without checking for an actual waiting entry first, every one of
+        those got hijacked into maitre_d's "no active queue entry" reply
+        instead of ever reaching the community agent."""
+        from app.gateway.customer import handle_customer_for_store
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            handle_customer_for_store(PHONE, "can you update my phone number", store_id)
+        mock_md.assert_not_called()
+
 
 # ── Fix 8: seated-grace / queue-timeout are per-store configurable ─────────
 
@@ -887,6 +900,23 @@ class TestConfigurableThresholds:
         reply = handle_internal_for_store("whatsapp:+923220000000", "queue timeout 45", store_id)
         assert "45" in reply
         assert get_queue_stale_minutes(store_id) == 45
+
+    def test_queue_timeout_zero_is_rejected(self, store_id):
+        """Regression, found via review: "queue timeout 0" (a plausible
+        typo) would otherwise make the very next sweep instantly expire
+        EVERY waiting guest with no warning."""
+        from app.gateway.internal import handle_internal_for_store
+        from app.agents.maitre_d.config import get_queue_stale_minutes
+        reply = handle_internal_for_store("whatsapp:+923220000000", "queue timeout 0", store_id)
+        assert "between" in reply.lower()
+        assert get_queue_stale_minutes(store_id) == 90  # unchanged
+
+    def test_seated_grace_absurdly_high_value_is_rejected(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from app.agents.maitre_d.config import get_seated_grace_minutes
+        reply = handle_internal_for_store("whatsapp:+923220000000", "seated grace 999999", store_id)
+        assert "between" in reply.lower()
+        assert get_seated_grace_minutes(store_id) == 120  # unchanged
 
     def test_shortened_seated_grace_actually_affects_the_guard(self, store_id):
         from app.agents.maitre_d.config import set_seated_grace_minutes

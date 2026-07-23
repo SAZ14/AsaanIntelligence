@@ -664,7 +664,19 @@ def _maitre_d_toggle_booking(store_id: int, enable: bool) -> str:
         return "Queue agent is unavailable right now. Please try again shortly."
 
 
+# Sanity bounds for both staff-tunable windows -- "queue timeout 0"
+# (a plausible typo, or a staff member not realising the implication)
+# would otherwise make the very next 10-min sweep instantly expire
+# EVERY waiting guest with no warning. 1440 = 24h, generous enough for
+# any real value while still catching an obvious typo (e.g. an extra
+# zero) before it's saved.
+_MIN_THRESHOLD_MINUTES = 1
+_MAX_THRESHOLD_MINUTES = 1440
+
+
 def _maitre_d_set_seated_grace(store_id: int, minutes: int) -> str:
+    if not (_MIN_THRESHOLD_MINUTES <= minutes <= _MAX_THRESHOLD_MINUTES):
+        return f"Please pick a value between {_MIN_THRESHOLD_MINUTES} and {_MAX_THRESHOLD_MINUTES} minutes."
     try:
         from app.agents.maitre_d.config import set_seated_grace_minutes
         set_seated_grace_minutes(store_id, minutes)
@@ -675,6 +687,8 @@ def _maitre_d_set_seated_grace(store_id: int, minutes: int) -> str:
 
 
 def _maitre_d_set_queue_timeout(store_id: int, minutes: int) -> str:
+    if not (_MIN_THRESHOLD_MINUTES <= minutes <= _MAX_THRESHOLD_MINUTES):
+        return f"Please pick a value between {_MIN_THRESHOLD_MINUTES} and {_MAX_THRESHOLD_MINUTES} minutes."
     try:
         from app.agents.maitre_d.config import set_queue_stale_minutes
         set_queue_stale_minutes(store_id, minutes)
