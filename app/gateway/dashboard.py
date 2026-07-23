@@ -89,7 +89,15 @@ async def login_submit(request: Request, phone: str = Form(...)):
         return templates.TemplateResponse(
             request, "login.html", {"error": message}, status_code=400,
         )
-    return RedirectResponse(f"/dashboard/verify?phone={result}", status_code=303)
+    # result is a canonical "whatsapp:+<digits>" id -- MUST be percent-encoded
+    # here, not just interpolated raw: an un-encoded "+" in a query string is
+    # decoded back to a space by the standard application/x-www-form-urlencoded
+    # convention (confirmed live -- every login silently failed verification
+    # because the phone round-tripped through this redirect as "whatsapp:
+    # 9233..." instead of "whatsapp:+9233...", so the cache lookup key in
+    # verify_otp() never matched what request_otp() actually stored).
+    from urllib.parse import quote
+    return RedirectResponse(f"/dashboard/verify?phone={quote(result, safe='')}", status_code=303)
 
 
 @router.get("/verify", response_class=HTMLResponse)

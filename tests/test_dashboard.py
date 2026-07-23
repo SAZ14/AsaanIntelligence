@@ -90,6 +90,36 @@ class TestDashboardAuth:
         second = client.post("/dashboard/verify", data={"phone": STAFF_PHONE, "code": code})
         assert second.status_code == 400
 
+    def test_full_browser_redirect_chain_preserves_the_plus_sign(self, client, store_id):
+        """Regression test for a real production bug: login_submit's
+        redirect used to interpolate the "whatsapp:+<digits>" id into the
+        query string unencoded, so the "+" got silently decoded back to a
+        space by the time verify_page/verify_submit parsed it, permanently
+        breaking every real login. Unlike the other tests in this file
+        (which POST straight to /dashboard/verify with a hardcoded correct
+        phone, never exercising the redirect at all), this one follows the
+        actual browser path: submit login, follow the 303 to /verify,
+        extract whatever phone value the server actually put in the
+        hidden form field, and submit that -- exactly what a browser
+        does."""
+        r = client.post("/dashboard/login", data={"phone": STAFF_PHONE_RAW}, follow_redirects=False)
+        assert r.status_code == 303
+        verify_page = client.get(r.headers["location"])
+        assert verify_page.status_code == 200
+        import re as _re
+        m = _re.search(r'name="phone" value="([^"]*)"', verify_page.text)
+        assert m, "verify page should carry the phone in a hidden field"
+        phone_from_page = m.group(1)
+        assert phone_from_page == STAFF_PHONE, (
+            f"redirect corrupted the phone id: got {phone_from_page!r}"
+        )
+        code = _otp_code(STAFF_PHONE)
+        final = client.post(
+            "/dashboard/verify", data={"phone": phone_from_page, "code": code}, follow_redirects=False,
+        )
+        assert final.status_code == 303
+        assert final.headers["location"] == "/dashboard/queue"
+
     def test_otp_resend_is_rate_limited(self, client, store_id):
         r1 = client.post("/dashboard/login", data={"phone": STAFF_PHONE_RAW})
         r2 = client.post("/dashboard/login", data={"phone": STAFF_PHONE_RAW})
