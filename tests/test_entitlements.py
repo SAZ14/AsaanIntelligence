@@ -131,6 +131,22 @@ class TestStaffDispatchGating:
         text = staff_help_text("Entitlements Cafe", store_id)
         assert "no agents are included" in text.lower()
 
+    def test_mode_menu_bracket_list_only_shows_licensed_agents(self, store_id):
+        set_store_agents(store_id, {"integrity", "maitre_d"})
+        from app.gateway.main import _mode_menu
+        text = _mode_menu("Entitlements Cafe", store_id)
+        assert "integrity" in text
+        assert "reservations" in text
+        assert "revenue" not in text
+        assert "scout" not in text
+        assert "reputation" not in text
+
+    def test_mode_menu_with_no_agents_still_offers_staff_tools_line(self, store_id):
+        set_store_agents(store_id, set())
+        from app.gateway.main import _mode_menu
+        text = _mode_menu("Entitlements Cafe", store_id)
+        assert "1: Staff tools" in text
+
 
 # ── guest WhatsApp dispatch (customer.py) ────────────────────────────────────
 

@@ -113,19 +113,43 @@ def _verify(request: Request, params: dict) -> bool:
         return True
 
 
-def _mode_menu(store_name: str) -> str:
+# Short, lowercase labels for the mode-menu's bracketed list -- distinct
+# from app.core.entitlements.AGENT_LABELS (those are the fuller "Integrity
+# (POS audit)" style used for the dashboard/"not licensed" messages).
+# "reservations" for maitre_d matches the wording this menu always used.
+_MODE_MENU_AGENT_LABELS = [
+    ("integrity", "integrity"),
+    ("revenue", "revenue"),
+    ("scout", "scout"),
+    ("reputation", "reputation"),
+    ("maitre_d", "reservations"),
+]
+
+
+def _mode_menu(store_name: str, store_id: int | None = None) -> str:
+    """store_id=None (a couple of tests/legacy callers) shows every agent
+    in the bracketed list -- real callers always pass store_id."""
+    if store_id is None:
+        licensed = [label for _, label in _MODE_MENU_AGENT_LABELS]
+    else:
+        from app.core.entitlements import has_agent_access
+        licensed = [label for agent, label in _MODE_MENU_AGENT_LABELS if has_agent_access(store_id, agent)]
+    staff_line = (
+        f"  1: Staff tools ({', '.join(licensed)})\n" if licensed
+        else "  1: Staff tools\n"
+    )
     return (
         f"Welcome to {store_name}!\n\n"
         "Reply with:\n"
-        "  1: Staff tools (integrity, revenue, scout, reputation, reservations)\n"
+        f"{staff_line}"
         "  2: Customer app (stamps, deals, loyalty)\n\n"
         "Type *menu* anytime to return here."
     )
 
 
-def _internal_welcome(store_name: str) -> str:
+def _internal_welcome(store_name: str, store_id: int | None = None) -> str:
     from app.gateway.internal import staff_help_text
-    return staff_help_text(store_name)
+    return staff_help_text(store_name, store_id)
 
 
 def _customer_welcome() -> str:
@@ -887,7 +911,7 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     # "menu" / "back" always returns to mode-selection screen
     if cmd in _MODE_TRIGGERS:
         set_user_session(from_number, store_id, active_agent=None)
-        return _twiml(_mode_menu(store_name))
+        return _twiml(_mode_menu(store_name, store_id))
 
     # Reputation action commands work regardless of session state — owners reply
     # to review alerts from any context and must not hit the mode-selection screen.
@@ -907,12 +931,12 @@ async def unified_whatsapp(request: Request, background_tasks: BackgroundTasks) 
     if current_mode is None:
         if cmd == "1":
             set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
-            return _twiml(_internal_welcome(store_name))
+            return _twiml(_internal_welcome(store_name, store_id))
         if cmd == "2":
             set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
             return _twiml(_customer_welcome())
         # Any other input (including "hi", wrong text) → show selection again
-        return _twiml(_mode_menu(store_name))
+        return _twiml(_mode_menu(store_name, store_id))
 
     # ── Internal tools mode ────────────────────────────────────────────────────
     if current_mode == MODE_INTERNAL:
@@ -1127,7 +1151,7 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
 
     if cmd in _MODE_TRIGGERS:
         set_user_session(from_number, store_id, active_agent=None)
-        background_tasks.add_task(send_fn, _mode_menu(store_name))
+        background_tasks.add_task(send_fn, _mode_menu(store_name, store_id))
         return "ok"
 
     from app.core.entitlements import has_agent_access
@@ -1144,13 +1168,13 @@ def _process_async_message(store, from_number: str, body_text: str, send_fn,
     if current_mode is None:
         if cmd == "1":
             set_user_session(from_number, store_id, active_agent=MODE_INTERNAL)
-            background_tasks.add_task(send_fn, _internal_welcome(store_name))
+            background_tasks.add_task(send_fn, _internal_welcome(store_name, store_id))
         elif cmd == "2":
             set_user_session(from_number, store_id, active_agent=MODE_CUSTOMER)
             background_tasks.add_task(send_fn, _customer_welcome())
         else:
             # Any other input (including "hi", wrong text) → show selection again
-            background_tasks.add_task(send_fn, _mode_menu(store_name))
+            background_tasks.add_task(send_fn, _mode_menu(store_name, store_id))
         return "ok"
 
     # ── Internal tools mode ────────────────────────────────────────────────────
