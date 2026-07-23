@@ -627,6 +627,57 @@ class TestCustomerGatewayRouting:
         assert "VIP" in args[1]
 
 
+# ── Realistic webhook phone format ("whatsapp:+92...", not the bare "+92..."
+# every other test in this file uses) -- regression coverage for a real bug
+# confirmed live: handle_customer_for_store used to pass from_phone through
+# to _has_active_booking_flow/_wants_to_modify_queue_entry RAW, but
+# MaitreDConversation/MaitreDQueueEntry rows are always keyed by the
+# NORMALIZED phone (MaitreD.handle_message normalizes internally). Every
+# real webhook (Twilio/OpenWA/Meta) passes "whatsapp:+92...", so this
+# mismatch silently broke EVERY multi-turn guest conversation in
+# production -- a guest's second message (answering "how many people?")
+# could never be recognised as a continuation and fell through to the
+# community agent instead. The bare-PHONE constant every other test here
+# uses happens to already be in normalized form, which is exactly why this
+# was never caught until a real, realistically-formatted live test did.
+WHATSAPP_PHONE = "whatsapp:+923001234567"
+
+
+class TestRealisticWebhookPhoneFormat:
+    def test_multi_turn_booking_completes_with_whatsapp_prefixed_phone(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        r1 = handle_customer_for_store(WHATSAPP_PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        assert "which branch" not in r1.lower()
+        r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
+        assert "booking number" in r2.lower(), (
+            f"multi-turn continuation broke with a whatsapp:-prefixed phone: {r2!r}"
+        )
+
+    def test_cancel_works_with_whatsapp_prefixed_phone(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        handle_customer_for_store(WHATSAPP_PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
+        reply = handle_customer_for_store(WHATSAPP_PHONE, "cancel", store_id)
+        assert "removed" in reply.lower()
+
+    def test_modify_works_with_whatsapp_prefixed_phone(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        handle_customer_for_store(WHATSAPP_PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
+        with patch("app.gateway.customer._llm_confirms_modify_intent", return_value=True):
+            reply = handle_customer_for_store(WHATSAPP_PHONE, "actually we're 5 now", store_id)
+        assert "updated" in reply.lower() or "5" in reply
+
+    def test_branch_coded_qr_trigger_with_whatsapp_prefixed_phone(self, store_id):
+        _seed_two_locations(store_id)
+        from app.gateway.customer import handle_customer_for_store
+        r1 = handle_customer_for_store(WHATSAPP_PHONE, "Join the Queue - new_blue_area", store_id)
+        assert "which branch" not in r1.lower()
+        r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
+        assert "booking number" in r2.lower()
+        assert "new blue area" in r2.lower()
+
+
 # ── Gateway wiring: staff mode queue/listing/NL-Q&A routing ────────────────
 
 class TestStaffGatewayRouting:

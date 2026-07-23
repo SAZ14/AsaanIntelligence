@@ -179,8 +179,24 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
     empty/falsy return here sends nothing back)."""
     try:
         from app.core.entitlements import has_agent_access
+        from app.agents.maitre_d.config import normalise_phone
 
         text = (body or "").strip()
+        # Every real webhook (Twilio/OpenWA/Meta) passes from_phone as
+        # "whatsapp:+92..." -- normalize it ONCE here, up front, and use
+        # that consistently below. Confirmed live as a real bug: this used
+        # to pass from_phone through RAW to _has_active_booking_flow/
+        # _wants_to_modify_queue_entry, which look up MaitreDConversation/
+        # MaitreDQueueEntry rows by an exact phone match -- but those rows
+        # are always saved under the NORMALIZED phone (MaitreD.handle_message
+        # normalizes internally before touching any storage). The raw vs
+        # normalized mismatch meant a guest's SECOND message in a booking
+        # flow (e.g. answering "how many people?") could never be recognised
+        # as a continuation and silently fell through to the community
+        # agent instead -- reproduced live against production, not just in
+        # tests (the existing test suite's PHONE constant happened to
+        # already be in normalized form, masking this for every prior test).
+        phone = normalise_phone(from_phone)
 
         # maitre_d (the walk-in queue) is only even considered if this
         # store's package includes it -- otherwise none of the booking-
@@ -190,9 +206,9 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         if has_agent_access(store_id, "maitre_d"):
             from app.agents.maitre_d.config import is_booking_enabled
 
-            active_flow = _has_active_booking_flow(store_id, from_phone)
+            active_flow = _has_active_booking_flow(store_id, phone)
             wants_cancel = _is_cancel_message(text)
-            wants_modify = _wants_to_modify_queue_entry(store_id, from_phone, text)
+            wants_modify = _wants_to_modify_queue_entry(store_id, phone, text)
             # A fresh trigger only starts a flow when booking is actually
             # switched on -- staff's "disable booking" for a quiet walk-in day
             # (see internal.py). Deliberately checked ONLY for the fresh-start
@@ -203,7 +219,7 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
             wants_new_booking = _is_booking_trigger(text) and is_booking_enabled(store_id)
 
             if active_flow or wants_cancel or wants_modify or wants_new_booking:
-                return _handle_booking(from_phone, text, store_id)
+                return _handle_booking(phone, text, store_id)
 
         # Not a recognised booking trigger (including a disabled "Join the
         # Queue", or plain text like "book"/"table for 2" typed by someone
@@ -215,7 +231,10 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         if not has_agent_access(store_id, "customer"):
             return ""
         from app.agents.customer.agents.community_customer import handle_customer_message
-        reply = handle_customer_message(from_phone, body, store_id=store_id)
+        # handle_customer_message re-parses phone itself (parse_twilio_
+        # whatsapp_phone strips "whatsapp:" if present either way), so
+        # passing the already-normalized phone here is safe either way.
+        reply = handle_customer_message(phone, body, store_id=store_id)
         return reply.body
     except Exception as e:
         logger.error("Customer agent error store=%d: %s", store_id, e)
