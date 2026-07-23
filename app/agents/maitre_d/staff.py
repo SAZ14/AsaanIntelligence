@@ -218,8 +218,18 @@ def insert_queue_position(store_id: int, rest: str) -> str:
         )
         branch_name = loc.branch_name if loc else ""
 
-    entry = QueueEntry(phone=phone, name=name, party_size=party, location_id=location_id or 0, branch_name=branch_name)
-    day_start = _venue_now(store_id, location_id).replace(hour=0, minute=0, second=0, microsecond=0)
+    now = _venue_now(store_id, location_id)
+    # created_at must be the VENUE-local clock, not QueueEntry's own
+    # default (server time, via pydantic's Field(default_factory=
+    # datetime.now)) -- confirmed live: a walk-in inserted seconds ago
+    # was immediately flagged as stale by expire_stale_entries() because
+    # its created_at (server/UTC clock) read hours behind this store's
+    # Asia/Karachi "now", making it look far older than it actually was.
+    entry = QueueEntry(
+        phone=phone, name=name, party_size=party, location_id=location_id or 0,
+        branch_name=branch_name, created_at=now,
+    )
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     saved, pushed_back = Store(store_id).insert_at_position(entry, position, day_start=day_start)
     _notify_position_changes(store_id, _restaurant_name(store_id), pushed_back)
     phone_note = "" if saved.phone else " (no phone on file — won't get text updates)"

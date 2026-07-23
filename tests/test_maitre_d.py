@@ -929,3 +929,18 @@ class TestWalkInWithoutPhone:
             reply = admit_next_in_queue(store_id)
         assert "Admitted" in reply
         mock_send.assert_not_called()  # no phone on file -- nothing to send
+
+    def test_walk_in_created_at_uses_venue_local_clock(self, store_id):
+        """Regression (found via live testing on the real deployment):
+        insert_queue_position used to let QueueEntry's created_at default
+        to datetime.now() (server clock) instead of the venue-local clock
+        it's compared against elsewhere -- a walk-in inserted seconds ago
+        was immediately flagged as stale by the maintenance sweep, because
+        its created_at read hours behind Asia/Karachi's "now" on a
+        UTC-clocked server."""
+        from app.agents.maitre_d.staff import insert_queue_position
+        from app.agents.maitre_d.config import VenueConfig
+        insert_queue_position(store_id, "1 Walked In, party 2")
+        entry = Store(store_id).list_queue(status="waiting")[0]
+        venue_now = VenueConfig.load(store_id).now()
+        assert abs((venue_now - entry.created_at).total_seconds()) < 30
