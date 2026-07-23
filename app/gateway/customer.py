@@ -50,22 +50,67 @@ def _is_cancel_message(text: str) -> bool:
 _MODIFY_TRIGGER_RE = re.compile(r"\b(?:party of\s*\d|change|update|actually|make it)\b", re.IGNORECASE)
 
 
+def _llm_confirms_modify_intent(text: str) -> bool:
+    """Final gatekeeper before treating a message as a queue-entry update
+    -- the regex above is only a cheap pre-filter (its trigger words are
+    ordinary English: "change"/"update"/"actually"/"make it" all show up
+    in completely unrelated chatter too, e.g. a guest already in the
+    queue asking "actually can I get extra napkins"). Uses the same
+    shared ZAI client every other agent's routing/classification calls
+    go through (see app.core.llm.get_fast_model's own docstring -- it's
+    built for exactly this: "message routing... intent classification").
+
+    Fails CLOSED: any error or timeout is treated as NOT a modify request,
+    falling through to the community agent. A missed modify attempt just
+    means the guest rephrases or says "cancel" and rejoins -- much
+    cheaper than silently misapplying a change to their queue entry
+    based on a misread message."""
+    try:
+        from app.core.llm import get_client, get_fast_model, nothink_kwargs
+        client = get_client()
+        model = get_fast_model()
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=5,
+            temperature=0,
+            # Tight timeout, same reasoning as nlu.py's own LLM call: the
+            # underlying client's max_retries=1 makes this a ceiling PER
+            # ATTEMPT, and the fail-closed fallback above exists precisely
+            # so a slow/failed call never blocks or misroutes a reply.
+            timeout=6.0,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "A restaurant customer who is CURRENTLY WAITING in a "
+                    "walk-in queue sent this message. Is it a request to "
+                    "change their party size or the name on their queue "
+                    "entry (e.g. \"actually we're 5 now\", \"change it to "
+                    "4 people\", \"put it under Bilal instead\")? Reply "
+                    "with exactly one word, YES or NO -- nothing else.\n\n"
+                    f"Message: \"{text}\""
+                ),
+            }],
+            **nothink_kwargs(model),
+        )
+        answer = resp.choices[0].message.content.strip().upper()
+        return answer.startswith("YES")
+    except Exception:
+        return False
+
+
 def _wants_to_modify_queue_entry(store_id: int, phone: str, text: str) -> bool:
     """A guest already in the queue changing their party size or name --
-    e.g. "actually we're 5 now", "change it to 5 people". The trigger
-    words here ("change", "update", "actually", "make it") are ordinary
-    English, not a distinctive phrase like the booking trigger -- a
-    customer asking the COMMUNITY agent to "update my phone number" or
-    just saying "actually never mind" would match too. Confirmed live:
-    without the has-an-entry check below, every one of those got
-    hijacked into a maitre_d "no active queue entry" reply instead of
-    reaching the community agent. Requiring an actual waiting entry
-    first means the check only ever fires for someone genuinely in the
-    queue -- unrelated chatter never touches maitre_d at all."""
+    e.g. "actually we're 5 now", "change it to 5 people". Layered so the
+    (rare, one-call) LLM classification only ever runs for someone who's
+    both said something modify-shaped AND is genuinely in the queue --
+    unrelated chatter, or anyone with no active entry, never reaches it
+    at all, let alone the community agent's normal message volume."""
     if not _MODIFY_TRIGGER_RE.search(text):
         return False
     from app.agents.maitre_d.store import Store
-    return Store(store_id).latest_waiting_entry_for(phone) is not None
+    if Store(store_id).latest_waiting_entry_for(phone) is None:
+        return False
+    return _llm_confirms_modify_intent(text)
 
 
 def _has_active_booking_flow(store_id: int, phone: str) -> bool:

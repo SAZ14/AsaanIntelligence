@@ -10,7 +10,7 @@ app/agents/maitre_d/__init__.py's module docstring.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -851,11 +851,18 @@ class TestModifyQueueEntry:
         assert r2.action == "need_info"
         assert "name" in r2.text.lower()
 
+    @staticmethod
+    def _mock_llm_answering(answer: str) -> MagicMock:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = answer
+        return mock_client
+
     def test_modify_message_routes_through_gateway_without_active_flow(self, store_id):
         from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
         handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
         handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
-        reply = handle_customer_for_store(PHONE, "actually we're 5 now", store_id)
+        with patch("app.core.llm.get_client", return_value=self._mock_llm_answering("YES")):
+            reply = handle_customer_for_store(PHONE, "actually we're 5 now", store_id)
         assert "updated" in reply.lower()
 
     def test_unrelated_message_with_no_queue_entry_never_reaches_maitre_d(self, store_id):
@@ -865,10 +872,45 @@ class TestModifyQueueEntry:
         agent ("can you update my phone number", "actually never mind").
         Without checking for an actual waiting entry first, every one of
         those got hijacked into maitre_d's "no active queue entry" reply
-        instead of ever reaching the community agent."""
+        instead of ever reaching the community agent. (No LLM mock needed
+        here -- the has-an-entry check short-circuits before ever
+        reaching the LLM classification.)"""
         from app.gateway.customer import handle_customer_for_store
         with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
             handle_customer_for_store(PHONE, "can you update my phone number", store_id)
+        mock_md.assert_not_called()
+
+    def test_llm_confirms_genuine_modify_intent(self, store_id):
+        from app.gateway.customer import _llm_confirms_modify_intent
+        with patch("app.core.llm.get_client", return_value=self._mock_llm_answering("YES")):
+            assert _llm_confirms_modify_intent("actually we're 5 now") is True
+
+    def test_llm_rejects_unrelated_message_from_an_already_queued_guest(self, store_id):
+        """The exact residual gap this LLM check exists to close: a guest
+        who IS in the queue asking for something unrelated that happens
+        to contain a trigger word ("actually") must not be misread as a
+        request to change their party size."""
+        from app.gateway.customer import _llm_confirms_modify_intent
+        with patch("app.core.llm.get_client", return_value=self._mock_llm_answering("NO")):
+            assert _llm_confirms_modify_intent("actually can I get extra napkins") is False
+
+    def test_llm_failure_fails_closed(self, store_id):
+        from app.gateway.customer import _llm_confirms_modify_intent
+        with patch("app.core.llm.get_client", side_effect=RuntimeError("boom")):
+            assert _llm_confirms_modify_intent("actually we're 5 now") is False
+
+    def test_already_queued_guest_asking_something_unrelated_reaches_community_agent(self, store_id):
+        """End-to-end version of the residual gap: even with an active
+        queue entry, a message the LLM correctly reads as unrelated must
+        still reach the community agent, not get treated as a modify."""
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
+        with (
+            patch("app.core.llm.get_client", return_value=self._mock_llm_answering("NO")),
+            patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md,
+        ):
+            handle_customer_for_store(PHONE, "actually can I get extra napkins", store_id)
         mock_md.assert_not_called()
 
 
