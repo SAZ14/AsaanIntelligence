@@ -1,0 +1,20 @@
+{% extends "app_base.html" %}
+{% block title %}Queue — {{ store_name }}{% endblock %}
+{% block content %}
+<div id="queue-board">
+  {% include "_queue_fragment.html" %}
+</div>
+<script>
+  async function refreshQueue() {
+    try {
+      const res = await fetch('/dashboard/queue/fragment', {credentials: 'same-origin'});
+      if (res.ok) {
+        document.getElementById('queue-board').innerHTML = await res.text();
+      } else if (res.status === 303 || res.redirected) {
+        window.location.reload();
+      }
+    } catch (e) { /* offline blip -- next poll retries */ }
+  }
+  setInterval(refreshQueue, 5000);
+</script>
+{% endblock %}

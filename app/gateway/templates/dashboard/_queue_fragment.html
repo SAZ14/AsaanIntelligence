@@ -1,0 +1,61 @@
+{% if not booking_enabled %}
+<div class="error-banner" style="background:color-mix(in srgb, var(--warn) 12%, transparent); color:var(--warn); border-color:color-mix(in srgb, var(--warn) 35%, transparent);">
+  Booking is currently OFF — guests scanning the entrance QR won't be added to the queue.
+</div>
+{% endif %}
+
+{% if not groups %}
+<div class="panel"><p class="empty-state">The queue is empty.</p></div>
+{% else %}
+  {% for group in groups %}
+  <div class="panel">
+    <h2>{% if group.branch_name %}{{ group.branch_name }}{% else %}Live queue{% endif %}
+      <span class="pill good" style="margin-left:8px;">{{ group.entries|length }} waiting</span>
+    </h2>
+
+    {% if group.entries %}
+    <form method="post" action="/dashboard/queue/admit" style="margin-bottom:16px;">
+      <input type="hidden" name="branch_name" value="{{ group.branch_name }}">
+      <button type="submit">Admit #{{ group.entries[0].queue_number }} — {{ group.entries[0].name or group.entries[0].phone }}</button>
+    </form>
+    {% endif %}
+
+    <div class="overflow-x">
+    <table class="plain">
+      <thead><tr><th>#</th><th>Name</th><th>Party</th><th>Position</th><th></th></tr></thead>
+      <tbody>
+      {% for e in group.entries %}
+        <tr>
+          <td class="num"><span class="ticket-number">{{ e.queue_number }}</span></td>
+          <td>{{ e.name or e.phone or "—" }}{% if e.is_vip %} <span class="pill good">VIP</span>{% endif %}</td>
+          <td class="num">{{ e.party_size }}</td>
+          <td class="num" style="color:var(--fg-muted);">{{ e.position }}</td>
+          <td>
+            <form method="post" action="/dashboard/queue/remove" style="display:inline;">
+              <input type="hidden" name="branch_name" value="{{ group.branch_name }}">
+              <input type="hidden" name="position" value="{{ e.position }}">
+              <button type="submit" class="danger">Remove</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    <details style="margin-top:14px;">
+      <summary style="cursor:pointer;color:var(--fg-muted);font-size:0.9rem;">Add a walk-in</summary>
+      <form method="post" action="/dashboard/queue/insert" style="margin-top:12px;">
+        <input type="hidden" name="branch_name" value="{{ group.branch_name }}">
+        <div class="row-fields">
+          <div class="field"><label>Position</label><input type="number" name="position" min="1" value="1" required></div>
+          <div class="field"><label>Party size</label><input type="number" name="party_size" min="1" value="2" required></div>
+        </div>
+        <div class="field"><label>Name</label><input type="text" name="name" required></div>
+        <div class="field"><label>Phone (optional)</label><input type="tel" name="phone" placeholder="+92..."></div>
+        <button type="submit" class="secondary">Add to queue</button>
+      </form>
+    </details>
+  </div>
+  {% endfor %}
+{% endif %}

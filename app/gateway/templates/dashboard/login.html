@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Queue Dashboard{% endblock %}
+{% block body %}
+<div class="auth-shell">
+  <h1>Queue Dashboard</h1>
+  <p class="lede">Enter your staff WhatsApp number and we'll text you a one-time code.</p>
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+  <form method="post" action="/dashboard/login">
+    <div class="field">
+      <label for="phone">WhatsApp number</label>
+      <input type="tel" id="phone" name="phone" placeholder="+92 300 1234567" required autofocus>
+    </div>
+    <button type="submit">Send code</button>
+  </form>
+</div>
+{% endblock %}

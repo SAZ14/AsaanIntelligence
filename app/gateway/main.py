@@ -738,6 +738,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AsaanPay Central Agent Server", lifespan=lifespan)
 
+from app.gateway.dashboard import router as _dashboard_router
+app.include_router(_dashboard_router)
+
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 

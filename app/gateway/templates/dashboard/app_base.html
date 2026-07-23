@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="shell">
+  <header class="top">
+    <h1>{{ store_name }}</h1>
+    <div class="who">Signed in ({{ role }}) &middot; <a href="/dashboard/logout">Log out</a></div>
+  </header>
+  <nav class="tabs">
+    <a href="/dashboard/queue" class="{% if active_tab == 'queue' %}active{% endif %}">Queue</a>
+    <a href="/dashboard/vips" class="{% if active_tab == 'vips' %}active{% endif %}">VIPs</a>
+    <a href="/dashboard/branches" class="{% if active_tab == 'branches' %}active{% endif %}">Branches</a>
+    <a href="/dashboard/settings" class="{% if active_tab == 'settings' %}active{% endif %}">Settings</a>
+  </nav>
+  {% block content %}{% endblock %}
+</div>
+{% endblock %}

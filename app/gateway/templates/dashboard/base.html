@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Queue Dashboard{% endblock %}</title>
+<style>
+  :root {
+    --ink: #14181c;
+    --ink-2: #1c2126;
+    --paper: #f3f5f2;
+    --paper-2: #e7ebe6;
+    --text-dark: #262b2e;
+    --text-light: #e8e6e1;
+    --muted-dark: #5c6560;
+    --muted-light: #a9b3ac;
+    --line-dark: #d7dcd3;
+    --line-light: #2c3339;
+    --accent: #c08a3e;
+    --accent-ink: #14181c;
+    --good: #5b7a63;
+    --danger: #a8462f;
+    --warn: #b3672b;
+
+    --bg: var(--paper);
+    --bg-panel: #ffffff;
+    --fg: var(--text-dark);
+    --fg-muted: var(--muted-dark);
+    --line: var(--line-dark);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--ink);
+      --bg-panel: var(--ink-2);
+      --fg: var(--text-light);
+      --fg-muted: var(--muted-light);
+      --line: var(--line-light);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: var(--ink);
+    --bg-panel: var(--ink-2);
+    --fg: var(--text-light);
+    --fg-muted: var(--muted-light);
+    --line: var(--line-light);
+  }
+  :root[data-theme="light"] {
+    --bg: var(--paper);
+    --bg-panel: #ffffff;
+    --fg: var(--text-dark);
+    --fg-muted: var(--muted-dark);
+    --line: var(--line-dark);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+    line-height: 1.45;
+  }
+  h1, h2, h3, .ticket-number {
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+    text-wrap: balance;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+
+  a { color: var(--accent); }
+
+  .shell { max-width: 780px; margin: 0 auto; padding: 0 20px 64px; }
+
+  header.top {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; padding: 22px 0 14px; border-bottom: 1px solid var(--line);
+    margin-bottom: 20px;
+  }
+  header.top h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
+  header.top .who { font-size: 0.85rem; color: var(--fg-muted); }
+  header.top .who a { color: inherit; text-decoration: underline; }
+
+  nav.tabs { display: flex; gap: 4px; margin-bottom: 24px; flex-wrap: wrap; }
+  nav.tabs a {
+    text-decoration: none; color: var(--fg-muted); font-size: 0.9rem;
+    padding: 7px 14px; border-radius: 999px; border: 1px solid transparent;
+  }
+  nav.tabs a.active { color: var(--fg); background: var(--bg-panel); border-color: var(--line); font-weight: 600; }
+
+  .panel {
+    background: var(--bg-panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px; margin-bottom: 20px;
+  }
+  .panel h2 { margin: 0 0 14px; font-size: 1.05rem; font-weight: 600; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .field label { font-size: 0.8rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .field input, .field select {
+    font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); width: 100%;
+  }
+  .field input:focus, .field select:focus, button:focus-visible, a:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .row-fields { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row-fields .field { flex: 1; min-width: 120px; }
+
+  button, .btn {
+    font: inherit; font-weight: 600; cursor: pointer; border: none; border-radius: 8px;
+    padding: 10px 16px; background: var(--accent); color: var(--accent-ink);
+    display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+  }
+  button.secondary, .btn.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  button.danger, .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .pill {
+    display: inline-flex; align-items: center; font-size: 0.72rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 9px; border-radius: 999px;
+  }
+  .pill.good { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+
+  .error-banner {
+    background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 0.9rem;
+  }
+
+  .empty-state { color: var(--fg-muted); font-style: italic; padding: 6px 0; }
+
+  .auth-shell {
+    max-width: 380px; margin: 12vh auto 0; padding: 0 20px;
+  }
+  .auth-shell h1 { font-size: 1.6rem; margin-bottom: 4px; }
+  .auth-shell p.lede { color: var(--fg-muted); margin-top: 0; margin-bottom: 24px; }
+
+  table.plain { width: 100%; border-collapse: collapse; }
+  table.plain th, table.plain td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 0.92rem; }
+  table.plain th { color: var(--fg-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+
+  .overflow-x { overflow-x: auto; }
+</style>
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>

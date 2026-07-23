@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Enter code — Queue Dashboard{% endblock %}
+{% block body %}
+<div class="auth-shell">
+  <h1>Enter your code</h1>
+  <p class="lede">We've sent a 6-digit code over WhatsApp if that number is registered staff. It expires in 5 minutes.</p>
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+  <form method="post" action="/dashboard/verify">
+    <input type="hidden" name="phone" value="{{ phone }}">
+    <div class="field">
+      <label for="code">6-digit code</label>
+      <input type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" id="code" name="code" required autofocus>
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+  <p style="margin-top:16px;"><a href="/dashboard/login">Use a different number</a></p>
+</div>
+{% endblock %}

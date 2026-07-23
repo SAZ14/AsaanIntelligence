@@ -1,0 +1,37 @@
+{% extends "app_base.html" %}
+{% block title %}VIPs — {{ store_name }}{% endblock %}
+{% block content %}
+<div class="panel">
+  <h2>VIP guests</h2>
+  {% if not vips %}
+    <p class="empty-state">No VIPs on file yet.</p>
+  {% else %}
+    <div class="overflow-x">
+    <table class="plain">
+      <thead><tr><th>Name</th><th>Phone</th><th>Tier</th><th>Notes</th></tr></thead>
+      <tbody>
+      {% for phone, v in vips.items() %}
+        <tr>
+          <td>{{ v.name or phone }}</td>
+          <td class="num">{{ phone }}</td>
+          <td>{{ v.tier }}</td>
+          <td>{{ v.notes }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% endif %}
+</div>
+<div class="panel">
+  <h2>Add a VIP</h2>
+  <form method="post" action="/dashboard/vips/add">
+    <div class="row-fields">
+      <div class="field"><label>Phone</label><input type="tel" name="phone" placeholder="+92..." required></div>
+      <div class="field"><label>Name</label><input type="text" name="name" required></div>
+    </div>
+    <div class="field"><label>Notes (optional)</label><input type="text" name="notes" placeholder="e.g. window table, food critic"></div>
+    <button type="submit">Add VIP</button>
+  </form>
+</div>
+{% endblock %}

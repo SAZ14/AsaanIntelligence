@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
+    "jinja2>=3.1",  # staff dashboard (server-rendered pages, app/gateway/dashboard.py)
 
     # Data layer
     "sqlalchemy>=2.0",

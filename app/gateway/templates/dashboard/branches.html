@@ -1,0 +1,31 @@
+{% extends "app_base.html" %}
+{% block title %}Branches — {{ store_name }}{% endblock %}
+{% block content %}
+<div class="panel">
+  <h2>Branches</h2>
+  {% if not locations %}
+    <p class="empty-state">This restaurant has a single location, no separate branches configured.</p>
+  {% else %}
+    <div class="overflow-x">
+    <table class="plain">
+      <thead><tr><th>Branch</th><th>Address</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for loc in locations %}
+        <tr>
+          <td>{{ loc.branch_name }}{% if loc.is_primary %} <span class="pill good">Primary</span>{% endif %}</td>
+          <td>{{ loc.address or "—" }}</td>
+          <td>
+            {% if loc.accepts_reservations %}
+              <span class="pill good">Takes walk-ins</span>
+            {% else %}
+              <span class="pill warn">Delivery-only</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
