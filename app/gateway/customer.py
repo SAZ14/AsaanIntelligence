@@ -5,9 +5,12 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# The ONLY thing that starts a fresh queue-join: the exact prefilled text
-# of the entrance/booking-area QR code's wa.me link, e.g.
+# The ONLY thing that starts a fresh queue-join: the prefilled text of the
+# entrance/booking-area QR code's wa.me link, e.g.
 #   https://wa.me/<number>?text=Join%20the%20Queue
+# or, for one specific branch of a multi-location store (see
+# main.py's get_queue_join_links, which generates exactly this format):
+#   https://wa.me/<number>?text=Join%20the%20Queue%20-%20F7
 # Deliberately NOT a keyword match on "book"/"table"/"reservation" (that
 # used to be the trigger) -- a table's own QR code can be scanned by
 # someone already seated there, and a wa.me link's prefilled text is just
@@ -32,11 +35,20 @@ _BOOKING_TRIGGER_NORM = _alnum(BOOKING_TRIGGER_PHRASE)
 
 
 def _is_booking_trigger(text: str) -> bool:
-    """Alnum-normalised exact match -- tolerant of surrounding emoji/
+    """Alnum-normalised PREFIX match -- tolerant of surrounding emoji/
     punctuation a restaurant might decorate the printed QR text with
-    ("🎫 Join the Queue!"), but still a specific phrase, not a loose
-    keyword-in-free-text match."""
-    return _alnum(text) == _BOOKING_TRIGGER_NORM
+    ("🎫 Join the Queue!"), and of a location code appended after the
+    phrase for a branch-specific QR ("Join the Queue - F7"). Still
+    requires the base phrase to be typed in full at the START of the
+    message, not merely present somewhere in it -- "please join the
+    queue for me" (ordinary chat) does not qualify, keeping the same
+    "nobody accidentally types this" protection the exact-match version
+    had. The appended code itself isn't parsed out here: agent.py's
+    _book_flow already matches a multi-branch store's location against
+    the guest's raw text (match_location in config.py) whenever a branch
+    hasn't been picked yet, so whatever follows the base phrase is simply
+    left in place for that same matching to find."""
+    return _alnum(text).startswith(_BOOKING_TRIGGER_NORM)
 
 
 def _is_cancel_message(text: str) -> bool:

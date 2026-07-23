@@ -446,6 +446,32 @@ class TestMultiLocation:
         assert "Admitted" in resolved
         assert "Ahmed" in resolved
 
+    def test_branch_code_in_the_message_itself_skips_the_question(self, store_id):
+        """A branch-specific QR's prefilled text ("Join the Queue -
+        new_blue_area") carries the branch_key right in the message --
+        _book_flow's existing free-text location matching (match_location)
+        finds it on the very first turn, so the guest is asked for name/
+        party size directly, never "which branch"."""
+        _seed_two_locations(store_id)
+        md = _md_multi(store_id)
+        r = md.handle_message(PHONE, "Join the Queue - new_blue_area")
+        assert r.action == "need_info"
+        assert "which branch" not in r.text.lower()
+        r2 = md.handle_message(PHONE, "party of 2, it's Ahmed")
+        assert r2.action == "queued"
+        assert "New Blue Area" in r2.text
+
+    def test_branch_code_pointing_at_delivery_only_branch_is_declined(self, store_id):
+        """Same decline-with-alternative behavior as naming the branch in
+        plain text (test_delivery_only_branch_is_declined_with_alternative_
+        offered) -- a QR code is just another way of naming the branch."""
+        _seed_two_locations(store_id)
+        md = _md_multi(store_id)
+        r = md.handle_message(PHONE, "Join the Queue - f82")
+        assert r.action == "need_info"
+        assert "delivery-only" in r.text.lower()
+        assert "New Blue Area" in r.text
+
 
 # ── Multi-tenancy isolation ──────────────────────────────────────────────────
 
@@ -497,6 +523,30 @@ class TestCustomerGatewayRouting:
         handle_customer_for_store(PHONE, "\U0001f3ab Join the Queue!", store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "booking number" in reply.lower()
+
+    def test_qr_trigger_with_branch_code_skips_the_branch_question(self, store_id):
+        """End-to-end through the real gateway entry point (not MaitreD
+        directly): scanning a branch-specific QR ("Join the Queue -
+        new_blue_area") joins that branch's queue without ever asking
+        which branch."""
+        _seed_two_locations(store_id)
+        from app.gateway.customer import handle_customer_for_store
+        r1 = handle_customer_for_store(PHONE, "Join the Queue - new_blue_area", store_id)
+        assert "which branch" not in r1.lower()
+        r2 = handle_customer_for_store(PHONE, "party of 2, it's Ahmed", store_id)
+        assert "booking number" in r2.lower()
+        assert "new blue area" in r2.lower()
+
+    def test_trigger_prefix_match_rejects_the_phrase_mid_sentence(self, store_id):
+        """The base phrase must still be typed at the START of the message
+        -- "please join the queue for me" (ordinary chat that happens to
+        contain the words) must NOT trigger a fresh booking, same
+        protection the old exact-match version had against accidental
+        typing."""
+        from app.gateway.customer import handle_customer_for_store
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            handle_customer_for_store(PHONE, "please join the queue for me sometime", store_id)
+        mock_md.assert_not_called()
 
     def test_bare_book_keyword_no_longer_routes_to_maitre_d(self, store_id):
         """The old free-text trigger ("book"/"table for 2") must NOT start

@@ -67,6 +67,32 @@ def resolve_store_sender(store_id: int) -> tuple[str, Callable[[str, str], None]
     return None
 
 
+def resolve_store_display_number(store_id: int) -> str | None:
+    """The digits-only number customers actually message THIS store on
+    (for building a wa.me link), same meta -> openwa -> twilio priority as
+    resolve_store_sender -- but that function returns a send_fn bound to
+    whichever provider, not the number itself, which is all a wa.me link
+    needs. Returns None if no provider is registered."""
+    from app.core.db import (
+        SessionLocal, StoreMetaNumber, StoreOpenWASession, StoreTwilioNumber,
+    )
+
+    with SessionLocal() as db:
+        meta = db.query(StoreMetaNumber).filter(StoreMetaNumber.store_id == store_id).first()
+        if meta and meta.display_number:
+            return _digits(meta.display_number)
+
+        owa = db.query(StoreOpenWASession).filter(StoreOpenWASession.store_id == store_id).first()
+        if owa and owa.phone_number:
+            return _digits(owa.phone_number)
+
+        tw = db.query(StoreTwilioNumber).filter(StoreTwilioNumber.store_id == store_id).first()
+        if tw and tw.whatsapp_number:
+            return _digits(tw.whatsapp_number)
+
+    return None
+
+
 def send_from_store(store_id: int, to: str, body: str) -> bool:
     """Send one business-initiated message from a store's number.
     Returns False (with a log line) when the store has no provider."""

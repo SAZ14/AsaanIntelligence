@@ -2262,6 +2262,45 @@ async def list_stores() -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.get("/admin/stores/{store_id}/queue-links")
+async def get_queue_join_links(store_id: int) -> JSONResponse:
+    """wa.me links for the entrance/booking-area QR code(s) -- one per
+    branch for a multi-location store (each with its own branch_key
+    appended after the trigger phrase, e.g. "Join the Queue - F7", which
+    gateway/customer.py's _is_booking_trigger now recognises as a prefix
+    match and agent.py's existing location-matching then resolves from
+    the raw text, needing no follow-up "which branch?" question), or a
+    single plain link for a store with one (or no configured) location."""
+    from urllib.parse import quote
+    from app.core.outbound import resolve_store_display_number
+    from app.agents.maitre_d.config import VenueConfig
+    from app.gateway.customer import BOOKING_TRIGGER_PHRASE
+
+    digits = resolve_store_display_number(store_id)
+    if not digits:
+        return JSONResponse({"error": "no messaging provider configured for this store"}, status_code=404)
+
+    locations = VenueConfig.list_locations(store_id)
+    if len(locations) <= 1:
+        text = BOOKING_TRIGGER_PHRASE
+        return JSONResponse({
+            "store_id": store_id,
+            "links": [{"branch_key": None, "branch_name": None, "text": text,
+                       "url": f"https://wa.me/{digits}?text={quote(text)}"}],
+        })
+
+    links = []
+    for loc in locations:
+        if not loc.accepts_reservations:
+            continue
+        text = f"{BOOKING_TRIGGER_PHRASE} - {loc.branch_key}"
+        links.append({
+            "branch_key": loc.branch_key, "branch_name": loc.branch_name, "text": text,
+            "url": f"https://wa.me/{digits}?text={quote(text)}",
+        })
+    return JSONResponse({"store_id": store_id, "links": links})
+
+
 @app.get("/admin/stores/{store_id}/enroll-link")
 async def get_enroll_link(store_id: int) -> JSONResponse:
     from urllib.parse import quote
