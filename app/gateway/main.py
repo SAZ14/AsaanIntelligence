@@ -2246,11 +2246,3 @@ async def rebuild_embeddings(store_id: int) -> JSONResponse:
             ), {"e": _json.dumps(emb), "id": row[0]})
         db.commit()
     return JSONResponse({"rebuilt": len(rows), "store_id": store_id})
-
-
-# TEMPORARY: live verification of the staff dashboard. Remove after use.
-
-@app.get("/admin/debug/peek-otp")
-async def debug_peek_otp(whatsapp_id: str) -> JSONResponse:
-    from app.core import cache
-    return JSONResponse({"entry": cache.get(f"dashboard_otp:{whatsapp_id}")})
