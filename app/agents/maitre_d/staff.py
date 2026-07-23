@@ -68,6 +68,9 @@ def _resolve_queue_location(store_id: int, text: str) -> tuple[int | None, str, 
 
 # ── queue commands ───────────────────────────────────────────────────────────
 
+MAX_QUEUE_LISTING = 20  # a WhatsApp message showing every entry in a 30+-person rush would be unwieldy
+
+
 def format_queue(store_id: int) -> str:
     from app.agents.maitre_d.config import is_booking_enabled
 
@@ -76,14 +79,33 @@ def format_queue(store_id: int) -> str:
     off_notice = "" if is_booking_enabled(store_id) else "Booking is currently OFF.\n\n"
     if not rows:
         return off_notice + "The queue is empty."
-    lines = [off_notice + "Live queue:"] if off_notice else ["Live queue:"]
+
+    # Grouped by branch so a multi-location store's combined listing never
+    # shows two different branches both claiming "position 1" back to
+    # back with nothing marking them as separate lines -- `rows` is
+    # already ordered (location_id, position), so a plain dict preserves
+    # that grouping without a second query. A single-location store has
+    # exactly one (empty-string) key here, so it reads exactly as before:
+    # no header, just the plain numbered list.
+    sections: dict[str, list] = {}
     for e in rows:
-        vip = " (VIP)" if e.is_vip else ""
-        branch = f" — {e.branch_name}" if e.branch_name else ""
-        lines.append(
-            f"• {e.position}. #{e.queue_number} {e.name or e.phone}, "
-            f"party {e.party_size}{branch}{vip}"
-        )
+        sections.setdefault(e.branch_name, []).append(e)
+
+    lines = [off_notice + "Live queue:"] if off_notice else ["Live queue:"]
+    total, shown = len(rows), 0
+    for branch_name, entries in sections.items():
+        if shown >= MAX_QUEUE_LISTING:
+            break
+        if branch_name:
+            lines.append(f"\n{branch_name}:")
+        for e in entries:
+            if shown >= MAX_QUEUE_LISTING:
+                break
+            vip = " (VIP)" if e.is_vip else ""
+            lines.append(f"• {e.position}. #{e.queue_number} {e.name or e.phone}, party {e.party_size}{vip}")
+            shown += 1
+    if total > shown:
+        lines.append(f"\n...and {total - shown} more waiting.")
     lines.append(
         "\nSay \"admit\" to seat the next person, \"remove <position>\" or "
         "\"add <position> <phone> <name>\" to adjust the line."
@@ -101,11 +123,15 @@ def _display_for(store_name: str, branch_name: str) -> str:
 
 def _notify_position_changes(store_id: int, store_name: str, shifted: list[QueueEntry]) -> None:
     """Every guest whose position moved (a queue mutation upstream of
-    this) gets told their new spot in a short WhatsApp message."""
+    this) gets told their new spot in a short WhatsApp message. A staff-
+    added walk-in with no phone on file (see insert_queue_position) is
+    silently skipped -- there's nowhere to send it."""
     if not shifted:
         return
     from app.core.outbound import send_from_store
     for e in shifted:
+        if not e.phone:
+            continue
         send_from_store(
             store_id, e.phone,
             f"You're now #{e.position} in line at {_display_for(store_name, e.branch_name)}.",
@@ -120,11 +146,12 @@ def admit_next_in_queue(store_id: int, rest: str = "") -> str:
     if entry is None:
         return "The queue is empty — nobody to admit."
     store_name = _restaurant_name(store_id)
-    from app.core.outbound import send_from_store
-    send_from_store(
-        store_id, entry.phone,
-        f"You're being seated now at {_display_for(store_name, entry.branch_name)}. Enjoy your meal!",
-    )
+    if entry.phone:
+        from app.core.outbound import send_from_store
+        send_from_store(
+            store_id, entry.phone,
+            f"You're being seated now at {_display_for(store_name, entry.branch_name)}. Enjoy your meal!",
+        )
     _notify_position_changes(store_id, store_name, moved_up)
     return f"Admitted #{entry.queue_number}: {entry.name or entry.phone}, party {entry.party_size}."
 
@@ -145,20 +172,35 @@ def remove_queue_position(store_id: int, rest: str) -> str:
             f"position {position}. The queue has moved up.")
 
 
+def _looks_like_phone(token: str) -> bool:
+    return token.startswith("+") and token[1:].replace(" ", "").isdigit() and len(token) >= 8
+
+
 def insert_queue_position(store_id: int, rest: str) -> str:
+    """"add <position> [<phone>] <name>[, party <N>]" -- phone is optional:
+    a walk-in staff seat directly without collecting a number just won't
+    get position-update texts (see _notify_position_changes)."""
     location_id, command_part, error = _resolve_queue_location(store_id, rest)
     if error:
         return error
-    parts = command_part.split(None, 2)
-    if len(parts) < 3 or not parts[0].isdigit():
-        return ("Usage: add <position> <phone> <name>[, party <N>] — e.g. "
-                "\"add 2 +923001234567 Ali Khan, party 4\".")
-    position = int(parts[0])
-    phone = normalise_phone(parts[1])
-    if not phone.startswith("+") or len(phone) < 8:
-        return "That doesn't look like a phone number. Usage: add <position> <phone> <name>[, party <N>]"
+    tokens = command_part.split()
+    if not tokens or not tokens[0].isdigit():
+        return ("Usage: add <position> [<phone>] <name>[, party <N>] — e.g. "
+                "\"add 2 +923001234567 Ali Khan, party 4\" or \"add 2 Ali Khan, party 4\" "
+                "for a walk-in without a number.")
+    position = int(tokens[0])
+    remainder = " ".join(tokens[1:]).strip()
+    if not remainder:
+        return "Usage: add <position> [<phone>] <name>[, party <N>]"
 
-    name_and_party = parts[2]
+    phone = ""
+    rest_tokens = remainder.split(None, 1)
+    if _looks_like_phone(rest_tokens[0]):
+        phone = normalise_phone(rest_tokens[0])
+        name_and_party = rest_tokens[1] if len(rest_tokens) > 1 else ""
+    else:
+        name_and_party = remainder
+
     party = 1
     m = re.search(r",?\s*party\s+(\d{1,2})\s*$", name_and_party, flags=re.IGNORECASE)
     name = name_and_party
@@ -167,7 +209,7 @@ def insert_queue_position(store_id: int, rest: str) -> str:
         name = name_and_party[:m.start()].strip().rstrip(",")
     name = name.strip()
     if not name:
-        return "Usage: add <position> <phone> <name>[, party <N>]"
+        return "Usage: add <position> [<phone>] <name>[, party <N>]"
 
     branch_name = ""
     if location_id:
@@ -180,7 +222,8 @@ def insert_queue_position(store_id: int, rest: str) -> str:
     day_start = _venue_now(store_id, location_id).replace(hour=0, minute=0, second=0, microsecond=0)
     saved, pushed_back = Store(store_id).insert_at_position(entry, position, day_start=day_start)
     _notify_position_changes(store_id, _restaurant_name(store_id), pushed_back)
-    return f"Added {name} (party {party}) at position {saved.position}, booking #{saved.queue_number}."
+    phone_note = "" if saved.phone else " (no phone on file — won't get text updates)"
+    return f"Added {name} (party {party}) at position {saved.position}, booking #{saved.queue_number}{phone_note}."
 
 
 # ── VIPs / branches ──────────────────────────────────────────────────────────

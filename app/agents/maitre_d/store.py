@@ -9,11 +9,22 @@ Lookups by a public id still verify the row belongs to this store_id
 before returning it, even though ids are globally unique -- a staff member
 typing a stray id from another store's queue must not be able to see or
 act on it.
+
+Every method that mutates the live queue (add_queue_entry, insert_at_
+position, admit_next, remove_at_position, remove_by_id) first locks that
+location's MaitreDQueueCounter row (SELECT ... FOR UPDATE, creating it if
+needed) -- see that model's docstring in app.core.db. Without this, two
+concurrent requests (two guests scanning the entrance QR in the same
+instant, or a guest joining while staff run "admit") could both read the
+same "current max position"/"current max queue_number" before either
+commits, handing out duplicates. Confirmed as a real gap, not
+theoretical: WEB_CONCURRENCY=4 means this server genuinely runs requests
+in parallel.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from app.agents.maitre_d.models import Guest, QueueEntry
 
@@ -60,6 +71,59 @@ class Store:
                 created_at=row.created_at,
             )
 
+    # ── live queue: concurrency-safety anchor ──
+
+    def _lock_location_counter(self, db, loc_id: int | None, today: date | None = None):
+        """Locks (creating it first if needed) the ONE MaitreDQueueCounter
+        row for this location. Every queue-mutating method below calls
+        this FIRST, before reading or writing any MaitreDQueueEntry rows,
+        so concurrent callers for the SAME location serialize through
+        Postgres's row lock -- the second caller blocks until the first
+        commits, then sees fresh data. (On SQLite -- tests only -- FOR
+        UPDATE is a no-op since SQLite has no row-level locking, but tests
+        never run concurrently against the same session anyway.)
+
+        The bootstrap race (two transactions both find no row and both
+        try to create it) is handled with a SAVEPOINT: if our insert loses
+        that race, we roll back just the savepoint (not the whole
+        transaction, which may already hold other pending work) and
+        re-fetch-with-lock, trusting the winner's row."""
+        from sqlalchemy.exc import IntegrityError
+        from app.core.db import MaitreDQueueCounter
+
+        key = loc_id or 0
+        row = db.query(MaitreDQueueCounter).filter(
+            MaitreDQueueCounter.store_id == self.store_id,
+            MaitreDQueueCounter.location_id == key,
+        ).with_for_update().first()
+        if row is not None:
+            return row
+        try:
+            with db.begin_nested():
+                row = MaitreDQueueCounter(
+                    store_id=self.store_id, location_id=key,
+                    last_number=0, last_day=today or datetime.utcnow().date(),
+                )
+                db.add(row)
+                db.flush()
+            return row
+        except IntegrityError:
+            return db.query(MaitreDQueueCounter).filter(
+                MaitreDQueueCounter.store_id == self.store_id,
+                MaitreDQueueCounter.location_id == key,
+            ).with_for_update().first()
+
+    def _next_queue_number(self, db, loc_id: int | None, today: date) -> int:
+        """Must be called with this location's counter already locked
+        (see _lock_location_counter) in the SAME transaction."""
+        row = self._lock_location_counter(db, loc_id, today)
+        if row.last_day != today:
+            row.last_number = 0
+            row.last_day = today
+        row.last_number += 1
+        db.flush()
+        return row.last_number
+
     # ── live queue ──
 
     def add_queue_entry(self, entry: QueueEntry, day_start: datetime) -> QueueEntry:
@@ -68,20 +132,19 @@ class Store:
         since `day_start` (the venue-local start of today); position is
         the next unused slot among that location's current "waiting" rows.
         """
-        from sqlalchemy import func
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
             loc_id = entry.location_id or None
-            queue_number = (db.query(func.max(MaitreDQueueEntry.queue_number)).filter(
-                MaitreDQueueEntry.store_id == self.store_id,
-                MaitreDQueueEntry.location_id == loc_id,
-                MaitreDQueueEntry.created_at >= day_start,
-            ).scalar() or 0) + 1
-            position = (db.query(func.max(MaitreDQueueEntry.position)).filter(
+            self._lock_location_counter(db, loc_id, day_start.date())
+            queue_number = self._next_queue_number(db, loc_id, day_start.date())
+
+            waiting = db.query(MaitreDQueueEntry).filter(
                 MaitreDQueueEntry.store_id == self.store_id,
                 MaitreDQueueEntry.location_id == loc_id,
                 MaitreDQueueEntry.status == "waiting",
-            ).scalar() or 0) + 1
+            ).all()
+            position = max((r.position for r in waiting), default=0) + 1
+
             row = MaitreDQueueEntry(
                 store_id=self.store_id, location_id=loc_id, branch_name=entry.branch_name,
                 queue_number=queue_number, phone=entry.phone, name=entry.name,
@@ -103,15 +166,11 @@ class Store:
         (e.g. "add 99 ...") just appends to the end instead of leaving a
         gap or erroring. Returns (new_entry, pushed_back) -- `pushed_back`
         is everyone whose position moved, for the caller to notify."""
-        from sqlalchemy import func
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
             loc_id = entry.location_id or None
-            queue_number = (db.query(func.max(MaitreDQueueEntry.queue_number)).filter(
-                MaitreDQueueEntry.store_id == self.store_id,
-                MaitreDQueueEntry.location_id == loc_id,
-                MaitreDQueueEntry.created_at >= day_start,
-            ).scalar() or 0) + 1
+            self._lock_location_counter(db, loc_id, day_start.date())
+            queue_number = self._next_queue_number(db, loc_id, day_start.date())
 
             waiting = db.query(MaitreDQueueEntry).filter(
                 MaitreDQueueEntry.store_id == self.store_id,
@@ -142,7 +201,8 @@ class Store:
         position) leaves the "waiting" set, shifts everyone behind it at
         the same location down by one so positions stay dense from 1.
         Returns the (still session-attached) ORM rows that were shifted,
-        for the caller to notify once committed."""
+        for the caller to notify once committed. Callers must already
+        hold this location's counter lock (see _lock_location_counter)."""
         from app.core.db import MaitreDQueueEntry
         behind = db.query(MaitreDQueueEntry).filter(
             MaitreDQueueEntry.store_id == self.store_id,
@@ -169,6 +229,7 @@ class Store:
         seated" grace window by the timezone offset."""
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
+            self._lock_location_counter(db, location_id)
             row = db.query(MaitreDQueueEntry).filter(
                 MaitreDQueueEntry.store_id == self.store_id,
                 MaitreDQueueEntry.location_id == (location_id or None),
@@ -190,6 +251,7 @@ class Store:
     ) -> tuple[QueueEntry | None, list[QueueEntry]]:
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
+            self._lock_location_counter(db, location_id)
             row = db.query(MaitreDQueueEntry).filter(
                 MaitreDQueueEntry.store_id == self.store_id,
                 MaitreDQueueEntry.location_id == (location_id or None),
@@ -209,11 +271,23 @@ class Store:
     def remove_by_id(
         self, entry_id: int, new_status: str = "cancelled",
     ) -> tuple[QueueEntry | None, list[QueueEntry]]:
-        """Guest-initiated leave ("cancel") -- looked up by row id, not
-        position, since the guest doesn't know or care about their numeric
-        slot."""
+        """Guest-initiated leave ("cancel"), or the maintenance sweep
+        expiring a stale entry -- looked up by row id, not position, since
+        neither caller knows (or should need to know) the numeric slot."""
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
+            # location_id is needed to know which counter to lock, but
+            # isn't known until we've read the row -- a plain (unlocked)
+            # read of just that column is safe since it never changes
+            # once set, and the actual mutation below re-reads the row
+            # WITH the lock held before trusting its "waiting" status.
+            preview = db.query(MaitreDQueueEntry.location_id).filter(
+                MaitreDQueueEntry.store_id == self.store_id,
+                MaitreDQueueEntry.id == entry_id,
+            ).first()
+            if not preview:
+                return None, []
+            self._lock_location_counter(db, preview[0])
             row = db.query(MaitreDQueueEntry).filter(
                 MaitreDQueueEntry.store_id == self.store_id,
                 MaitreDQueueEntry.id == entry_id,
@@ -228,6 +302,30 @@ class Store:
             for r in moved_up:
                 db.refresh(r)
             return self._row_to_queue_entry(row), [self._row_to_queue_entry(r) for r in moved_up]
+
+    def update_waiting_entry(
+        self, entry_id: int, party_size: int | None = None, name: str | None = None,
+    ) -> QueueEntry | None:
+        """Guest-initiated "actually we're 5 now" / "put it under Bilal"
+        -- updates an EXISTING waiting entry in place (same position,
+        same queue_number) instead of the guest having to cancel and
+        rejoin at the back of the line."""
+        from app.core.db import SessionLocal, MaitreDQueueEntry
+        with SessionLocal() as db:
+            row = db.query(MaitreDQueueEntry).filter(
+                MaitreDQueueEntry.store_id == self.store_id,
+                MaitreDQueueEntry.id == entry_id,
+                MaitreDQueueEntry.status == "waiting",
+            ).first()
+            if not row:
+                return None
+            if party_size:
+                row.party_size = party_size
+            if name:
+                row.name = name
+            db.commit()
+            db.refresh(row)
+            return self._row_to_queue_entry(row)
 
     def latest_waiting_entry_for(self, phone: str) -> QueueEntry | None:
         from app.core.db import SessionLocal, MaitreDQueueEntry
@@ -252,6 +350,20 @@ class Store:
             ).order_by(MaitreDQueueEntry.admitted_at.desc()).first()
             return self._row_to_queue_entry(row) if row else None
 
+    def stale_waiting_entries(self, location_id: int | None, cutoff: datetime) -> list[QueueEntry]:
+        """"waiting" entries at this location that have sat untouched
+        since at or before `cutoff` -- the maintenance sweep's candidates
+        for auto-release (see agent.py's expire_stale_entries)."""
+        from app.core.db import SessionLocal, MaitreDQueueEntry
+        with SessionLocal() as db:
+            rows = db.query(MaitreDQueueEntry).filter(
+                MaitreDQueueEntry.store_id == self.store_id,
+                MaitreDQueueEntry.location_id == (location_id or None),
+                MaitreDQueueEntry.status == "waiting",
+                MaitreDQueueEntry.created_at <= cutoff,
+            ).all()
+            return [self._row_to_queue_entry(r) for r in rows]
+
     def list_queue(self, location_id: int | None = None, status: str = "waiting") -> list[QueueEntry]:
         from app.core.db import SessionLocal, MaitreDQueueEntry
         with SessionLocal() as db:
@@ -267,7 +379,7 @@ class Store:
         return QueueEntry(
             id=row.id, store_id=row.store_id, location_id=row.location_id or 0,
             branch_name=row.branch_name or "", queue_number=row.queue_number,
-            phone=row.phone, name=row.name, party_size=row.party_size,
+            phone=row.phone or "", name=row.name, party_size=row.party_size,
             special_requests=row.special_requests or "", status=row.status,
             position=row.position, is_vip=row.is_vip, vip_tier=row.vip_tier,
             created_at=row.created_at, admitted_at=row.admitted_at,

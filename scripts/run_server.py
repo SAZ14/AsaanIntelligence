@@ -19,6 +19,7 @@ from app.agents.scout.pipeline import run_scout_all
 from app.agents.reputation import run_reputation_check_all
 from app.core.run_reaper import reap_orphaned_runs
 from app.agents.customer.community.store import sync_chat_sessions_to_postgres
+from app.agents.maitre_d.agent import run_maitre_d_maintenance_all
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,6 +109,15 @@ def _start_scheduler() -> BackgroundScheduler:
         sync_chat_sessions_to_postgres,
         trigger="interval", hours=1,
         id="chat_session_sync_hourly", replace_existing=True,
+    )
+    # Maitre D housekeeping: release live-queue spots nobody's claimed
+    # within a store's queue_stale_minutes (default 90 -- staff-tunable
+    # via "queue timeout <N>"). 10 minutes is granular enough relative to
+    # that timeout without polling pure-DB work needlessly often.
+    scheduler.add_job(
+        run_maitre_d_maintenance_all,
+        trigger="interval", minutes=10,
+        id="maitre_d_maintenance_10min", replace_existing=True,
     )
     scheduler.start()
     return scheduler

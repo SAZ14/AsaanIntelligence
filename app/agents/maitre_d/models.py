@@ -18,6 +18,7 @@ QUEUE_STATUSES = {
     "admitted",     # staff let them in, seated
     "removed",      # taken out by staff
     "cancelled",    # the guest themselves left the queue
+    "expired",      # nobody acted on it within queue_stale_minutes -- see agent.py's expire_stale_entries
 }
 
 
@@ -36,7 +37,7 @@ class QueueEntry(BaseModel):
     location_id: int = 0
     branch_name: str = ""           # denormalised for display -- avoids a join every time a reply is composed
     queue_number: int = 0           # permanent for the day, told to the guest, never reused
-    phone: str
+    phone: str = ""                 # "" for a walk-in staff added without collecting a number -- gets no WhatsApp updates
     name: str = ""
     party_size: int = 1
     special_requests: str = ""

@@ -17,6 +17,8 @@ Layout:
     staff.py     staff-facing queue admin (admit/remove/insert, VIP list, Q&A)
 """
 
-from app.agents.maitre_d.agent import MaitreD, MaitreDReply, get_maitre_d
+from app.agents.maitre_d.agent import (
+    MaitreD, MaitreDReply, get_maitre_d, run_maitre_d_maintenance_all,
+)
 
-__all__ = ["MaitreD", "MaitreDReply", "get_maitre_d"]
+__all__ = ["MaitreD", "MaitreDReply", "get_maitre_d", "run_maitre_d_maintenance_all"]

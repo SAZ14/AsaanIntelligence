@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-INTENTS = ("greeting", "book", "cancel", "help", "unknown")
+INTENTS = ("greeting", "book", "cancel", "modify", "help", "unknown")
 
 NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
@@ -70,8 +70,10 @@ ONLY a JSON object, no prose.
 Fields:
 - intent: one of {list(INTENTS)}
     greeting = hi/hello only; book = wants to join the queue/get a table;
-    cancel = leave the queue/cancel; help = asks hours/menu/info;
-    unknown = none of these
+    cancel = leave the queue/cancel; modify = wants to CHANGE their
+    EXISTING queue entry's party size or name (e.g. "actually we're 5 now",
+    "change it to 5 people", "put it under Bilal instead") -- not a fresh
+    booking; help = asks hours/menu/info; unknown = none of these
 - party_size: integer or null
 - name: the guest's name if stated, else ""
 - special_requests: e.g. "window table", "birthday", "high chair", else ""
@@ -154,6 +156,14 @@ def _parse_fallback(text: str) -> ParsedMessage:
 def _fallback_intent(lower: str) -> str:
     if re.search(r"\bcancel\b", lower):
         return "cancel"
+    # Checked before "book" -- "party of 5" on its own is ambiguous
+    # between "here's my party size" (fresh booking) and "actually make it
+    # 5" (updating an existing entry); agent.py's dispatch only ever acts
+    # on a "modify" classification when there's no active booking flow in
+    # progress (flow != "book"), so a genuine slot-filling answer during a
+    # fresh booking is unaffected regardless of how this classifies it.
+    if re.search(r"\b(change|update|actually|make it)\b", lower) or re.search(r"\bparty of\s+\d", lower):
+        return "modify"
     if re.search(r"\b(book|reserve|reservation|table|seat|party of|queue|line|walk[- ]?in)\b", lower):
         return "book"
     if re.search(r"\b(hi|hello|hey|salam|assalam|aoa|good (morning|evening))\b", lower):

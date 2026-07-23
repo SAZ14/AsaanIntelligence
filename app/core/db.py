@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey, Integer,
+    Boolean, Column, Date, DateTime, Float, ForeignKey, Integer,
     JSON, String, Text, UniqueConstraint, create_engine,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -584,17 +584,56 @@ class MaitreDConversation(Base):
 
 
 class MaitreDSettings(Base):
-    """One row per store of toggle-able queue settings -- currently just
-    booking_enabled (staff's "disable booking"/"enable booking" command,
+    """One row per store of toggle-able queue settings. A store with no
+    row yet behaves as if every field below were at its default (see
+    app.agents.maitre_d.config's getters) -- no admin step required
+    before the queue works, same pattern as every other maitre_d table
+    here.
+
+    booking_enabled: staff's "disable booking"/"enable booking" command,
     for a quiet day where they're seating people directly instead of
-    running the queue). A store with no row yet behaves as if
-    booking_enabled=True (see app.agents.maitre_d.config.is_booking_enabled)
-    -- no admin step required before the queue works, same pattern as
-    every other maitre_d table here."""
+    running the queue.
+
+    seated_grace_minutes: how long after being admitted a guest is still
+    treated as "currently dining" and blocked from rejoining the queue
+    (staff's "seated grace <N>" command).
+
+    queue_stale_minutes: how long a "waiting" entry can sit with no staff
+    action before the maintenance sweep assumes the guest isn't coming
+    and releases the spot (staff's "queue timeout <N>" command)."""
     __tablename__ = "maitre_d_settings"
 
     store_id = Column(Integer, ForeignKey("stores.id"), primary_key=True)
     booking_enabled = Column(Boolean, nullable=False, default=True)
+    seated_grace_minutes = Column(Integer, nullable=False, default=120)
+    queue_stale_minutes = Column(Integer, nullable=False, default=90)
+
+
+class MaitreDQueueCounter(Base):
+    """Serialization anchor + daily sequence counter for one store
+    location's live queue. Every queue-mutating operation (join, admit,
+    remove, insert) locks this ONE row first (SELECT ... FOR UPDATE,
+    creating it if needed) before touching any MaitreDQueueEntry rows for
+    that location -- this is what makes queue_number allocation and
+    position shifting safe under concurrent requests (multiple worker
+    processes handling simultaneous WhatsApp messages): Postgres blocks a
+    second transaction from acquiring the same row lock until the first
+    commits, so two people scanning the entrance QR in the same instant
+    can never be assigned the same number or position.
+
+    location_id is never NULL here (0 means "the store's single implicit
+    location") -- unlike MaitreDQueueEntry, this row needs a reliable,
+    collision-free unique key, and Postgres treats every NULL as distinct
+    from every other NULL in a unique constraint, which would silently
+    defeat the whole point of locking it."""
+    __tablename__ = "maitre_d_queue_counters"
+    __table_args__ = (UniqueConstraint("store_id", "location_id"),)
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
+    location_id = Column(Integer, nullable=False, default=0)
+    last_number = Column(Integer, nullable=False, default=0)
+    last_day = Column(Date, nullable=True)
 
 
 # ---------------------------------------------------------------------------

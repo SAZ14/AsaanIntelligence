@@ -162,6 +162,53 @@ def set_booking_enabled(store_id: int, enabled: bool) -> None:
         db.commit()
 
 
+DEFAULT_SEATED_GRACE_MINUTES = 120
+DEFAULT_QUEUE_STALE_MINUTES = 90
+
+
+def get_seated_grace_minutes(store_id: int) -> int:
+    """How long after being admitted a guest is still treated as
+    "currently dining" and blocked from rejoining the queue -- staff's
+    "seated grace <N>" command. No row yet means the default."""
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        return row.seated_grace_minutes if row else DEFAULT_SEATED_GRACE_MINUTES
+
+
+def set_seated_grace_minutes(store_id: int, minutes: int) -> None:
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        if row:
+            row.seated_grace_minutes = minutes
+        else:
+            db.add(MaitreDSettings(store_id=store_id, seated_grace_minutes=minutes))
+        db.commit()
+
+
+def get_queue_stale_minutes(store_id: int) -> int:
+    """How long a "waiting" entry can sit with no staff action before the
+    maintenance sweep assumes the guest isn't coming and releases the
+    spot -- staff's "queue timeout <N>" command. No row yet means the
+    default."""
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        return row.queue_stale_minutes if row else DEFAULT_QUEUE_STALE_MINUTES
+
+
+def set_queue_stale_minutes(store_id: int, minutes: int) -> None:
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        if row:
+            row.queue_stale_minutes = minutes
+        else:
+            db.add(MaitreDSettings(store_id=store_id, queue_stale_minutes=minutes))
+        db.commit()
+
+
 def _apply_location_row(cfg: VenueConfig, row) -> None:
     cfg.location_id = row.id
     cfg.branch_key = row.branch_key

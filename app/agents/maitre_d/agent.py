@@ -19,29 +19,32 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from app.agents.maitre_d.config import VenueConfig, normalise_phone, match_location, _join_or
+from app.agents.maitre_d.config import (
+    VenueConfig, normalise_phone, match_location, _join_or,
+    get_seated_grace_minutes, get_queue_stale_minutes,
+)
 from app.agents.maitre_d.models import Guest, QueueEntry
 from app.agents.maitre_d.nlu import ParsedMessage, parse_message
 from app.agents.maitre_d.store import Store
-
-# How long after being admitted a guest is still treated as "currently
-# dining" and blocked from rejoining the queue -- see MaitreD._seated_entry.
-# A typical sit-down visit; tune freely, this is a heuristic, not a precise
-# table-turnover signal (there's no "mark this table done" step in this
-# walk-in-queue model, unlike the old timed-reservation system's turn times).
-SEATED_GRACE_MINUTES = 120
 
 
 @dataclass
 class MaitreDReply:
     text: str                                   # message to send back to the guest
     intent: str = "unknown"
-    action: str = "noop"                        # queued | cancelled | need_info | info | already_seated | greeting | noop
+    action: str = "noop"                        # queued | already_queued | cancelled | modified | need_info | info | already_seated | greeting | noop
     queue_number: int = 0
     position: int = 0
     is_vip: bool = False
     staff_alert: str = ""                       # internal note for the floor/manager
     outbound: list[tuple[str, str]] = field(default_factory=list)  # (phone, text) to others
+
+
+@dataclass
+class MaintenanceResult:
+    """One housekeeping sweep's outcome -- see MaitreD.expire_stale_entries."""
+    expired: int = 0
+    outbound: list[tuple[str, str]] = field(default_factory=list)
 
 
 class MaitreD:
@@ -103,6 +106,14 @@ class MaitreD:
             return self._info()
         if parsed.intent == "cancel":
             return self._leave_queue(phone)
+        # Guarded by `flow != "book"`: a genuine mid-flow slot-filling
+        # answer ("party of 5") during a FRESH booking must always
+        # continue that flow, never get intercepted as a request to
+        # modify some OTHER, already-existing entry -- see nlu.py's
+        # _fallback_intent for why "party of N" classifies as "modify" at
+        # all.
+        if parsed.intent == "modify" and flow != "book":
+            return self._modify_queue_entry(phone, parsed)
         if parsed.intent == "book" or flow == "book":
             return self._book_flow(phone, parsed, vip, profile_name)
 
@@ -168,6 +179,26 @@ class MaitreD:
                 text=(f"You're already seated at {self.config.display_name()} — "
                       "enjoy your meal! Let us know if you need anything."),
                 intent="book", action="already_seated", is_vip=bool(vip),
+            )
+
+        # A resent trigger phrase (no reply the first time, or two people
+        # in the same group both scan) must not create a SECOND queue
+        # entry for the same visit -- confirmed as a real gap: nothing
+        # previously stopped this. Tell them their existing number instead.
+        already_waiting = self.store.latest_waiting_entry_for(phone)
+        if already_waiting is not None:
+            self.store.clear_conversation(phone)
+            location = self._resolve_location_config(already_waiting.location_id)
+            if location is not None:
+                self.config = location
+            return MaitreDReply(
+                text=(f"You're already in the queue at {self.config.display_name()} — "
+                      f"your booking number is #{already_waiting.queue_number} "
+                      f"(position {already_waiting.position}). Say \"cancel\" if you'd "
+                      "like to leave the queue."),
+                intent="book", action="already_queued",
+                queue_number=already_waiting.queue_number, position=already_waiting.position,
+                is_vip=bool(vip),
             )
 
         state = self._conversation(phone)
@@ -300,10 +331,53 @@ class MaitreD:
             intent="cancel", action="cancelled", queue_number=entry.queue_number,
         )
         for e in moved_up:
-            reply.outbound.append((
-                e.phone, f"You're now #{e.position} in line at {self.config.display_name()}.",
-            ))
+            if e.phone:  # a staff-added walk-in may have no number on file
+                reply.outbound.append((
+                    e.phone, f"You're now #{e.position} in line at {self.config.display_name()}.",
+                ))
         return reply
+
+    # ── modifying an existing queue entry ──
+
+    def _modify_queue_entry(self, phone: str, parsed: ParsedMessage) -> MaitreDReply:
+        """"actually we're 5 now" / "put it under Bilal instead" -- updates
+        the guest's EXISTING waiting entry in place rather than making
+        them cancel and rejoin at the back of the line (which would also
+        hand them a brand-new, higher queue number)."""
+        entry = self.store.latest_waiting_entry_for(phone)
+        if not entry:
+            return MaitreDReply(
+                text=("I don't see an active queue entry for you to update. "
+                      "Scan the QR code at our entrance to join."),
+                intent="modify", action="noop",
+            )
+        if not parsed.party_size and not parsed.name:
+            return MaitreDReply(
+                text="Sure — what would you like to update: your party size or the name on it?",
+                intent="modify", action="need_info",
+            )
+        location = self._resolve_location_config(entry.location_id)
+        if location is not None:
+            self.config = location
+        updated = self.store.update_waiting_entry(
+            entry.id, party_size=parsed.party_size, name=parsed.name,
+        )
+        if updated is None:
+            return MaitreDReply(
+                text="That queue entry isn't there any more — say \"cancel\" or check with staff.",
+                intent="modify", action="noop",
+            )
+        changes = []
+        if parsed.party_size:
+            changes.append(f"party of {updated.party_size}")
+        if parsed.name:
+            changes.append(f"name {updated.name}")
+        return MaitreDReply(
+            text=(f"Updated — you're still #{updated.queue_number} at "
+                  f"{self.config.display_name()}, now {' and '.join(changes)}."),
+            intent="modify", action="modified", queue_number=updated.queue_number,
+            position=updated.position,
+        )
 
     def _resolve_location_config(self, location_id: int) -> VenueConfig | None:
         """The specific location a given queue entry belongs to, looked up
@@ -316,15 +390,61 @@ class MaitreD:
 
     def _seated_entry(self, phone: str) -> QueueEntry | None:
         """This phone's most recent admitted queue entry, if it's still
-        within the "probably still dining" grace window -- None once
-        SEATED_GRACE_MINUTES has passed, so a genuinely later visit is
-        never permanently blocked from booking again."""
+        within the "probably still dining" grace window (staff-configurable
+        via "seated grace <N>", see config.get_seated_grace_minutes) -- None
+        once that's passed, so a genuinely later visit is never
+        permanently blocked from booking again."""
         entry = self.store.latest_admitted_entry_for(phone)
         if not entry or not entry.admitted_at:
             return None
-        if self._now() - entry.admitted_at > timedelta(minutes=SEATED_GRACE_MINUTES):
+        grace = get_seated_grace_minutes(self.store.store_id)
+        if self._now() - entry.admitted_at > timedelta(minutes=grace):
             return None
         return entry
+
+    # ── background maintenance (run on a timer / cron) ──
+
+    def _each_location(self):
+        """Locations to sweep, one at a time -- a multi-branch store's
+        stale-queue timeout can differ per branch (staff can tune it store-
+        wide via "queue timeout <N>", but the sweep still runs once per
+        location so each branch's own queue is checked against its own
+        entries). Single-location stores just get one pass with
+        self.config unchanged."""
+        return self.locations if len(self.locations) > 1 else [self.config]
+
+    def expire_stale_entries(self) -> MaintenanceResult:
+        """Housekeeping: release queue spots nobody's claimed within
+        queue_stale_minutes (staff-configurable via "queue timeout <N>",
+        see config.get_queue_stale_minutes) -- a "waiting" entry that's
+        just sat there, never admitted nor cancelled, almost certainly
+        means the guest left without saying anything. Otherwise it would
+        occupy a position forever, until a staff member happened to
+        notice and manually remove it. Safe to call on a timer (see
+        run_maitre_d_maintenance_all)."""
+        result = MaintenanceResult()
+        stale_minutes = get_queue_stale_minutes(self.store.store_id)
+        cutoff = self._now() - timedelta(minutes=stale_minutes)
+        for location in self._each_location():
+            self.config = location
+            for entry in self.store.stale_waiting_entries(location.location_id, cutoff):
+                removed, moved_up = self.store.remove_by_id(entry.id, new_status="expired")
+                if removed is None:
+                    continue
+                result.expired += 1
+                if removed.phone:
+                    result.outbound.append((
+                        removed.phone,
+                        f"We haven't been able to seat you at {self.config.display_name()} "
+                        "in time, so we've released your spot. Message us or scan the QR "
+                        "code at our entrance again if you'd still like to join the queue.",
+                    ))
+                for e in moved_up:
+                    if e.phone:
+                        result.outbound.append((
+                            e.phone, f"You're now #{e.position} in line at {self.config.display_name()}.",
+                        ))
+        return result
 
     # ── helpers ──
 
@@ -397,3 +517,34 @@ def get_maitre_d(store_id: int) -> MaitreD:
         config=VenueConfig.load(store_id),
         client=client,
     )
+
+
+def run_maitre_d_maintenance_all() -> None:
+    """Scheduled job (see scripts/run_server.py) -- one housekeeping tick
+    per store: releases queue spots nobody's claimed within that store's
+    queue_stale_minutes. The only housekeeping this walk-in queue model
+    needs (no offer TTLs, no reminders, no deposit holds -- see this
+    module's docstring); dispatches every resulting outbound message,
+    mirroring what the guest-facing flow already does per-turn in
+    gateway/customer.py."""
+    import logging as _logging
+    from app.core.db import SessionLocal, Store as StoreModel
+    from app.core.outbound import send_from_store
+
+    logger = _logging.getLogger(__name__)
+
+    with SessionLocal() as db:
+        store_ids = [s.id for s in db.query(StoreModel).all()]
+
+    for store_id in store_ids:
+        try:
+            result = get_maitre_d(store_id).expire_stale_entries()
+        except Exception as exc:
+            logger.error("maitre_d.maintenance: store=%d failed: %s", store_id, exc)
+            continue
+        for phone, text in result.outbound:
+            send_from_store(store_id, phone, text)
+        if result.expired:
+            logger.info(
+                "maitre_d.maintenance: store=%d expired=%d", store_id, result.expired,
+            )

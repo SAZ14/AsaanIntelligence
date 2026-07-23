@@ -47,19 +47,43 @@ def _is_cancel_message(text: str) -> bool:
     return bool(re.search(r"\bcancel\b", text.lower()))
 
 
+_MODIFY_TRIGGER_RE = re.compile(r"\b(?:party of\s*\d|change|update|actually|make it)\b", re.IGNORECASE)
+
+
+def _is_modify_message(text: str) -> bool:
+    """A guest already in the queue changing their party size or name --
+    e.g. "actually we're 5 now", "change it to 5 people", "put it under
+    Bilal instead". Safe to allow broadly, same reasoning as "cancel"
+    above: agent.py's _modify_queue_entry can only ever update an
+    EXISTING waiting entry, never create one, so there's no create-power
+    to abuse -- worst case for an unrelated message that happens to match
+    is a "you don't have an active entry" reply instead of reaching the
+    community agent."""
+    return bool(_MODIFY_TRIGGER_RE.search(text))
+
+
 def _has_active_booking_flow(store_id: int, phone: str) -> bool:
     """True if this guest is mid-way through a Maitre D slot-filling
-    conversation (e.g. just asked "what time works?" and hasn't answered
-    yet) -- those follow-ups ("8pm", "Ahmed", "yes") won't contain a
-    booking keyword, so a guest wouldn't otherwise fall back into the
-    right agent."""
+    conversation (e.g. just asked "how many people?" and hasn't answered
+    yet) -- those follow-ups ("4", "Ahmed") won't match any of the
+    exemptions above, so a guest wouldn't otherwise fall back into the
+    right agent.
+
+    Passes the VENUE-local clock explicitly -- get_conversation()'s own
+    default (server time) is wrong here: this server's clock reads
+    hours behind Asia/Karachi, so the TTL comparison would always come
+    out negative (never "expired"). Confirmed as a real bug: a guest who
+    starts but never finishes a flow would stay "active" forever, which
+    would let them later type anything at all and have it keep routing
+    back into booking -- quietly defeating the whole point of restricting
+    fresh joins to the QR trigger phrase."""
     from app.agents.maitre_d.store import Store
     from app.agents.maitre_d.config import VenueConfig
 
     store = Store(store_id)
     cfg = VenueConfig.load(store_id)
     return bool(store.get_conversation(
-        phone, ttl_minutes=cfg.conversation_ttl_minutes,
+        phone, ttl_minutes=cfg.conversation_ttl_minutes, now=cfg.now(),
     ).get("flow"))
 
 
@@ -90,16 +114,17 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         text = (body or "").strip()
         active_flow = _has_active_booking_flow(store_id, from_phone)
         wants_cancel = _is_cancel_message(text)
+        wants_modify = _is_modify_message(text)
         # A fresh trigger only starts a flow when booking is actually
         # switched on -- staff's "disable booking" for a quiet walk-in day
         # (see internal.py). Deliberately checked ONLY for the fresh-start
         # case: an already-active flow finishes even if staff flip the
         # toggle mid-conversation (less confusing than abandoning a guest
-        # partway through), and "cancel" always works regardless (it only
-        # removes, see _is_cancel_message).
+        # partway through), and "cancel"/"modify" always work regardless
+        # (neither can create a queue entry, see their own docstrings).
         wants_new_booking = _is_booking_trigger(text) and is_booking_enabled(store_id)
 
-        if active_flow or wants_cancel or wants_new_booking:
+        if active_flow or wants_cancel or wants_modify or wants_new_booking:
             return _handle_booking(from_phone, text, store_id)
 
         # Not a recognised booking trigger (including a disabled "Join the

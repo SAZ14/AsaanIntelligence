@@ -87,6 +87,7 @@ class TestQueueJoin:
     def test_saved_name_is_not_asked_for_again(self, store_id):
         md = _md(store_id)
         md.handle_message(PHONE, "table for 2, it's Ahmed")  # saves the guest's name
+        md.handle_message(PHONE, "cancel")  # that visit ends before the next one starts
 
         md2 = _md(store_id)
         r = md2.handle_message(PHONE, "table for 3")
@@ -662,3 +663,269 @@ class TestStaffGatewayRouting:
         system_msg = next(m["content"] for m in messages if m["role"] == "system")
         assert "*single asterisks*" in system_msg  # shared persona's WhatsApp formatting rule
         assert result == "You have 1 person waiting."
+
+
+# ── Fix 1: _has_active_booking_flow must use the venue-local clock ─────────
+
+class TestActiveFlowClockFix:
+    def test_has_active_booking_flow_passes_venue_local_now(self, store_id):
+        """Regression: this used to rely on get_conversation()'s own
+        default (server time) instead of passing an explicit venue-local
+        `now=` -- on a server whose clock reads behind the venue's, the
+        staleness comparison was always negative, so an abandoned flow
+        NEVER expired, letting that phone bypass the QR-trigger
+        restriction forever. Checked mechanically (that `now` is passed
+        at all) rather than via real-clock arithmetic, since the latter's
+        outcome would depend on the test machine's own system timezone."""
+        from app.gateway.customer import _has_active_booking_flow
+        with patch("app.agents.maitre_d.store.Store.get_conversation") as mock_get:
+            mock_get.return_value = {}
+            _has_active_booking_flow(store_id, PHONE)
+        assert mock_get.call_args.kwargs.get("now") is not None
+
+    def test_stale_flow_actually_expires(self, store_id):
+        from app.gateway.customer import _has_active_booking_flow
+        from app.agents.maitre_d.store import Store
+        from app.agents.maitre_d.config import VenueConfig
+
+        store = Store(store_id)
+        cfg = VenueConfig.load(store_id)
+        stale = cfg.now() - timedelta(minutes=cfg.conversation_ttl_minutes + 10)
+        store.set_conversation(PHONE, {"flow": "book", "slots": {}}, now=stale)
+        assert _has_active_booking_flow(store_id, PHONE) is False
+
+
+# ── Fix 2: resending the trigger must not create a duplicate entry ─────────
+
+class TestDuplicateJoinGuard:
+    def test_resending_the_trigger_does_not_create_a_duplicate(self, store_id):
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        r2 = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert r2.action == "already_queued"
+        assert r2.queue_number == r1.queue_number
+        assert len(md.store.list_queue(status="waiting")) == 1
+
+    def test_mid_flow_resend_also_does_not_duplicate(self, store_id):
+        """Even if the second attempt is only PART-way through slot-filling
+        (not yet a complete duplicate booking), it must still be caught
+        once they already have a waiting entry from the first attempt."""
+        md = _md(store_id)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        r = md.handle_message(PHONE, "book")
+        assert r.action == "already_queued"
+        assert len(md.store.list_queue(status="waiting")) == 1
+
+
+# ── Fix 3: concurrent joins must never collide on number/position ──────────
+
+class TestQueueConcurrencySafety:
+    def test_lock_location_counter_issues_a_for_update_query(self, store_id):
+        """The actual concurrency fix is a SELECT ... FOR UPDATE row lock
+        on this location's MaitreDQueueCounter row (see Store.
+        _lock_location_counter's docstring) -- that's what makes Postgres
+        block a second concurrent request until the first commits. SQLite
+        (this test suite's DB) has no real row-level locking and silently
+        no-ops FOR UPDATE, so a genuine multi-threaded test against it
+        can't validate the fix -- confirmed live while writing this: it
+        produced real duplicate positions/numbers under SQLite, not
+        because the fix is wrong, but because SQLite can't honor it.
+        This checks the fix mechanically instead: that the code actually
+        issues a `.with_for_update()` query, which DOES lock correctly
+        under Postgres in production."""
+        from sqlalchemy.orm import Query
+        from app.core.db import SessionLocal
+
+        calls = []
+        original = Query.with_for_update
+
+        def spy(self, *a, **kw):
+            calls.append(True)
+            return original(self, *a, **kw)
+
+        store = Store(store_id)
+        with patch.object(Query, "with_for_update", spy):
+            with SessionLocal() as db:
+                store._lock_location_counter(db, None)
+                db.commit()
+        assert calls
+
+    def test_sequential_joins_never_collide_on_number_or_position(self, store_id):
+        """Baseline correctness with no concurrency involved: rapid
+        sequential joins must produce strictly unique, increasing
+        numbers/positions -- the property the lock exists to preserve
+        under real concurrent access in production."""
+        results = [
+            _md(store_id).handle_message(f"+9230000{i:04d}", "table for 2, it's Guest")
+            for i in range(15)
+        ]
+        assert [r.queue_number for r in results] == list(range(1, 16))
+        assert [r.position for r in results] == list(range(1, 16))
+
+
+# ── Fix 4: stale queue entries auto-expire ──────────────────────────────────
+
+class TestQueueExpiry:
+    def test_stale_entry_expires_and_queue_moves_up(self, store_id):
+        early = _md(store_id, now=FRIDAY_8PM)
+        early.handle_message("+923000000001", "table for 2, it's Aman")
+
+        # Bilal joins 80 minutes later -- still fresh at sweep time, unlike
+        # Aman who'll be 100 minutes old by then.
+        mid = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=80))
+        mid.store = early.store
+        mid.handle_message("+923000000002", "table for 2, it's Bilal")
+
+        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=100))  # past the default 90-min timeout
+        later.store = early.store
+        result = later.expire_stale_entries()
+        assert result.expired == 1
+        remaining = later.store.list_queue(status="waiting")
+        assert [e.name for e in remaining] == ["Bilal"]
+        assert remaining[0].position == 1
+
+    def test_recent_entry_is_not_expired(self, store_id):
+        md = _md(store_id, now=FRIDAY_8PM)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=30))
+        later.store = md.store
+        result = later.expire_stale_entries()
+        assert result.expired == 0
+
+    def test_expired_guest_gets_a_courtesy_message(self, store_id):
+        md = _md(store_id, now=FRIDAY_8PM)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=100))
+        later.store = md.store
+        result = later.expire_stale_entries()
+        assert any(phone == PHONE for phone, _ in result.outbound)
+
+
+# ── Fix 5 & 6: branch-grouped, paginated queue listing ──────────────────────
+
+class TestQueueListingFormatting:
+    def test_multi_branch_listing_has_a_header_per_branch(self, store_id):
+        _seed_two_locations(store_id)
+        md = _md_multi(store_id)
+        md.handle_message(PHONE, "table for 2 at New Blue Area, it's Ahmed")
+        from app.agents.maitre_d.staff import format_queue
+        text = format_queue(store_id)
+        assert "New Blue Area:" in text
+
+    def test_listing_caps_at_20_with_a_remainder_note(self, store_id):
+        md = _md(store_id)
+        for i in range(25):
+            md.handle_message(f"+9230000{i:04d}", "table for 2, it's Guest")
+        from app.agents.maitre_d.staff import format_queue
+        text = format_queue(store_id)
+        assert text.count("•") == 20
+        assert "5 more waiting" in text
+
+
+# ── Fix 7: modifying an existing queue entry ────────────────────────────────
+
+class TestModifyQueueEntry:
+    def test_modify_party_size_while_waiting(self, store_id):
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "table for 2, it's Ahmed")
+        r2 = md.handle_message(PHONE, "actually we're 5 now")
+        assert r2.action == "modified"
+        assert r2.queue_number == r1.queue_number
+        entry = md.store.latest_waiting_entry_for(PHONE)
+        assert entry.party_size == 5
+
+    def test_modify_with_no_active_entry_is_graceful(self, store_id):
+        md = _md(store_id)
+        r = md.handle_message(PHONE, "actually we're 5 now")
+        assert r.action == "noop"
+
+    def test_modify_does_not_hijack_an_active_fresh_booking_flow(self, store_id):
+        """A slot-filling answer during a FRESH booking must continue
+        THAT flow, never get intercepted as an update to some other
+        entry -- even though "actually we're 5" classifies as "modify"
+        intent on its own (see nlu.py's _fallback_intent)."""
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "book")
+        assert r1.action == "need_info"
+        r2 = md.handle_message(PHONE, "actually we're 5")
+        assert r2.action == "need_info"
+        assert "name" in r2.text.lower()
+
+    def test_modify_message_routes_through_gateway_without_active_flow(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
+        reply = handle_customer_for_store(PHONE, "actually we're 5 now", store_id)
+        assert "updated" in reply.lower()
+
+
+# ── Fix 8: seated-grace / queue-timeout are per-store configurable ─────────
+
+class TestConfigurableThresholds:
+    def test_seated_grace_is_configurable(self, store_id):
+        from app.agents.maitre_d.config import get_seated_grace_minutes, set_seated_grace_minutes
+        assert get_seated_grace_minutes(store_id) == 120
+        set_seated_grace_minutes(store_id, 30)
+        assert get_seated_grace_minutes(store_id) == 30
+
+    def test_queue_stale_minutes_is_configurable(self, store_id):
+        from app.agents.maitre_d.config import get_queue_stale_minutes, set_queue_stale_minutes
+        assert get_queue_stale_minutes(store_id) == 90
+        set_queue_stale_minutes(store_id, 45)
+        assert get_queue_stale_minutes(store_id) == 45
+
+    def test_staff_can_set_seated_grace_via_command(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from app.agents.maitre_d.config import get_seated_grace_minutes
+        reply = handle_internal_for_store("whatsapp:+923220000000", "seated grace 30", store_id)
+        assert "30" in reply
+        assert get_seated_grace_minutes(store_id) == 30
+
+    def test_staff_can_set_queue_timeout_via_command(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from app.agents.maitre_d.config import get_queue_stale_minutes
+        reply = handle_internal_for_store("whatsapp:+923220000000", "queue timeout 45", store_id)
+        assert "45" in reply
+        assert get_queue_stale_minutes(store_id) == 45
+
+    def test_shortened_seated_grace_actually_affects_the_guard(self, store_id):
+        from app.agents.maitre_d.config import set_seated_grace_minutes
+        set_seated_grace_minutes(store_id, 10)
+        md = _md(store_id, now=FRIDAY_8PM)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        Store(store_id).admit_next(None, now=FRIDAY_8PM)
+
+        later = _md(store_id, now=FRIDAY_8PM + timedelta(minutes=20))  # past the shortened 10-min grace
+        later.store = md.store
+        r = later.handle_message(PHONE, "table for 2, it's Ahmed")
+        assert r.action == "queued"  # would be "already_seated" under the default 120-min grace
+
+
+# ── Fix 9: staff can add a walk-in without a phone number ──────────────────
+
+class TestWalkInWithoutPhone:
+    def test_add_position_without_phone(self, store_id):
+        from app.agents.maitre_d.staff import insert_queue_position
+        md = _md(store_id)
+        md.handle_message("+923000000001", "table for 2, it's Aman")
+        reply = insert_queue_position(store_id, "1 Walked In, party 3")
+        assert "Added Walked In" in reply
+        assert "no phone" in reply.lower()
+        entries = md.store.list_queue(status="waiting")
+        assert entries[0].name == "Walked In"
+        assert entries[0].phone == ""
+        assert entries[0].party_size == 3
+
+    def test_add_position_with_phone_still_works(self, store_id):
+        from app.agents.maitre_d.staff import insert_queue_position
+        reply = insert_queue_position(store_id, "1 +923009998888 Ali Khan, party 2")
+        assert "Added Ali Khan" in reply
+        assert "no phone" not in reply.lower()
+
+    def test_phone_less_walk_in_is_silently_skipped_on_seating_notification(self, store_id):
+        from app.agents.maitre_d.staff import insert_queue_position, admit_next_in_queue
+        insert_queue_position(store_id, "1 Walked In, party 2")
+        with patch("app.core.outbound.send_from_store") as mock_send:
+            reply = admit_next_in_queue(store_id)
+        assert "Admitted" in reply
+        mock_send.assert_not_called()  # no phone on file -- nothing to send

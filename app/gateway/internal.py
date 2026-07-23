@@ -61,7 +61,9 @@ def staff_help_text(store_name: str) -> str:
         "  admit [at <branch>]: seat the next person in line\n"
         "  remove <position> [at <branch>]: take someone out of the line\n"
         "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n"
-        "  disable booking / enable booking: pause or resume guests joining the queue\n\n"
+        "  disable booking / enable booking: pause or resume guests joining the queue\n"
+        "  seated grace <minutes>: how long an admitted guest is blocked from rejoining (default 120)\n"
+        "  queue timeout <minutes>: how long an unclaimed queue spot is auto-released (default 90)\n\n"
         "You can also just write in plain language, e.g. \"how did we do this "
         "week\" or \"what are competitors offering\", no need to remember exact "
         "commands.\n\n"
@@ -449,6 +451,16 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         logger.info("internal.routing: store=%d agent=maitre_d trigger=booking_toggle from=%s", store_id, from_number)
         reply = _maitre_d_toggle_booking(store_id, text.lower().strip() == "enable booking")
 
+    elif first == "seated" and len(words) >= 3 and words[1].lower() == "grace" and words[2].isdigit():
+        agent = "maitre_d"
+        logger.info("internal.routing: store=%d agent=maitre_d trigger=seated_grace from=%s", store_id, from_number)
+        reply = _maitre_d_set_seated_grace(store_id, int(words[2]))
+
+    elif first == "queue" and len(words) >= 3 and words[1].lower() == "timeout" and words[2].isdigit():
+        agent = "maitre_d"
+        logger.info("internal.routing: store=%d agent=maitre_d trigger=queue_timeout from=%s", store_id, from_number)
+        reply = _maitre_d_set_queue_timeout(store_id, int(words[2]))
+
     elif first == "add" and len(text.split()) > 1 and text.split()[1].lower() == "vip":
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=add_vip from=%s", store_id, from_number)
@@ -649,6 +661,26 @@ def _maitre_d_toggle_booking(store_id: int, enable: bool) -> str:
                 "the queue until you turn it back on with \"enable booking\".")
     except Exception as e:
         logger.warning("internal._maitre_d_toggle_booking: store=%d error=%s", store_id, e)
+        return "Queue agent is unavailable right now. Please try again shortly."
+
+
+def _maitre_d_set_seated_grace(store_id: int, minutes: int) -> str:
+    try:
+        from app.agents.maitre_d.config import set_seated_grace_minutes
+        set_seated_grace_minutes(store_id, minutes)
+        return f"Updated — an admitted guest can't rejoin the queue for {minutes} minutes."
+    except Exception as e:
+        logger.warning("internal._maitre_d_set_seated_grace: store=%d error=%s", store_id, e)
+        return "Queue agent is unavailable right now. Please try again shortly."
+
+
+def _maitre_d_set_queue_timeout(store_id: int, minutes: int) -> str:
+    try:
+        from app.agents.maitre_d.config import set_queue_stale_minutes
+        set_queue_stale_minutes(store_id, minutes)
+        return f"Updated — a queue spot with no staff action for {minutes} minutes will now be auto-released."
+    except Exception as e:
+        logger.warning("internal._maitre_d_set_queue_timeout: store=%d error=%s", store_id, e)
         return "Queue agent is unavailable right now. Please try again shortly."
 
 
