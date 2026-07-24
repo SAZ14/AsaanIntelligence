@@ -60,7 +60,8 @@ _MAITRE_D_HELP = (
     "  add <position> <phone> <name>[, party <N>] [at <branch>]: insert someone into the line\n"
     "  disable booking / enable booking: pause or resume guests joining the queue\n"
     "  seated grace <minutes>: how long an admitted guest is blocked from rejoining (default 120)\n"
-    "  queue timeout <minutes>: how long an unclaimed queue spot is auto-released (default 90)\n\n"
+    "  queue timeout <minutes>: how long an unclaimed queue spot is auto-released (default 90)\n"
+    "  entrance code ttl <minutes>: how long a QR scan's one-time code stays valid (default 15)\n\n"
 )
 
 _HELP_SECTIONS = (
@@ -539,6 +540,12 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
         logger.info("internal.routing: store=%d agent=maitre_d trigger=queue_timeout from=%s", store_id, from_number)
         reply = _maitre_d_set_queue_timeout(store_id, int(words[2]))
 
+    elif (first == "entrance" and len(words) >= 4 and words[1].lower() == "code"
+          and words[2].lower() == "ttl" and words[3].isdigit()):
+        agent = "maitre_d"
+        logger.info("internal.routing: store=%d agent=maitre_d trigger=entrance_code_ttl from=%s", store_id, from_number)
+        reply = _maitre_d_set_entrance_code_ttl(store_id, int(words[3]))
+
     elif first == "add" and len(text.split()) > 1 and text.split()[1].lower() == "vip":
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=add_vip from=%s", store_id, from_number)
@@ -834,6 +841,21 @@ def _maitre_d_set_queue_timeout(store_id: int, minutes: int) -> str:
         return f"Updated — a queue spot with no staff action for {minutes} minutes will now be auto-released."
     except Exception as e:
         logger.warning("internal._maitre_d_set_queue_timeout: store=%d error=%s", store_id, e)
+        return "Queue agent is unavailable right now. Please try again shortly."
+
+
+def _maitre_d_set_entrance_code_ttl(store_id: int, minutes: int) -> str:
+    denied = _require_agent(store_id, "maitre_d")
+    if denied:
+        return denied
+    if not (_MIN_THRESHOLD_MINUTES <= minutes <= _MAX_THRESHOLD_MINUTES):
+        return f"Please pick a value between {_MIN_THRESHOLD_MINUTES} and {_MAX_THRESHOLD_MINUTES} minutes."
+    try:
+        from app.agents.maitre_d.config import set_entrance_code_ttl_minutes
+        set_entrance_code_ttl_minutes(store_id, minutes)
+        return f"Updated — a QR scan's one-time code now stays valid for {minutes} minutes."
+    except Exception as e:
+        logger.warning("internal._maitre_d_set_entrance_code_ttl: store=%d error=%s", store_id, e)
         return "Queue agent is unavailable right now. Please try again shortly."
 
 

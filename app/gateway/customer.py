@@ -47,8 +47,44 @@ def _is_booking_trigger(text: str) -> bool:
     _book_flow already matches a multi-branch store's location against
     the guest's raw text (match_location in config.py) whenever a branch
     hasn't been picked yet, so whatever follows the base phrase is simply
-    left in place for that same matching to find."""
+    left in place for that same matching to find.
+
+    This alone only stops CASUAL/ACCIDENTAL triggering -- it says nothing
+    about whether the message actually came from a fresh scan of the
+    entrance QR just now, versus someone replaying a remembered or
+    screenshotted copy of the same text from home. See
+    _extract_entrance_code / _redeem_entrance_code below for the part
+    that actually closes that gap."""
     return _alnum(text).startswith(_BOOKING_TRIGGER_NORM)
+
+
+# The relinker (main.py's entrance_qr_relink, the ONLY thing the printed QR
+# encodes) appends " #<code>" to the end of the trigger text on every scan --
+# a fresh, single-use, short-TTL code minted server-side, never baked into
+# the QR image itself. Requiring it here (see _redeem_entrance_code) is what
+# makes a stale screenshot or a remembered "Join the Queue - F7" message
+# stop working: the phrase alone is meant to be public and printable, the
+# code is meant to die the instant it's used once or its TTL passes.
+_ENTRANCE_CODE_RE = re.compile(r"#([A-Za-z0-9]{6,12})\s*$")
+
+
+def _extract_entrance_code(text: str) -> str | None:
+    m = _ENTRANCE_CODE_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _redeem_entrance_code(store_id: int, text: str) -> bool:
+    """True only if `text` carries a currently-valid one-time entrance
+    code for this store -- burns it (marks used) in the same call, so a
+    valid redemption can never be double-spent even by two near-
+    simultaneous requests (see Store.redeem_entrance_code's own docstring
+    for the atomicity guarantee)."""
+    code = _extract_entrance_code(text)
+    if not code:
+        return False
+    from app.agents.maitre_d.store import Store
+    ok, _location_id = Store(store_id).redeem_entrance_code(code)
+    return ok
 
 
 def _is_cancel_message(text: str) -> bool:
@@ -169,6 +205,43 @@ def _handle_booking(from_phone: str, body: str, store_id: int) -> str:
     return reply.text
 
 
+# ── per-phone rate limit ─────────────────────────────────────────────────────
+# Redis-backed (app.core.cache) so it holds across multiple instances and
+# restarts, with an in-process fallback for when Redis is unreachable (local
+# dev, tests, outage) -- mirrors main.py's _scout_rate_ok exactly, for the
+# same reason: failing all the way open during a Redis outage would mean the
+# one time this guard matters most (something is actively spamming the
+# webhook) is exactly when it silently stops working. Deliberately generous
+# (a real back-and-forth conversation can easily hit a dozen turns) -- this
+# guards against a script/bot blasting messages, not against a normal chatty
+# guest.
+import time as _time
+from collections import defaultdict as _defaultdict
+
+_CUSTOMER_RATE_WINDOW = 60   # seconds
+_CUSTOMER_RATE_MAX = 20
+_customer_rate: dict[str, list[float]] = _defaultdict(list)  # phone → [timestamps]
+
+
+def _customer_rate_ok(phone: str) -> bool:
+    """Return True (and record the hit) if this phone is within the rate
+    limit for customer-facing messages (both the queue and the community
+    agent go through this one gate)."""
+    from app.core import cache as _cache
+    if _cache.available():
+        return _cache.rate_limit_ok(
+            f"guard:customer_rate:{phone}", _CUSTOMER_RATE_MAX, _CUSTOMER_RATE_WINDOW
+        )
+    now = _time.monotonic()
+    hits = [t for t in _customer_rate[phone] if now - t < _CUSTOMER_RATE_WINDOW]
+    if len(hits) >= _CUSTOMER_RATE_MAX:
+        _customer_rate[phone] = hits
+        return False
+    hits.append(now)
+    _customer_rate[phone] = hits
+    return True
+
+
 def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
     """Invoke the customer agent for a known store. Returns reply text.
 
@@ -198,6 +271,16 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
         # already be in normalized form, masking this for every prior test).
         phone = normalise_phone(from_phone)
 
+        # Checked before any DB/LLM work -- a spammer's excess messages
+        # should cost this process as little as possible. Silent drop, not
+        # a "slow down" reply: an automated sender doesn't care, a real
+        # human is never going to hit 20 messages/min by accident, and not
+        # replying avoids both escalating a spam loop and telegraphing the
+        # exact threshold to whoever's testing it.
+        if not _customer_rate_ok(phone):
+            logger.warning("customer.rate_limit: store=%d phone=%s exceeded", store_id, phone)
+            return ""
+
         # maitre_d (the walk-in queue) is only even considered if this
         # store's package includes it -- otherwise none of the booking-
         # related triggers below (including "Join the Queue" itself) are
@@ -216,10 +299,29 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
             # toggle mid-conversation (less confusing than abandoning a guest
             # partway through), and "cancel"/"modify" always work regardless
             # (neither can create a queue entry, see their own docstrings).
-            wants_new_booking = _is_booking_trigger(text) and is_booking_enabled(store_id)
+            #
+            # A fresh trigger ALSO now needs a currently-valid one-time
+            # entrance code (see _redeem_entrance_code) -- this is the part
+            # that actually verifies "this came from a scan just now", not
+            # just "this text matches the trigger phrase". An active flow or
+            # cancel/modify never needs one: neither can create a fresh
+            # queue entry, so neither carries the replay risk a fresh join
+            # does.
+            is_fresh_trigger = _is_booking_trigger(text) and is_booking_enabled(store_id)
+            invalid_code = False
+            wants_new_booking = False
+            if is_fresh_trigger and not active_flow:
+                if _redeem_entrance_code(store_id, text):
+                    wants_new_booking = True
+                else:
+                    invalid_code = True
 
             if active_flow or wants_cancel or wants_modify or wants_new_booking:
                 return _handle_booking(phone, text, store_id)
+
+            if invalid_code:
+                return ("That entrance code has expired or was already used — "
+                        "please scan the QR code at the entrance for a fresh one.")
 
         # Not a recognised booking trigger (including a disabled "Join the
         # Queue", or plain text like "book"/"table for 2" typed by someone

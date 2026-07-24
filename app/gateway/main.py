@@ -45,7 +45,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 import json as _json_mod
 
 logger = logging.getLogger(__name__)
@@ -2262,41 +2262,80 @@ async def list_stores() -> JSONResponse:
     return JSONResponse(result)
 
 
-@app.get("/admin/stores/{store_id}/queue-links")
-async def get_queue_join_links(store_id: int) -> JSONResponse:
-    """wa.me links for the entrance/booking-area QR code(s) -- one per
-    branch for a multi-location store (each with its own branch_key
-    appended after the trigger phrase, e.g. "Join the Queue - F7", which
-    gateway/customer.py's _is_booking_trigger now recognises as a prefix
-    match and agent.py's existing location-matching then resolves from
-    the raw text, needing no follow-up "which branch?" question), or a
-    single plain link for a store with one (or no configured) location."""
+@app.get("/q/{store_id}")
+async def entrance_qr_relink(store_id: int, branch: str = "") -> Response:
+    """The ONLY thing a printed entrance QR code ever encodes -- a static
+    URL (this endpoint), never a wa.me link directly. Every single visit
+    (i.e. every scan) mints a fresh one-time code and 302s straight into
+    WhatsApp with it embedded in the prefilled text, so the sticker on
+    the wall never needs reprinting even though what's inside it changes
+    on every scan. gateway/customer.py's booking-trigger handling then
+    requires that code to redeem successfully (unused, right store/
+    branch, within its TTL -- see Store.redeem_entrance_code) before a
+    fresh queue-join is allowed to start at all.
+
+    This is what actually closes the "someone at home retypes a
+    remembered/screenshotted trigger message" gap -- the fixed phrase
+    alone (BOOKING_TRIGGER_PHRASE) can't, since it's meant to be public
+    and printable. A code minted for THIS visit is worthless the moment
+    it's redeemed once or its TTL passes, regardless of who has a copy
+    of the text."""
     from urllib.parse import quote
     from app.core.outbound import resolve_store_display_number
     from app.agents.maitre_d.config import VenueConfig
+    from app.agents.maitre_d.store import Store
     from app.gateway.customer import BOOKING_TRIGGER_PHRASE
 
     digits = resolve_store_display_number(store_id)
     if not digits:
+        return PlainTextResponse("This restaurant hasn't set up WhatsApp messaging yet.", status_code=404)
+
+    location_id = None
+    suffix = ""
+    if branch:
+        loc = next(
+            (l for l in VenueConfig.list_locations(store_id) if l.branch_key == branch), None,
+        )
+        if loc is None:
+            return PlainTextResponse("Unknown branch.", status_code=404)
+        location_id = loc.location_id
+        suffix = f" - {loc.branch_key}"
+
+    code = Store(store_id).generate_entrance_code(location_id)
+    text = f"{BOOKING_TRIGGER_PHRASE}{suffix} #{code}"
+    return RedirectResponse(f"https://wa.me/{digits}?text={quote(text)}", status_code=302)
+
+
+@app.get("/admin/stores/{store_id}/queue-links")
+async def get_queue_join_links(request: Request, store_id: int) -> JSONResponse:
+    """The STATIC relinker URL(s) for the entrance/booking-area QR
+    code(s) to be printed -- one per branch for a multi-location store,
+    or a single plain link for a store with one (or no configured)
+    location. Points at /q/{store_id} (this same server, see
+    entrance_qr_relink above), not directly at wa.me: what the QR sticker
+    encodes never changes, but each scan of it mints a fresh one-time
+    code server-side."""
+    from app.core.outbound import resolve_store_display_number
+    from app.agents.maitre_d.config import VenueConfig
+
+    if not resolve_store_display_number(store_id):
         return JSONResponse({"error": "no messaging provider configured for this store"}, status_code=404)
 
+    base = f"{str(request.base_url).rstrip('/')}/q/{store_id}"
     locations = VenueConfig.list_locations(store_id)
     if len(locations) <= 1:
-        text = BOOKING_TRIGGER_PHRASE
         return JSONResponse({
             "store_id": store_id,
-            "links": [{"branch_key": None, "branch_name": None, "text": text,
-                       "url": f"https://wa.me/{digits}?text={quote(text)}"}],
+            "links": [{"branch_key": None, "branch_name": None, "url": base}],
         })
 
     links = []
     for loc in locations:
         if not loc.accepts_reservations:
             continue
-        text = f"{BOOKING_TRIGGER_PHRASE} - {loc.branch_key}"
         links.append({
-            "branch_key": loc.branch_key, "branch_name": loc.branch_name, "text": text,
-            "url": f"https://wa.me/{digits}?text={quote(text)}",
+            "branch_key": loc.branch_key, "branch_name": loc.branch_name,
+            "url": f"{base}?branch={loc.branch_key}",
         })
     return JSONResponse({"store_id": store_id, "links": links})
 

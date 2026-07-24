@@ -620,13 +620,46 @@ class MaitreDSettings(Base):
 
     queue_stale_minutes: how long a "waiting" entry can sit with no staff
     action before the maintenance sweep assumes the guest isn't coming
-    and releases the spot (staff's "queue timeout <N>" command)."""
+    and releases the spot (staff's "queue timeout <N>" command).
+
+    entrance_code_ttl_minutes: how long a one-time entrance code minted by
+    the /q/{store_id} relinker stays redeemable (staff's "entrance code
+    ttl <N>" command) -- see MaitreDEntranceCode."""
     __tablename__ = "maitre_d_settings"
 
     store_id = Column(Integer, ForeignKey("stores.id"), primary_key=True)
     booking_enabled = Column(Boolean, nullable=False, default=True)
     seated_grace_minutes = Column(Integer, nullable=False, default=120)
     queue_stale_minutes = Column(Integer, nullable=False, default=90)
+    entrance_code_ttl_minutes = Column(Integer, nullable=False, default=15)
+
+
+class MaitreDEntranceCode(Base):
+    """A one-time code minted on each visit to the /q/{store_id} relinker
+    (see gateway/main.py's entrance_qr_relink) and embedded in the wa.me
+    text it redirects to. The PRINTED QR sticker is static -- it encodes
+    the relinker URL, never a code -- but every scan mints a fresh,
+    single-use code server-side, so a screenshot or memorised copy of a
+    past "Join the Queue ... #CODE" message stops working the moment
+    either the code is redeemed once or its TTL passes. This is what
+    closes the "someone at home replays the trigger text" gap that the
+    fixed trigger PHRASE alone (gateway/customer.py's BOOKING_TRIGGER_
+    PHRASE) never could -- the phrase is meant to be public/printable,
+    the code is meant to be single-use and short-lived.
+
+    Deliberately its own table rather than reusing MaitreDQueueEntry or
+    MaitreDConversation -- a code exists before we know anything about
+    who's about to use it (no phone number yet), and must be checked
+    without ever having created a queue entry for a redemption that
+    turns out to be invalid."""
+    __tablename__ = "maitre_d_entrance_codes"
+
+    id = Column(Integer, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, index=True)
+    location_id = Column(Integer, nullable=True)  # None = store's single implicit location
+    code = Column(String, nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    used_at = Column(DateTime, nullable=True)
 
 
 class MaitreDQueueCounter(Base):

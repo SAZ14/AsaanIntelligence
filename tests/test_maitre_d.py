@@ -506,10 +506,24 @@ class TestMultiTenancy:
 
 # ── Gateway wiring: customer mode routes booking-shaped messages here ──────
 
+def _entrance_text(store_id: int, suffix: str = "") -> str:
+    """A fresh, valid "Join the Queue[ - branch] #CODE" message -- what a
+    REAL scan of the entrance QR relinker (main.py's entrance_qr_relink)
+    hands back. Any test that drives the flow through the real gateway
+    entry point (handle_customer_for_store, as opposed to calling
+    MaitreD.handle_message directly) needs this: a fresh trigger now also
+    requires a currently-valid one-time code, see customer.py's
+    _redeem_entrance_code."""
+    from app.agents.maitre_d.store import Store
+    from app.gateway.customer import BOOKING_TRIGGER_PHRASE
+    code = Store(store_id).generate_entrance_code(None)
+    return f"{BOOKING_TRIGGER_PHRASE}{suffix} #{code}"
+
+
 class TestCustomerGatewayRouting:
     def test_qr_trigger_phrase_starts_the_queue_flow(self, store_id):
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        r1 = handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        r1 = handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)
         assert r1 != "Something went wrong, please try again."
         assert "queue" in r1.lower() or "name" in r1.lower() or "many" in r1.lower()
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
@@ -520,7 +534,7 @@ class TestCustomerGatewayRouting:
         without breaking the match -- see customer.py's alnum-normalised
         comparison."""
         from app.gateway.customer import handle_customer_for_store
-        handle_customer_for_store(PHONE, "\U0001f3ab Join the Queue!", store_id)
+        handle_customer_for_store(PHONE, f"\U0001f3ab {_entrance_text(store_id, '!')}", store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "booking number" in reply.lower()
 
@@ -531,7 +545,7 @@ class TestCustomerGatewayRouting:
         which branch."""
         _seed_two_locations(store_id)
         from app.gateway.customer import handle_customer_for_store
-        r1 = handle_customer_for_store(PHONE, "Join the Queue - new_blue_area", store_id)
+        r1 = handle_customer_for_store(PHONE, _entrance_text(store_id, " - new_blue_area"), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(PHONE, "party of 2, it's Ahmed", store_id)
         assert "booking number" in r2.lower()
@@ -570,16 +584,16 @@ class TestCustomerGatewayRouting:
         in-progress conversation state tells the router this is a
         continuation of the earlier booking flow, not a fresh community-
         agent message."""
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)  # starts a flow, no name/party yet
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)  # starts a flow, no name/party yet
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "booking number" in reply.lower()
 
     def test_cancel_always_works_regardless_of_the_trigger_phrase(self, store_id):
         """"cancel" only ever removes an existing entry, so it's exempt
         from the trigger-phrase restriction (see _is_cancel_message)."""
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)
         handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         reply = handle_customer_for_store(PHONE, "cancel please", store_id)
         assert "removed" in reply.lower()
@@ -587,7 +601,10 @@ class TestCustomerGatewayRouting:
     def test_disabled_booking_silently_falls_through(self, store_id):
         """A disabled store's guests get routed to the normal community
         agent with NO "booking is off" message -- they should never even
-        learn the queue exists if staff have switched it off."""
+        learn the queue exists if staff have switched it off. No entrance
+        code needed here: booking-disabled is checked BEFORE a code is
+        ever looked at, so even a genuine fresh trigger with a valid code
+        would still fall through the same way."""
         from app.agents.maitre_d.config import set_booking_enabled
         from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
         set_booking_enabled(store_id, False)
@@ -598,10 +615,10 @@ class TestCustomerGatewayRouting:
 
     def test_re_enabled_booking_works_again(self, store_id):
         from app.agents.maitre_d.config import set_booking_enabled
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        from app.gateway.customer import handle_customer_for_store
         set_booking_enabled(store_id, False)
         set_booking_enabled(store_id, True)
-        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "booking number" in reply.lower()
 
@@ -614,17 +631,59 @@ class TestCustomerGatewayRouting:
             db.add(MaitreDVip(store_id=store_id, phone=vip_phone, name="Ayesha", tier="vip"))
             db.commit()
 
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        from app.gateway.customer import handle_customer_for_store
         # A VIP's own booking always sets staff_alert (see agent.py's
         # _join_queue), so this deterministically exercises the dispatch
         # path rather than depending on any randomised classification.
-        handle_customer_for_store(vip_phone, BOOKING_TRIGGER_PHRASE, store_id)
+        handle_customer_for_store(vip_phone, _entrance_text(store_id), store_id)
         with patch("app.core.outbound.notify_staff") as mock_notify:
             handle_customer_for_store(vip_phone, "it's Ayesha, party of 2", store_id)
         mock_notify.assert_called_once()
         args = mock_notify.call_args.args
         assert args[0] == store_id
         assert "VIP" in args[1]
+
+
+# ── Per-phone rate limit ─────────────────────────────────────────────────────
+
+class TestCustomerRateLimit:
+    def test_messages_within_the_limit_all_get_a_reply(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, _CUSTOMER_RATE_MAX
+        with patch("app.agents.maitre_d.agent.get_maitre_d"):
+            for _ in range(_CUSTOMER_RATE_MAX):
+                reply = handle_customer_for_store(PHONE, "hi", store_id)
+                assert reply != ""
+
+    def test_exceeding_the_limit_silently_drops_further_messages(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, _CUSTOMER_RATE_MAX
+        for _ in range(_CUSTOMER_RATE_MAX):
+            handle_customer_for_store(PHONE, "hi", store_id)
+        reply = handle_customer_for_store(PHONE, "hi", store_id)
+        assert reply == ""
+
+    def test_rate_limit_is_per_phone_not_global(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, _CUSTOMER_RATE_MAX
+        for _ in range(_CUSTOMER_RATE_MAX):
+            handle_customer_for_store(PHONE, "hi", store_id)
+        assert handle_customer_for_store(PHONE, "hi", store_id) == ""
+        # a different phone is unaffected by the first one's limit
+        assert handle_customer_for_store("+923009998888", "hi", store_id) != ""
+
+    def test_rate_limited_fresh_trigger_never_burns_the_entrance_code(self, store_id):
+        """A code silently dropped by the rate limiter must stay valid --
+        otherwise a burst of duplicate webhook deliveries (a known
+        WhatsApp behavior) could burn a guest's own code before their
+        real message is even processed."""
+        from app.gateway.customer import handle_customer_for_store, _CUSTOMER_RATE_MAX
+        from app.agents.maitre_d.store import Store
+        for _ in range(_CUSTOMER_RATE_MAX):
+            handle_customer_for_store(PHONE, "hi", store_id)
+        text = _entrance_text(store_id)
+        code = text.rsplit("#", 1)[1]
+        dropped = handle_customer_for_store(PHONE, text, store_id)
+        assert dropped == ""
+        ok, _ = Store(store_id).redeem_entrance_code(code)
+        assert ok is True
 
 
 # ── Realistic webhook phone format ("whatsapp:+92...", not the bare "+92..."
@@ -645,8 +704,8 @@ WHATSAPP_PHONE = "whatsapp:+923001234567"
 
 class TestRealisticWebhookPhoneFormat:
     def test_multi_turn_booking_completes_with_whatsapp_prefixed_phone(self, store_id):
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        r1 = handle_customer_for_store(WHATSAPP_PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        r1 = handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
         assert "booking number" in r2.lower(), (
@@ -654,15 +713,15 @@ class TestRealisticWebhookPhoneFormat:
         )
 
     def test_cancel_works_with_whatsapp_prefixed_phone(self, store_id):
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        handle_customer_for_store(WHATSAPP_PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id), store_id)
         handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
         reply = handle_customer_for_store(WHATSAPP_PHONE, "cancel", store_id)
         assert "removed" in reply.lower()
 
     def test_modify_works_with_whatsapp_prefixed_phone(self, store_id):
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        handle_customer_for_store(WHATSAPP_PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id), store_id)
         handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
         with patch("app.gateway.customer._llm_confirms_modify_intent", return_value=True):
             reply = handle_customer_for_store(WHATSAPP_PHONE, "actually we're 5 now", store_id)
@@ -671,11 +730,88 @@ class TestRealisticWebhookPhoneFormat:
     def test_branch_coded_qr_trigger_with_whatsapp_prefixed_phone(self, store_id):
         _seed_two_locations(store_id)
         from app.gateway.customer import handle_customer_for_store
-        r1 = handle_customer_for_store(WHATSAPP_PHONE, "Join the Queue - new_blue_area", store_id)
+        r1 = handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id, " - new_blue_area"), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
         assert "booking number" in r2.lower()
         assert "new blue area" in r2.lower()
+
+
+# ── Entrance-code gate on the real gateway entry point ──────────────────────
+
+class TestEntranceCodeGate:
+    """handle_customer_for_store requires a currently-valid one-time code
+    on a FRESH trigger (see customer.py's _redeem_entrance_code) -- this
+    is what actually stops a remembered/screenshotted trigger message
+    from working days or rooms away from the entrance, which the fixed
+    trigger phrase alone never could."""
+
+    def test_trigger_with_no_code_is_rejected(self, store_id):
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            reply = handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        mock_md.assert_not_called()
+        assert "expired" in reply.lower() or "used" in reply.lower()
+
+    def test_trigger_with_an_already_used_code_is_rejected(self, store_id):
+        from app.agents.maitre_d.store import Store
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        code = Store(store_id).generate_entrance_code(None)
+        Store(store_id).redeem_entrance_code(code)  # burn it once, as if already used
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            reply = handle_customer_for_store(PHONE, f"{BOOKING_TRIGGER_PHRASE} #{code}", store_id)
+        mock_md.assert_not_called()
+        assert "expired" in reply.lower() or "used" in reply.lower()
+
+    def test_trigger_with_an_expired_code_is_rejected(self, store_id):
+        from datetime import datetime, timedelta
+        from app.core.db import SessionLocal, MaitreDEntranceCode
+        from app.agents.maitre_d.store import Store
+        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
+        code = Store(store_id).generate_entrance_code(None)
+        with SessionLocal() as db:
+            row = db.query(MaitreDEntranceCode).filter(MaitreDEntranceCode.code == code).first()
+            row.created_at = datetime.utcnow() - timedelta(minutes=999)
+            db.commit()
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            reply = handle_customer_for_store(PHONE, f"{BOOKING_TRIGGER_PHRASE} #{code}", store_id)
+        mock_md.assert_not_called()
+        assert "expired" in reply.lower() or "used" in reply.lower()
+
+    def test_the_same_valid_code_cannot_start_two_separate_queue_joins(self, store_id):
+        """A screenshot of one successful "Join the Queue #CODE" message
+        shared with a friend must not let them join too, even seconds
+        later -- the code is burned on the FIRST successful redemption."""
+        from app.gateway.customer import handle_customer_for_store
+        text = _entrance_text(store_id)
+        first = handle_customer_for_store("+923000000001", text, store_id)
+        assert "expired" not in first.lower()
+        second = handle_customer_for_store("+923000000002", text, store_id)
+        assert "expired" in second.lower() or "used" in second.lower()
+
+    def test_a_fresh_relink_produces_a_working_code(self, store_id):
+        """End-to-end: the real /q/{store_id} relinker's own output is
+        redeemable exactly once through the real gateway entry point."""
+        from urllib.parse import unquote
+        from fastapi.testclient import TestClient
+        from app.gateway.main import app
+        from app.gateway.customer import handle_customer_for_store
+        from app.core.db import SessionLocal, StoreMetaNumber
+
+        with SessionLocal() as db:
+            db.add(StoreMetaNumber(
+                store_id=store_id, phone_number_id="1", waba_id="1",
+                access_token="t", display_number="+1 555-159-0482",
+            ))
+            db.commit()
+
+        with TestClient(app) as client:
+            r = client.get(f"/q/{store_id}", follow_redirects=False)
+        location = unquote(r.headers["location"])
+        text = "Join the Queue" + location.split("Join the Queue", 1)[1]
+
+        reply = handle_customer_for_store(PHONE, text, store_id)
+        assert "expired" not in reply.lower()
 
 
 # ── Gateway wiring: staff mode queue/listing/NL-Q&A routing ────────────────
@@ -959,8 +1095,8 @@ class TestModifyQueueEntry:
         return mock_client
 
     def test_modify_message_routes_through_gateway_without_active_flow(self, store_id):
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)
         handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         with patch("app.core.llm.get_client", return_value=self._mock_llm_answering("YES")):
             reply = handle_customer_for_store(PHONE, "actually we're 5 now", store_id)
@@ -1004,8 +1140,8 @@ class TestModifyQueueEntry:
         """End-to-end version of the residual gap: even with an active
         queue entry, a message the LLM correctly reads as unrelated must
         still reach the community agent, not get treated as a modify."""
-        from app.gateway.customer import handle_customer_for_store, BOOKING_TRIGGER_PHRASE
-        handle_customer_for_store(PHONE, BOOKING_TRIGGER_PHRASE, store_id)
+        from app.gateway.customer import handle_customer_for_store
+        handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)
         handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         with (
             patch("app.core.llm.get_client", return_value=self._mock_llm_answering("NO")),

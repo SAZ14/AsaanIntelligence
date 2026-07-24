@@ -209,6 +209,33 @@ def set_queue_stale_minutes(store_id: int, minutes: int) -> None:
         db.commit()
 
 
+DEFAULT_ENTRANCE_CODE_TTL_MINUTES = 15
+
+
+def get_entrance_code_ttl_minutes(store_id: int) -> int:
+    """How long a one-time entrance code minted by the /q/{store_id}
+    relinker stays redeemable -- staff's "entrance code ttl <N>" command.
+    Short by default: long enough for someone to scan the QR then
+    actually open/send WhatsApp (a few redirect hops, maybe a slow
+    connection), short enough that a stale screenshot or memorised code
+    goes stale fast. No row yet means the default."""
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        return row.entrance_code_ttl_minutes if row else DEFAULT_ENTRANCE_CODE_TTL_MINUTES
+
+
+def set_entrance_code_ttl_minutes(store_id: int, minutes: int) -> None:
+    from app.core.db import SessionLocal, MaitreDSettings
+    with SessionLocal() as db:
+        row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
+        if row:
+            row.entrance_code_ttl_minutes = minutes
+        else:
+            db.add(MaitreDSettings(store_id=store_id, entrance_code_ttl_minutes=minutes))
+        db.commit()
+
+
 def _apply_location_row(cfg: VenueConfig, row) -> None:
     cfg.location_id = row.id
     cfg.branch_key = row.branch_key

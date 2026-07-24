@@ -385,6 +385,74 @@ class Store:
             created_at=row.created_at, admitted_at=row.admitted_at,
         )
 
+    # ── entrance codes (one-time-use QR relinker tokens) ──
+
+    def generate_entrance_code(self, location_id: int | None, length: int = 8) -> str:
+        """Mints a fresh, unused code for this store/location -- called by
+        the /q/{store_id} relinker on every single visit, never by the QR
+        image itself (which only ever encodes the relinker's own static
+        URL). Collision retry is a formality (26**36^8 space), not a real
+        concern at this volume, but cheap to guard anyway."""
+        import secrets
+        import string
+        from app.core.db import SessionLocal, MaitreDEntranceCode
+
+        alphabet = string.ascii_uppercase + string.digits
+        with SessionLocal() as db:
+            for _ in range(5):
+                code = "".join(secrets.choice(alphabet) for _ in range(length))
+                if not db.query(MaitreDEntranceCode).filter(
+                    MaitreDEntranceCode.code == code
+                ).first():
+                    break
+            db.add(MaitreDEntranceCode(
+                store_id=self.store_id, location_id=location_id or None, code=code,
+            ))
+            db.commit()
+            return code
+
+    def redeem_entrance_code(self, code: str) -> tuple[bool, int]:
+        """Atomically claims a one-time entrance code. Returns (ok,
+        location_id) -- ok is False if the code doesn't exist, belongs to
+        a different store, was already used, or is past its TTL; True and
+        the location it was minted for (0 = the store's single implicit
+        location) otherwise.
+
+        The UPDATE...WHERE is the atomicity boundary, not a preceding
+        SELECT check: two requests racing to redeem the identical code
+        (a guest double-tapping "send", or a screenshot both they and a
+        friend try at once) can never both succeed, since the second
+        UPDATE's WHERE clause simply matches zero rows once the first has
+        committed -- a SELECT-then-UPDATE pair would leave a window where
+        both could see "still unused" first."""
+        from datetime import timedelta
+        from sqlalchemy import update as sa_update
+        from app.core.db import SessionLocal, MaitreDEntranceCode
+        from app.agents.maitre_d.config import get_entrance_code_ttl_minutes
+
+        ttl = get_entrance_code_ttl_minutes(self.store_id)
+        cutoff = datetime.utcnow() - timedelta(minutes=ttl)
+        with SessionLocal() as db:
+            row = db.query(MaitreDEntranceCode).filter(
+                MaitreDEntranceCode.store_id == self.store_id,
+                MaitreDEntranceCode.code == code,
+            ).first()
+            if not row:
+                return False, 0
+            result = db.execute(
+                sa_update(MaitreDEntranceCode)
+                .where(
+                    MaitreDEntranceCode.id == row.id,
+                    MaitreDEntranceCode.used_at.is_(None),
+                    MaitreDEntranceCode.created_at >= cutoff,
+                )
+                .values(used_at=datetime.utcnow())
+            )
+            db.commit()
+            if result.rowcount == 0:
+                return False, 0
+            return True, row.location_id or 0
+
     # ── conversation state (slot-filling across messages) ──
 
     def get_conversation(

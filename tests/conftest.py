@@ -76,6 +76,9 @@ def _reset_gateway_guards():
         m._staff_last.clear()
         m._staff_inflight.clear()
         m._scout_rate.clear()
+    c = sys.modules.get("app.gateway.customer")
+    if c is not None:
+        c._customer_rate.clear()
 
 
 # ── Convenience helpers ────────────────────────────────────────────────────────
