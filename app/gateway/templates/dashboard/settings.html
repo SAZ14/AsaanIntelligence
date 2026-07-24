@@ -4,19 +4,47 @@
 {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 <div class="panel">
   <h2>Booking</h2>
-  <p style="color:var(--fg-muted);margin-top:-8px;">
-    {% if booking_enabled %}
-      Guests scanning the entrance QR can join the queue.
-    {% else %}
-      Booking is OFF — guests won't be added to the queue.
-    {% endif %}
-  </p>
-  <form method="post" action="/dashboard/settings/booking">
-    <input type="hidden" name="enabled" value="{{ 'off' if booking_enabled else 'on' }}">
-    <button type="submit" class="{% if booking_enabled %}danger{% endif %}">
-      {% if booking_enabled %}Turn booking off{% else %}Turn booking on{% endif %}
-    </button>
-  </form>
+  {% if branch_settings %}
+    <p style="color:var(--fg-muted);margin-top:-8px;">Each branch has its own independent switch.</p>
+    <div class="overflow-x">
+    <table class="plain">
+      <thead><tr><th>Branch</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      {% for b in branch_settings %}
+        <tr>
+          <td>{{ b.branch_name }}</td>
+          <td>
+            {% if b.booking_enabled %}<span class="pill good">ON</span>{% else %}<span class="pill warn">OFF</span>{% endif %}
+          </td>
+          <td>
+            <form method="post" action="/dashboard/settings/booking" style="display:inline;">
+              <input type="hidden" name="location_id" value="{{ b.location_id }}">
+              <input type="hidden" name="enabled" value="{{ 'off' if b.booking_enabled else 'on' }}">
+              <button type="submit" class="{% if b.booking_enabled %}danger{% endif %} secondary">
+                {% if b.booking_enabled %}Turn off{% else %}Turn on{% endif %}
+              </button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p style="color:var(--fg-muted);margin-top:-8px;">
+      {% if booking_enabled %}
+        Guests scanning the entrance QR can join the queue.
+      {% else %}
+        Booking is OFF, guests won't be added to the queue.
+      {% endif %}
+    </p>
+    <form method="post" action="/dashboard/settings/booking">
+      <input type="hidden" name="enabled" value="{{ 'off' if booking_enabled else 'on' }}">
+      <button type="submit" class="{% if booking_enabled %}danger{% endif %}">
+        {% if booking_enabled %}Turn booking off{% else %}Turn booking on{% endif %}
+      </button>
+    </form>
+  {% endif %}
 </div>
 <div class="panel">
   <h2>Timing</h2>

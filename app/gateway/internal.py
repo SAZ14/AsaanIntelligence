@@ -493,11 +493,11 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     # <position>"/"add <position> ..." can possibly be a queue command.
     queue_reply = None
     if first == "admit":
-        queue_reply = _maitre_d_admit(store_id, " ".join(words[1:]))
+        queue_reply = _maitre_d_admit(store_id, from_number, " ".join(words[1:]))
     elif first == "remove" and len(words) > 1 and words[1].isdigit():
-        queue_reply = _maitre_d_remove(store_id, " ".join(words[1:]))
+        queue_reply = _maitre_d_remove(store_id, from_number, " ".join(words[1:]))
     elif first == "add" and len(words) > 1 and words[1].isdigit():
-        queue_reply = _maitre_d_insert(store_id, " ".join(words[1:]))
+        queue_reply = _maitre_d_insert(store_id, from_number, " ".join(words[1:]))
 
     # Unambiguous action commands — skip LLM
     if first in _REPUTATION_EXACT:
@@ -523,12 +523,12 @@ def handle_internal_for_store(from_number: str, body: str, store_id: int) -> str
     elif text.lower().strip() in ("queue", "line", "vip", "vips", "vip list", "locations", "branches"):
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=listing from=%s", store_id, from_number)
-        reply = _maitre_d_listing(store_id, text.lower().strip())
+        reply = _maitre_d_listing(store_id, from_number, text.lower().strip())
 
-    elif text.lower().strip() in ("disable booking", "enable booking"):
+    elif first in ("disable", "enable") and len(words) > 1 and words[1].lower() == "booking":
         agent = "maitre_d"
         logger.info("internal.routing: store=%d agent=maitre_d trigger=booking_toggle from=%s", store_id, from_number)
-        reply = _maitre_d_toggle_booking(store_id, text.lower().strip() == "enable booking")
+        reply = _maitre_d_toggle_booking(store_id, from_number, first == "enable", " ".join(words[2:]))
 
     elif first == "seated" and len(words) >= 3 and words[1].lower() == "grace" and words[2].isdigit():
         agent = "maitre_d"
@@ -734,7 +734,51 @@ def _reputation(store_id: int, from_number: str, text: str, history: list[dict] 
         )
 
 
-def _maitre_d_admit(store_id: int, rest: str) -> str | None:
+# ── branch scoping for non-owner staff ──────────────────────────────────────
+# Owners always see/act on every branch (the free-text "at <branch>" syntax
+# staff.py's own _resolve_queue_location already handles). manager/staff are
+# restricted to whichever ONE branch app.core.db.StoreMember.location_id
+# assigns them (set from the dashboard's staff page) -- their commands never
+# take a branch argument at all, and any "at <branch>" they type anyway is
+# simply ignored in favour of their assignment, never honoured as an
+# override. This is the WhatsApp-channel half of the same restriction the
+# dashboard enforces; both read the same StoreMember row.
+
+def _staff_role_and_location(store_id: int, from_number: str) -> tuple[str, int | None]:
+    from app.core.db import SessionLocal, StoreMember
+    with SessionLocal() as db:
+        member = db.query(StoreMember).filter(
+            StoreMember.store_id == store_id, StoreMember.whatsapp == from_number,
+        ).first()
+        if not member:
+            return "staff", None
+        return member.role or "staff", member.location_id
+
+
+def _staff_queue_scope(store_id: int, from_number: str) -> tuple[int | None, str | None, bool]:
+    """Returns (location_id, error, free_text) for a queue command from
+    this staff member. free_text=True means the caller should resolve any
+    "at <branch>" in the message text itself (owner, or a single-location
+    store where branches aren't a concept at all) -- location_id is then
+    meaningless and ignored. free_text=False means location_id (possibly
+    None, for a single-location store) is authoritative; any branch text
+    the message contains must NOT be consulted."""
+    from app.agents.maitre_d.config import VenueConfig
+    locations = VenueConfig.list_locations(store_id)
+    if len(locations) <= 1:
+        return None, None, True
+    role, location_id = _staff_role_and_location(store_id, from_number)
+    if role == "owner":
+        return None, None, True
+    if not location_id:
+        return None, (
+            "You haven't been assigned to a branch yet. Ask the owner to assign "
+            "you one from the staff dashboard."
+        ), False
+    return location_id, None, False
+
+
+def _maitre_d_admit(store_id: int, from_number: str, rest: str) -> str | None:
     """"admit [at <branch>]" — seat the next person in line, skip the LLM
     entirely (same reasoning as reputation's post/edit/ignore)."""
     denied = _require_agent(store_id, "maitre_d")
@@ -742,26 +786,36 @@ def _maitre_d_admit(store_id: int, rest: str) -> str | None:
         return denied
     try:
         from app.agents.maitre_d.staff import admit_next_in_queue
-        return admit_next_in_queue(store_id, rest)
+        location_id, error, free_text = _staff_queue_scope(store_id, from_number)
+        if error:
+            return error
+        if free_text:
+            return admit_next_in_queue(store_id, rest)
+        return admit_next_in_queue(store_id, rest, forced_location_id=location_id)
     except Exception as e:
         logger.warning("internal._maitre_d_admit: store=%d error=%s", store_id, e)
         return None
 
 
-def _maitre_d_remove(store_id: int, rest: str) -> str | None:
+def _maitre_d_remove(store_id: int, from_number: str, rest: str) -> str | None:
     """"remove <position> [at <branch>]" — take someone out of the line."""
     denied = _require_agent(store_id, "maitre_d")
     if denied:
         return denied
     try:
         from app.agents.maitre_d.staff import remove_queue_position
-        return remove_queue_position(store_id, rest)
+        location_id, error, free_text = _staff_queue_scope(store_id, from_number)
+        if error:
+            return error
+        if free_text:
+            return remove_queue_position(store_id, rest)
+        return remove_queue_position(store_id, rest, forced_location_id=location_id)
     except Exception as e:
         logger.warning("internal._maitre_d_remove: store=%d error=%s", store_id, e)
         return None
 
 
-def _maitre_d_insert(store_id: int, rest: str) -> str | None:
+def _maitre_d_insert(store_id: int, from_number: str, rest: str) -> str | None:
     """"add <position> <phone> <name>[, party <N>] [at <branch>]" — insert
     someone into the line at a specific spot."""
     denied = _require_agent(store_id, "maitre_d")
@@ -769,7 +823,12 @@ def _maitre_d_insert(store_id: int, rest: str) -> str | None:
         return denied
     try:
         from app.agents.maitre_d.staff import insert_queue_position
-        return insert_queue_position(store_id, rest)
+        location_id, error, free_text = _staff_queue_scope(store_id, from_number)
+        if error:
+            return error
+        if free_text:
+            return insert_queue_position(store_id, rest)
+        return insert_queue_position(store_id, rest, forced_location_id=location_id)
     except Exception as e:
         logger.warning("internal._maitre_d_insert: store=%d error=%s", store_id, e)
         return None
@@ -788,16 +847,41 @@ def _maitre_d_add_vip(store_id: int, rest: str) -> str:
         return "Queue agent is unavailable right now. Please try again shortly."
 
 
-def _maitre_d_toggle_booking(store_id: int, enable: bool) -> str:
+def _maitre_d_toggle_booking(store_id: int, from_number: str, enable: bool, rest: str = "") -> str:
+    """"disable booking [at <branch>]" / "enable booking [at <branch>]".
+    An owner (or single-location store) resolves the branch from `rest`
+    the same way admit/remove/add already do -- a multi-location store
+    with no branch named gets asked which one, same as those commands,
+    rather than silently hitting the store-wide fallback setting that a
+    per-branch trigger check would never actually consult once real
+    branches exist (see config.is_booking_enabled). A branch-scoped
+    staff/manager always toggles their OWN branch; anything they typed
+    after "booking" is ignored."""
     denied = _require_agent(store_id, "maitre_d")
     if denied:
         return denied
     try:
         from app.agents.maitre_d.config import set_booking_enabled
-        set_booking_enabled(store_id, enable)
+        from app.agents.maitre_d.staff import _resolve_queue_location
+        location_id, error, free_text = _staff_queue_scope(store_id, from_number)
+        if error:
+            return error
+        scope_note = " for your branch"
+        if free_text:
+            location_id, _, branch_error = _resolve_queue_location(store_id, rest)
+            if branch_error:
+                return branch_error
+            scope_note = ""
+            if location_id is not None:
+                from app.agents.maitre_d.config import VenueConfig
+                loc = next(
+                    (l for l in VenueConfig.list_locations(store_id) if l.location_id == location_id), None,
+                )
+                scope_note = f" for {loc.branch_name}" if loc else ""
+        set_booking_enabled(store_id, enable, location_id=location_id)
         if enable:
-            return "Booking is back ON — guests scanning the entrance QR can join the queue again."
-        return ("Booking is now OFF — guests scanning the entrance QR won't be added to "
+            return f"Booking is back ON{scope_note}. Guests scanning the entrance QR can join the queue again."
+        return (f"Booking is now OFF{scope_note}. Guests scanning the entrance QR won't be added to "
                 "the queue until you turn it back on with \"enable booking\".")
     except Exception as e:
         logger.warning("internal._maitre_d_toggle_booking: store=%d error=%s", store_id, e)
@@ -823,7 +907,7 @@ def _maitre_d_set_seated_grace(store_id: int, minutes: int) -> str:
     try:
         from app.agents.maitre_d.config import set_seated_grace_minutes
         set_seated_grace_minutes(store_id, minutes)
-        return f"Updated — an admitted guest can't rejoin the queue for {minutes} minutes."
+        return f"Updated. An admitted guest can't rejoin the queue for {minutes} minutes."
     except Exception as e:
         logger.warning("internal._maitre_d_set_seated_grace: store=%d error=%s", store_id, e)
         return "Queue agent is unavailable right now. Please try again shortly."
@@ -838,7 +922,7 @@ def _maitre_d_set_queue_timeout(store_id: int, minutes: int) -> str:
     try:
         from app.agents.maitre_d.config import set_queue_stale_minutes
         set_queue_stale_minutes(store_id, minutes)
-        return f"Updated — a queue spot with no staff action for {minutes} minutes will now be auto-released."
+        return f"Updated. A queue spot with no staff action for {minutes} minutes will now be auto-released."
     except Exception as e:
         logger.warning("internal._maitre_d_set_queue_timeout: store=%d error=%s", store_id, e)
         return "Queue agent is unavailable right now. Please try again shortly."
@@ -853,13 +937,13 @@ def _maitre_d_set_entrance_code_ttl(store_id: int, minutes: int) -> str:
     try:
         from app.agents.maitre_d.config import set_entrance_code_ttl_minutes
         set_entrance_code_ttl_minutes(store_id, minutes)
-        return f"Updated — a QR scan's one-time code now stays valid for {minutes} minutes."
+        return f"Updated. A QR scan's one-time code now stays valid for {minutes} minutes."
     except Exception as e:
         logger.warning("internal._maitre_d_set_entrance_code_ttl: store=%d error=%s", store_id, e)
         return "Queue agent is unavailable right now. Please try again shortly."
 
 
-def _maitre_d_listing(store_id: int, cmd: str) -> str:
+def _maitre_d_listing(store_id: int, from_number: str, cmd: str) -> str:
     denied = _require_agent(store_id, "maitre_d")
     if denied:
         return denied
@@ -869,7 +953,12 @@ def _maitre_d_listing(store_id: int, cmd: str) -> str:
             return format_vips(store_id)
         if cmd in ("locations", "branches"):
             return format_locations(store_id)
-        return format_queue(store_id)
+        location_id, error, free_text = _staff_queue_scope(store_id, from_number)
+        if error:
+            return error
+        if free_text:
+            return format_queue(store_id)
+        return format_queue(store_id, forced_location_id=location_id)
     except Exception as e:
         logger.warning("internal._maitre_d_listing: store=%d error=%s", store_id, e)
         return "Queue agent is unavailable right now. Please try again shortly."
@@ -883,8 +972,12 @@ def _maitre_d(store_id: int, from_number: str, text: str, history: list[dict] | 
     if denied:
         return denied
     try:
-        from app.agents.maitre_d.staff import answer_question
-        return answer_question(store_id, text, history=history)
+        from app.agents.maitre_d.staff import answer_question, _UNSET
+        location_id, error, free_text = _staff_queue_scope(store_id, from_number)
+        if error:
+            return error
+        forced = _UNSET if free_text else location_id
+        return answer_question(store_id, text, history=history, forced_location_id=forced)
     except Exception as e:
         logger.warning("internal._maitre_d: store=%d error=%s", store_id, e)
         return "Reservations agent is unavailable right now. Please try again shortly."

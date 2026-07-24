@@ -111,14 +111,18 @@ def get_session(token: str) -> dict | None:
     return cache.get(f"dashboard_session:{token}")
 
 
-def set_session_store(token: str, store_id: int, role: str) -> None:
+def set_session_store(token: str, store_id: int, role: str, location_id: int | None = None) -> None:
     """Called after login when a phone manages more than one store and
     just picked which one -- re-saves the SAME token with store_id/role
     now filled in, rather than issuing a new token (keeps the cookie the
-    browser already has valid)."""
+    browser already has valid). location_id is the StoreMember's branch
+    assignment (None for owner, or a manager/staff not yet assigned one)
+    -- carried in the session so every dashboard route can scope itself
+    without a fresh DB lookup per request."""
     session = get_session(token) or {}
     session["store_id"] = store_id
     session["role"] = role
+    session["location_id"] = location_id
     cache.set(f"dashboard_session:{token}", session, ttl=SESSION_TTL_SECONDS)
 
 

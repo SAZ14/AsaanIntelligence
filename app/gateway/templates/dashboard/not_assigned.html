@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Not assigned yet{% endblock %}
+{% block body %}
+<div class="auth-shell">
+  <h1>You haven't been assigned to a branch yet</h1>
+  <p class="lede">
+    {{ store_name }} has more than one location, so the owner needs to assign
+    you to one from the staff page before you can use the dashboard. Ask them
+    to do that, then come back, or <a href="/dashboard/logout">log out</a>.
+  </p>
+</div>
+{% endblock %}

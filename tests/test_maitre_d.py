@@ -72,7 +72,7 @@ class TestQueueJoin:
         assert reply.action == "queued"
         assert reply.queue_number == 1
         assert "Hi Ahmed" in reply.text
-        assert "booking number" in reply.text
+        assert "in the list" in reply.text
         assert "1" in reply.text
 
     def test_slot_filling_across_messages(self, store_id):
@@ -527,7 +527,7 @@ class TestCustomerGatewayRouting:
         assert r1 != "Something went wrong, please try again."
         assert "queue" in r1.lower() or "name" in r1.lower() or "many" in r1.lower()
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
-        assert "booking number" in reply.lower()
+        assert "in the list" in reply.lower()
 
     def test_decorated_trigger_phrase_still_matches(self, store_id):
         """The printed QR text can be decorated ("\U0001f3ab Join the Queue!")
@@ -536,7 +536,7 @@ class TestCustomerGatewayRouting:
         from app.gateway.customer import handle_customer_for_store
         handle_customer_for_store(PHONE, f"\U0001f3ab {_entrance_text(store_id, '!')}", store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
-        assert "booking number" in reply.lower()
+        assert "in the list" in reply.lower()
 
     def test_qr_trigger_with_branch_code_skips_the_branch_question(self, store_id):
         """End-to-end through the real gateway entry point (not MaitreD
@@ -548,7 +548,7 @@ class TestCustomerGatewayRouting:
         r1 = handle_customer_for_store(PHONE, _entrance_text(store_id, " - new_blue_area"), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(PHONE, "party of 2, it's Ahmed", store_id)
-        assert "booking number" in r2.lower()
+        assert "in the list" in r2.lower()
         assert "new blue area" in r2.lower()
 
     def test_trigger_prefix_match_rejects_the_phrase_mid_sentence(self, store_id):
@@ -587,7 +587,7 @@ class TestCustomerGatewayRouting:
         from app.gateway.customer import handle_customer_for_store
         handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)  # starts a flow, no name/party yet
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
-        assert "booking number" in reply.lower()
+        assert "in the list" in reply.lower()
 
     def test_cancel_always_works_regardless_of_the_trigger_phrase(self, store_id):
         """"cancel" only ever removes an existing entry, so it's exempt
@@ -620,7 +620,7 @@ class TestCustomerGatewayRouting:
         set_booking_enabled(store_id, True)
         handle_customer_for_store(PHONE, _entrance_text(store_id), store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
-        assert "booking number" in reply.lower()
+        assert "in the list" in reply.lower()
 
     def test_staff_alert_is_dispatched_to_registered_members(self, store_id):
         from app.core.db import SessionLocal, StoreMember, MaitreDVip
@@ -708,7 +708,7 @@ class TestRealisticWebhookPhoneFormat:
         r1 = handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
-        assert "booking number" in r2.lower(), (
+        assert "in the list" in r2.lower(), (
             f"multi-turn continuation broke with a whatsapp:-prefixed phone: {r2!r}"
         )
 
@@ -733,7 +733,7 @@ class TestRealisticWebhookPhoneFormat:
         r1 = handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id, " - new_blue_area"), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
-        assert "booking number" in r2.lower()
+        assert "in the list" in r2.lower()
         assert "new blue area" in r2.lower()
 
 
@@ -1253,3 +1253,160 @@ class TestWalkInWithoutPhone:
         entry = Store(store_id).list_queue(status="waiting")[0]
         venue_now = VenueConfig.load(store_id).now()
         assert abs((venue_now - entry.created_at).total_seconds()) < 30
+
+
+# ── Per-branch "disable booking" ────────────────────────────────────────────
+
+def _seed_two_bookable_branches(store_id: int) -> tuple[int, int]:
+    """Two branches that BOTH take walk-ins -- unlike _seed_two_locations
+    (New Blue Area + delivery-only F-8/2), needed for anything that
+    exercises independent per-branch state (booking toggle, staff
+    assignment) across two branches that both actually run a queue."""
+    from app.core.db import SessionLocal, MaitreDLocation
+    with SessionLocal() as db:
+        blue = MaitreDLocation(
+            store_id=store_id, branch_key="new_blue_area", name="New Blue Area",
+            is_primary=True, accepts_reservations=True,
+        )
+        bahria = MaitreDLocation(
+            store_id=store_id, branch_key="bahria_town", name="Bahria Town",
+            accepts_reservations=True,
+        )
+        db.add_all([blue, bahria])
+        db.commit()
+        db.refresh(blue)
+        db.refresh(bahria)
+        return blue.id, bahria.id
+
+
+class TestPerBranchBookingToggle:
+    def test_disabling_one_branch_does_not_affect_the_other(self, store_id):
+        from app.agents.maitre_d.config import is_booking_enabled, set_booking_enabled
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        set_booking_enabled(store_id, False, location_id=blue_id)
+        assert is_booking_enabled(store_id, blue_id) is False
+        assert is_booking_enabled(store_id, bahria_id) is True
+
+    def test_no_row_yet_defaults_enabled(self, store_id):
+        from app.agents.maitre_d.config import is_booking_enabled
+        blue_id, _ = _seed_two_bookable_branches(store_id)
+        assert is_booking_enabled(store_id, blue_id) is True
+
+    def test_single_location_store_still_uses_the_store_wide_setting(self, store_id):
+        """No MaitreDLocation rows at all -- location_id is meaningless,
+        must fall back to the store-wide MaitreDSettings row exactly like
+        before this feature existed."""
+        from app.agents.maitre_d.config import is_booking_enabled, set_booking_enabled
+        set_booking_enabled(store_id, False)
+        assert is_booking_enabled(store_id) is False
+        assert is_booking_enabled(store_id, None) is False
+
+    def test_disabled_branch_trigger_falls_through_without_burning_the_code(self, store_id):
+        """A guest scanning a currently-closed branch's QR must not have
+        their code silently wasted -- it should still work once the
+        branch reopens."""
+        from app.gateway.customer import handle_customer_for_store
+        from app.agents.maitre_d.config import set_booking_enabled
+        from app.agents.maitre_d.store import Store as MDStore
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        set_booking_enabled(store_id, False, location_id=blue_id)
+
+        text = _entrance_text(store_id, " - new_blue_area")
+        code = text.rsplit("#", 1)[1]
+        with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
+            handle_customer_for_store(PHONE, text, store_id)
+        mock_md.assert_not_called()  # silently fell through, no "expired" reply either
+
+        set_booking_enabled(store_id, True, location_id=blue_id)
+        ok, _ = MDStore(store_id).redeem_entrance_code(code)
+        assert ok is True  # the code was never touched while the branch was closed
+
+    def test_staff_toggle_command_is_per_branch(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from app.agents.maitre_d.config import is_booking_enabled
+        from tests.conftest import seed_member
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        owner = "whatsapp:+923220000000"
+        seed_member(store_id, owner, role="owner")
+        reply = handle_internal_for_store(owner, "disable booking at New Blue Area", store_id)
+        assert "OFF" in reply
+        assert is_booking_enabled(store_id, blue_id) is False
+        assert is_booking_enabled(store_id, bahria_id) is True
+
+
+# ── Staff branch scoping (WhatsApp channel) ─────────────────────────────────
+
+class TestStaffBranchScoping:
+    def test_owner_still_uses_free_text_branch_selection(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from tests.conftest import seed_member
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        md = _md_multi(store_id)
+        md.handle_message(PHONE, "table for 2 at Bahria Town, it's Ahmed")
+        owner = "whatsapp:+923220000000"
+        seed_member(store_id, owner, role="owner")
+        reply = handle_internal_for_store(owner, "admit at Bahria Town", store_id)
+        assert "Admitted" in reply
+        assert "Ahmed" in reply
+
+    def test_unassigned_staff_is_told_to_get_assigned(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from tests.conftest import seed_member
+        _seed_two_bookable_branches(store_id)
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff")  # no location_id
+        reply = handle_internal_for_store(staff, "queue", store_id)
+        assert "assign" in reply.lower()
+
+    def test_assigned_staff_only_sees_their_own_branch(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from tests.conftest import seed_member
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        md = _md_multi(store_id)
+        md.handle_message(PHONE, "table for 2 at New Blue Area, it's Ahmed")
+        md.handle_message("+923000000002", "table for 2 at Bahria Town, it's Sara")
+
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff", location_id=blue_id)
+        reply = handle_internal_for_store(staff, "queue", store_id)
+        assert "Ahmed" in reply
+        assert "Sara" not in reply
+
+    def test_assigned_staff_cannot_override_their_branch_by_naming_another(self, store_id):
+        """Typing "at Bahria Town" must be silently ignored for a
+        branch-scoped staff member -- their assignment always wins."""
+        from app.gateway.internal import handle_internal_for_store
+        from tests.conftest import seed_member
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        md = _md_multi(store_id)
+        md.handle_message(PHONE, "table for 2 at New Blue Area, it's Ahmed")
+        md.handle_message("+923000000002", "table for 2 at Bahria Town, it's Sara")
+
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff", location_id=blue_id)
+        reply = handle_internal_for_store(staff, "admit at Bahria Town", store_id)
+        assert "Ahmed" in reply  # admitted from THEIR branch (New Blue Area), not Sara
+
+    def test_manager_is_scoped_like_staff(self, store_id):
+        from app.gateway.internal import handle_internal_for_store
+        from tests.conftest import seed_member
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        md = _md_multi(store_id)
+        md.handle_message(PHONE, "table for 2 at Bahria Town, it's Ahmed")
+
+        manager = "whatsapp:+923223333333"
+        seed_member(store_id, manager, role="manager", location_id=bahria_id)
+        reply = handle_internal_for_store(manager, "queue", store_id)
+        assert "Ahmed" in reply
+
+    def test_single_location_store_needs_no_assignment_at_all(self, store_id):
+        """No branches configured -- every staff member (any role) just
+        sees the one implicit location, exactly as before this feature."""
+        from app.gateway.internal import handle_internal_for_store
+        from tests.conftest import seed_member
+        md = _md(store_id)
+        md.handle_message(PHONE, "table for 2, it's Ahmed")
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff")  # no location_id, and none needed
+        reply = handle_internal_for_store(staff, "queue", store_id)
+        assert "Ahmed" in reply

@@ -87,6 +87,22 @@ def _redeem_entrance_code(store_id: int, text: str) -> bool:
     return ok
 
 
+def _trigger_location_id(store_id: int, text: str) -> int | None:
+    """Which branch (if any) a fresh trigger message names, resolved the
+    same way agent.py's own booking flow eventually would (match_location
+    against the store's configured branches) -- needed BEFORE the
+    entrance code is redeemed, so checking a disabled branch's
+    is_booking_enabled doesn't require burning a still-valid code first.
+    None for a single-location store (no branch concept) or a message
+    that doesn't name one."""
+    from app.agents.maitre_d.config import VenueConfig, match_location
+    locations = VenueConfig.list_locations(store_id)
+    if len(locations) <= 1:
+        return None
+    matched = match_location(locations, text)
+    return matched.location_id if matched else None
+
+
 def _is_cancel_message(text: str) -> bool:
     """"cancel" is always allowed, trigger-phrase or not -- it only ever
     removes an EXISTING queue entry (see agent.py's _leave_queue), never
@@ -293,8 +309,14 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
             wants_cancel = _is_cancel_message(text)
             wants_modify = _wants_to_modify_queue_entry(store_id, phone, text)
             # A fresh trigger only starts a flow when booking is actually
-            # switched on -- staff's "disable booking" for a quiet walk-in day
-            # (see internal.py). Deliberately checked ONLY for the fresh-start
+            # switched on for the BRANCH it names -- staff's "disable
+            # booking" for a quiet walk-in day (see internal.py), which is
+            # now per-branch for a multi-location store. The branch is
+            # resolved from the message text itself, the same way agent.py's
+            # own booking flow eventually would, and checked BEFORE the
+            # entrance code is touched -- a scan of a branch that's
+            # currently closed must not burn an otherwise-still-valid code
+            # for nothing. Deliberately checked ONLY for the fresh-start
             # case: an already-active flow finishes even if staff flip the
             # toggle mid-conversation (less confusing than abandoning a guest
             # partway through), and "cancel"/"modify" always work regardless
@@ -307,21 +329,27 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
             # cancel/modify never needs one: neither can create a fresh
             # queue entry, so neither carries the replay risk a fresh join
             # does.
-            is_fresh_trigger = _is_booking_trigger(text) and is_booking_enabled(store_id)
             invalid_code = False
             wants_new_booking = False
-            if is_fresh_trigger and not active_flow:
-                if _redeem_entrance_code(store_id, text):
-                    wants_new_booking = True
-                else:
-                    invalid_code = True
+            if _is_booking_trigger(text) and not active_flow:
+                trigger_location_id = _trigger_location_id(store_id, text)
+                if is_booking_enabled(store_id, trigger_location_id):
+                    if _redeem_entrance_code(store_id, text):
+                        wants_new_booking = True
+                    else:
+                        invalid_code = True
+                # else: booking is off for this specific branch (or the
+                # whole store) -- falls through silently below, same as
+                # the store-wide case always has; the code (if any) is
+                # never touched, so it stays valid for a later scan once
+                # booking's back on.
 
             if active_flow or wants_cancel or wants_modify or wants_new_booking:
                 return _handle_booking(phone, text, store_id)
 
             if invalid_code:
-                return ("That entrance code has expired or was already used — "
-                        "please scan the QR code at the entrance for a fresh one.")
+                return ("That entrance code has expired or was already used. "
+                        "Please scan the QR code at the entrance for a fresh one.")
 
         # Not a recognised booking trigger (including a disabled "Join the
         # Queue", or plain text like "book"/"table for 2" typed by someone

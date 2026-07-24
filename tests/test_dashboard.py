@@ -326,3 +326,148 @@ class TestDashboardStoreIsolation:
         # Nothing in the OTHER store's queue was touched.
         other_queue = Store(other_store).list_queue(status="waiting")
         assert [e.name for e in other_queue] == ["Zara"]
+
+
+# ── Per-branch access: owner sees everything, staff/manager see only their
+# assigned branch ────────────────────────────────────────────────────────────
+
+def _login_as(client, whatsapp_id: str) -> None:
+    """Same as _login, but for an arbitrary already-registered phone --
+    used to sign in as a branch-scoped staff/manager member instead of
+    the store fixture's default owner."""
+    from urllib.parse import quote
+    raw = whatsapp_id.removeprefix("whatsapp:")
+    client.post("/dashboard/login", data={"phone": raw})
+    code = _otp_code(whatsapp_id)
+    r = client.post("/dashboard/verify", data={"phone": whatsapp_id, "code": code}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def _seed_two_bookable_branches(store_id: int) -> tuple[int, int]:
+    from app.core.db import SessionLocal, MaitreDLocation
+    with SessionLocal() as db:
+        blue = MaitreDLocation(
+            store_id=store_id, branch_key="new_blue_area", name="New Blue Area",
+            is_primary=True, accepts_reservations=True,
+        )
+        bahria = MaitreDLocation(
+            store_id=store_id, branch_key="bahria_town", name="Bahria Town",
+            accepts_reservations=True,
+        )
+        db.add_all([blue, bahria])
+        db.commit()
+        db.refresh(blue)
+        db.refresh(bahria)
+        return blue.id, bahria.id
+
+
+class TestDashboardBranchScoping:
+    def test_owner_sees_a_tab_per_branch(self, client, store_id):
+        _seed_two_bookable_branches(store_id)
+        _login(client, store_id)
+        r = client.get("/dashboard/queue")
+        assert "New Blue Area" in r.text
+        assert "Bahria Town" in r.text
+
+    def test_owner_settings_page_lists_every_branch_independently(self, client, store_id):
+        _seed_two_bookable_branches(store_id)
+        _login(client, store_id)
+        r = client.get("/dashboard/settings")
+        assert "New Blue Area" in r.text
+        assert "Bahria Town" in r.text
+
+    def test_unassigned_staff_member_is_blocked_with_an_explanation(self, client, store_id):
+        _seed_two_bookable_branches(store_id)
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff")  # no location assigned
+        _login_as(client, staff)
+        r = client.get("/dashboard/queue")
+        assert r.status_code == 403
+        assert "haven't been assigned" in r.text.lower()
+
+    def test_assigned_staff_member_only_sees_their_branch(self, client, store_id):
+        from app.agents.maitre_d.agent import get_maitre_d
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        get_maitre_d(store_id).handle_message("+923005551111", "table for 2 at New Blue Area, it's Ahmed")
+        get_maitre_d(store_id).handle_message("+923005552222", "table for 2 at Bahria Town, it's Sara")
+
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff", location_id=blue_id)
+        _login_as(client, staff)
+        r = client.get("/dashboard/queue")
+        assert "Ahmed" in r.text
+        assert "Sara" not in r.text
+        # No branch tabs for a scoped member -- there's only one branch to see.
+        assert "Bahria Town" not in r.text
+
+    def test_assigned_staff_admit_ignores_a_spoofed_branch_name_field(self, client, store_id):
+        from app.agents.maitre_d.agent import get_maitre_d
+        from app.agents.maitre_d.store import Store
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        get_maitre_d(store_id).handle_message("+923005551111", "table for 2 at New Blue Area, it's Ahmed")
+        get_maitre_d(store_id).handle_message("+923005552222", "table for 2 at Bahria Town, it's Sara")
+
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff", location_id=blue_id)
+        _login_as(client, staff)
+        # A tampered form claiming "Bahria Town" must be ignored -- their
+        # own assignment (New Blue Area) always wins.
+        client.post("/dashboard/queue/admit", data={"branch_name": "Bahria Town"})
+
+        remaining_bahria = Store(store_id).list_queue(status="waiting", location_id=bahria_id)
+        assert [e.name for e in remaining_bahria] == ["Sara"]  # untouched
+        remaining_blue = Store(store_id).list_queue(status="waiting", location_id=blue_id)
+        assert remaining_blue == []  # Ahmed was admitted instead
+
+    def test_owner_can_assign_a_staff_member_from_the_staff_page(self, client, store_id):
+        from app.core.db import SessionLocal, StoreMember
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff")
+        _login(client, store_id)
+
+        page = client.get("/dashboard/staff")
+        assert staff in page.text
+
+        with SessionLocal() as db:
+            member = db.query(StoreMember).filter(
+                StoreMember.store_id == store_id, StoreMember.whatsapp == staff,
+            ).first()
+            member_id = member.id
+
+        client.post("/dashboard/staff/assign", data={"member_id": member_id, "location_id": bahria_id})
+
+        with SessionLocal() as db:
+            member = db.query(StoreMember).filter(
+                StoreMember.store_id == store_id, StoreMember.whatsapp == staff,
+            ).first()
+            assert member.location_id == bahria_id
+
+    def test_non_owner_cannot_reach_the_staff_page(self, client, store_id):
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff", location_id=blue_id)
+        _login_as(client, staff)
+        r = client.get("/dashboard/staff")
+        assert r.status_code == 403
+
+    def test_manager_is_scoped_like_staff(self, client, store_id):
+        from app.agents.maitre_d.agent import get_maitre_d
+        blue_id, bahria_id = _seed_two_bookable_branches(store_id)
+        get_maitre_d(store_id).handle_message("+923005551111", "table for 2 at Bahria Town, it's Ahmed")
+
+        manager = "whatsapp:+923223333333"
+        seed_member(store_id, manager, role="manager", location_id=bahria_id)
+        _login_as(client, manager)
+        r = client.get("/dashboard/queue")
+        assert "Ahmed" in r.text
+
+    def test_single_location_store_shows_no_tabs_and_needs_no_assignment(self, client, store_id):
+        from app.agents.maitre_d.agent import get_maitre_d
+        get_maitre_d(store_id).handle_message("+923005551111", "table for 2, it's Ahmed")
+        staff = "whatsapp:+923221111111"
+        seed_member(store_id, staff, role="staff")  # no location, none needed
+        _login_as(client, staff)
+        r = client.get("/dashboard/queue")
+        assert r.status_code == 200
+        assert "Ahmed" in r.text

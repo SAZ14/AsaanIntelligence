@@ -97,6 +97,14 @@ class StoreMember(Base):
     """Maps WhatsApp numbers to stores for internal-agent access.
     Role values: owner | manager | staff
     Any number in this table is whitelisted for the internal channel.
+
+    location_id: which branch this member is restricted to (owner is
+    never restricted regardless of this value; manager/staff with no
+    location_id assigned yet have no branch to act on until the owner
+    assigns one from the dashboard). NULL for stores that don't use
+    maitre_d's multi-branch feature at all. Deliberately no FK to
+    maitre_d_locations -- StoreMember is a general cross-agent table,
+    this column is only meaningful when maitre_d's branch model applies.
     """
     __tablename__ = "store_members"
     __table_args__ = (UniqueConstraint("store_id", "whatsapp"),)
@@ -105,6 +113,7 @@ class StoreMember(Base):
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False)
     whatsapp = Column(String, nullable=False)
     role = Column(String, default="owner")
+    location_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -510,6 +519,7 @@ class MaitreDLocation(Base):
     address = Column(String, default="")
     accepts_reservations = Column(Boolean, default=True)
     is_primary = Column(Boolean, default=False)    # the default when a store has only one, or the fallback
+    booking_enabled = Column(Boolean, nullable=False, default=True)  # this branch's own "disable booking" toggle
     timezone = Column(String, nullable=False, default="Asia/Karachi")
     tables = Column(JSON, default=list)              # legacy, unused -- see class docstring
     service_windows = Column(JSON, default=list)      # legacy, unused

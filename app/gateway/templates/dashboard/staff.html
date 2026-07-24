@@ -1,0 +1,44 @@
+{% extends "app_base.html" %}
+{% block title %}Staff — {{ store_name }}{% endblock %}
+{% block content %}
+<div class="panel">
+  <h2>Staff branch assignment</h2>
+  {% if not multi_location %}
+    <p class="empty-state">This restaurant has a single location, so there's nothing to assign, everyone sees the same queue.</p>
+  {% else %}
+    <p style="color:var(--fg-muted);margin-top:-8px;">
+      Owners always see every branch. Managers and staff only see and act on
+      the ONE branch assigned here.
+    </p>
+    <div class="overflow-x">
+    <table class="plain">
+      <thead><tr><th>Phone</th><th>Role</th><th>Branch</th><th></th></tr></thead>
+      <tbody>
+      {% for m in members %}
+        <tr>
+          <td>{{ m.whatsapp }}</td>
+          <td>{{ m.role }}</td>
+          {% if m.role == 'owner' %}
+            <td colspan="2" style="color:var(--fg-muted);">All branches</td>
+          {% else %}
+            <form method="post" action="/dashboard/staff/assign" style="display:contents;">
+              <input type="hidden" name="member_id" value="{{ m.id }}">
+              <td>
+                <select name="location_id">
+                  <option value="">Not assigned</option>
+                  {% for loc in locations %}
+                    <option value="{{ loc.location_id }}" {% if m.location_id == loc.location_id %}selected{% endif %}>{{ loc.branch_name }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td><button type="submit" class="secondary">Save</button></td>
+            </form>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

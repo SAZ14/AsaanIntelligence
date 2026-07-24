@@ -139,19 +139,39 @@ class VenueConfig:
             return configs
 
 
-def is_booking_enabled(store_id: int) -> bool:
-    """Whether guests can currently join this store's queue -- staff's
-    "disable booking"/"enable booking" command flips this for a quiet day
-    where they're seating people directly instead of running the queue.
-    No row yet means never toggled, i.e. enabled (the default, matching
-    every other maitre_d setting's "no admin step required first")."""
+def is_booking_enabled(store_id: int, location_id: int | None = None) -> bool:
+    """Whether guests can currently join the queue -- staff's "disable
+    booking"/"enable booking" command flips this for a quiet day where
+    they're seating people directly instead of running the queue.
+
+    `location_id` given (a multi-branch store) checks that ONE branch's
+    own toggle (MaitreDLocation.booking_enabled) -- each branch has its
+    own independent on/off switch. `location_id` omitted (or a single-
+    location store, where it's meaningless) falls back to the store-wide
+    MaitreDSettings row. No row/branch yet means never toggled, i.e.
+    enabled (the default, matching every other maitre_d setting's "no
+    admin step required first")."""
+    if location_id:
+        from app.core.db import SessionLocal, MaitreDLocation
+        with SessionLocal() as db:
+            loc = db.query(MaitreDLocation).filter(MaitreDLocation.id == location_id).first()
+            if loc is not None:
+                return loc.booking_enabled
     from app.core.db import SessionLocal, MaitreDSettings
     with SessionLocal() as db:
         row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()
         return row.booking_enabled if row else True
 
 
-def set_booking_enabled(store_id: int, enabled: bool) -> None:
+def set_booking_enabled(store_id: int, enabled: bool, location_id: int | None = None) -> None:
+    if location_id:
+        from app.core.db import SessionLocal, MaitreDLocation
+        with SessionLocal() as db:
+            loc = db.query(MaitreDLocation).filter(MaitreDLocation.id == location_id).first()
+            if loc is not None:
+                loc.booking_enabled = enabled
+                db.commit()
+                return
     from app.core.db import SessionLocal, MaitreDSettings
     with SessionLocal() as db:
         row = db.query(MaitreDSettings).filter(MaitreDSettings.store_id == store_id).first()

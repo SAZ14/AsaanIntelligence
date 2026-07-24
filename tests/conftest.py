@@ -125,8 +125,8 @@ def seed_twilio(store_id, number):
         db.commit()
 
 
-def seed_member(store_id, whatsapp, role="owner"):
+def seed_member(store_id, whatsapp, role="owner", location_id=None):
     from app.core.db import StoreMember
     with TestSession() as db:
-        db.add(StoreMember(store_id=store_id, whatsapp=whatsapp, role=role))
+        db.add(StoreMember(store_id=store_id, whatsapp=whatsapp, role=role, location_id=location_id))
         db.commit()

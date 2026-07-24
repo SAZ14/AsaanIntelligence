@@ -151,7 +151,7 @@ class MaitreD:
 
     def _info(self) -> MaitreDReply:
         return MaitreDReply(
-            text=(f"{self.config.name} runs on a live walk-in queue — scan the "
+            text=(f"{self.config.name} runs on a live walk-in queue. Scan the "
                   "QR code at our entrance to join and get a booking number. "
                   "Say \"cancel\" any time to leave the queue."),
             intent="help", action="info",
@@ -176,15 +176,15 @@ class MaitreD:
             if location is not None:
                 self.config = location
             return MaitreDReply(
-                text=(f"You're already seated at {self.config.display_name()} — "
-                      "enjoy your meal! Let us know if you need anything."),
+                text=(f"You're already seated at {self.config.display_name()}. "
+                      "Enjoy your meal! Let us know if you need anything."),
                 intent="book", action="already_seated", is_vip=bool(vip),
             )
 
         # A resent trigger phrase (no reply the first time, or two people
         # in the same group both scan) must not create a SECOND queue
         # entry for the same visit -- confirmed as a real gap: nothing
-        # previously stopped this. Tell them their existing number instead.
+        # previously stopped this. Tell them their existing position instead.
         already_waiting = self.store.latest_waiting_entry_for(phone)
         if already_waiting is not None:
             self.store.clear_conversation(phone)
@@ -192,10 +192,9 @@ class MaitreD:
             if location is not None:
                 self.config = location
             return MaitreDReply(
-                text=(f"You're already in the queue at {self.config.display_name()} — "
-                      f"your booking number is #{already_waiting.queue_number} "
-                      f"(position {already_waiting.position}). Say \"cancel\" if you'd "
-                      "like to leave the queue."),
+                text=(f"You're already in the queue at {self.config.display_name()}. "
+                      f"You're {already_waiting.position} in the list. Say \"cancel\" "
+                      "if you'd like to leave the queue."),
                 intent="book", action="already_queued",
                 queue_number=already_waiting.queue_number, position=already_waiting.position,
                 is_vip=bool(vip),
@@ -303,8 +302,8 @@ class MaitreD:
                             f"(#{entry.queue_number}), party {party}. {vip.notes}")
 
         return MaitreDReply(
-            text=(f"Hi {name}, your booking number at {self.config.display_name()} "
-                  f"is: {entry.queue_number}"),
+            text=(f"Hi {name}, you're {entry.position} in the list at "
+                  f"{self.config.display_name()}."),
             intent="book", action="queued", queue_number=entry.queue_number,
             position=entry.position, is_vip=bool(vip), staff_alert=staff_alert,
         )
@@ -325,7 +324,7 @@ class MaitreD:
         _removed, moved_up = self.store.remove_by_id(entry.id, new_status="cancelled")
         self.store.clear_conversation(phone)
         reply = MaitreDReply(
-            text=(f"Done — you've been removed from the queue at "
+            text=(f"Done. You've been removed from the queue at "
                   f"{self.config.display_name()} (you were #{entry.queue_number}). "
                   "Scan the QR code at our entrance any time to rejoin."),
             intent="cancel", action="cancelled", queue_number=entry.queue_number,
@@ -353,7 +352,7 @@ class MaitreD:
             )
         if not parsed.party_size and not parsed.name:
             return MaitreDReply(
-                text="Sure — what would you like to update: your party size or the name on it?",
+                text="Sure, what would you like to update: your party size or the name on it?",
                 intent="modify", action="need_info",
             )
         location = self._resolve_location_config(entry.location_id)
@@ -364,7 +363,7 @@ class MaitreD:
         )
         if updated is None:
             return MaitreDReply(
-                text="That queue entry isn't there any more — say \"cancel\" or check with staff.",
+                text="That queue entry isn't there any more. Say \"cancel\" or check with staff.",
                 intent="modify", action="noop",
             )
         changes = []
@@ -373,7 +372,7 @@ class MaitreD:
         if parsed.name:
             changes.append(f"name {updated.name}")
         return MaitreDReply(
-            text=(f"Updated — you're still #{updated.queue_number} at "
+            text=(f"Updated. You're still {updated.position} in the list at "
                   f"{self.config.display_name()}, now {' and '.join(changes)}."),
             intent="modify", action="modified", queue_number=updated.queue_number,
             position=updated.position,
