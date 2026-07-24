@@ -2410,13 +2410,3 @@ async def rebuild_embeddings(store_id: int) -> JSONResponse:
             ), {"e": _json.dumps(emb), "id": row[0]})
         db.commit()
     return JSONResponse({"rebuilt": len(rows), "store_id": store_id})
-
-
-# TEMPORARY: live verification of entrance-code redemption + rate limit. Remove after use.
-
-@app.post("/admin/debug/customer_test")
-async def debug_customer_test(request: Request) -> JSONResponse:
-    from app.gateway.customer import handle_customer_for_store
-    params = await _parse_body(request)
-    reply = handle_customer_for_store(params["phone"], params["body"], int(params["store_id"]))
-    return JSONResponse({"reply": reply})
