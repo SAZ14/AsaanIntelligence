@@ -2321,7 +2321,13 @@ async def get_queue_join_links(request: Request, store_id: int) -> JSONResponse:
     if not resolve_store_display_number(store_id):
         return JSONResponse({"error": "no messaging provider configured for this store"}, status_code=404)
 
-    base = f"{str(request.base_url).rstrip('/')}/q/{store_id}"
+    # Scheme hardcoded to https, not derived from request.base_url --
+    # Railway terminates TLS at its edge and forwards plain HTTP to this
+    # container, so base_url's scheme reads "http" even though the guest
+    # printing/scanning this QR always reaches it over https. hostname
+    # alone (unaffected by that scheme confusion) is all that's actually
+    # needed from the request.
+    base = f"https://{request.url.hostname}/q/{store_id}"
     locations = VenueConfig.list_locations(store_id)
     if len(locations) <= 1:
         return JSONResponse({
