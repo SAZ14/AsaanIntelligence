@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Choose a store — Queue Dashboard{% endblock %}
+{% block title %}Choose a store{% endblock %}
 {% block body %}
 <div class="auth-shell">
   <h1>Which store?</h1>
-  <p class="lede">You manage more than one — pick one to continue.</p>
+  <p class="lede">You manage more than one. Pick one to continue.</p>
   <form method="post" action="/dashboard/select-store">
     {% for store in stores %}
     <div class="field">

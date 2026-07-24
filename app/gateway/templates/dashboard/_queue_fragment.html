@@ -16,7 +16,7 @@
     {% if group.entries %}
     <form method="post" action="/dashboard/queue/admit" style="margin-bottom:16px;">
       <input type="hidden" name="branch_name" value="{{ group.branch_name }}">
-      <button type="submit">Admit #{{ group.entries[0].queue_number }} — {{ group.entries[0].name or group.entries[0].phone }}</button>
+      <button type="submit">Admit #{{ group.entries[0].queue_number }}: {{ group.entries[0].name or group.entries[0].phone }}</button>
     </form>
     {% endif %}
 
@@ -27,7 +27,7 @@
       {% for e in group.entries %}
         <tr>
           <td class="num"><span class="ticket-number">{{ e.queue_number }}</span></td>
-          <td>{{ e.name or e.phone or "—" }}{% if e.is_vip %} <span class="pill good">VIP</span>{% endif %}</td>
+          <td>{{ e.name or e.phone or "Unknown" }}{% if e.is_vip %} <span class="pill good">VIP</span>{% endif %}</td>
           <td class="num">{{ e.party_size }}</td>
           <td class="num" style="color:var(--fg-muted);">{{ e.position }}</td>
           <td>

@@ -1,5 +1,5 @@
 {% extends "app_base.html" %}
-{% block title %}Branches — {{ store_name }}{% endblock %}
+{% block title %}Branches: {{ store_name }}{% endblock %}
 {% block content %}
 <div class="panel">
   <h2>Branches</h2>
@@ -13,7 +13,7 @@
       {% for loc in locations %}
         <tr>
           <td>{{ loc.branch_name }}{% if loc.is_primary %} <span class="pill good">Primary</span>{% endif %}</td>
-          <td>{{ loc.address or "—" }}</td>
+          <td>{{ loc.address or "Not set" }}</td>
           <td>
             {% if loc.accepts_reservations %}
               <span class="pill good">Takes walk-ins</span>
