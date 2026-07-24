@@ -2269,10 +2269,19 @@ async def entrance_qr_relink(store_id: int, branch: str = "") -> Response:
     (i.e. every scan) mints a fresh one-time code and 302s straight into
     WhatsApp with it embedded in the prefilled text, so the sticker on
     the wall never needs reprinting even though what's inside it changes
-    on every scan. gateway/customer.py's booking-trigger handling then
-    requires that code to redeem successfully (unused, right store/
-    branch, within its TTL -- see Store.redeem_entrance_code) before a
-    fresh queue-join is allowed to start at all.
+    on every scan. The code alone carries which STORE (redemption is
+    scoped to store_id, and MaitreDEntranceCode.code is globally unique,
+    so codes across different stores/branches can never collide or
+    cross-redeem) and which BRANCH (MaitreDEntranceCode.location_id, set
+    from `branch` below) it belongs to -- the prefilled message is always
+    just "Join the Queue - <code>", never a branch name/key in the text
+    itself; gateway/customer.py's _peek_entrance_code reads the branch
+    back off the code, and agent.py resolves it straight into the
+    booking flow (entrance_location_id) without ever asking "which
+    branch?". gateway/customer.py's booking-trigger handling requires
+    that code to redeem successfully (unused, right store, within its
+    TTL -- see Store.redeem_entrance_code) before a fresh queue-join is
+    allowed to start at all.
 
     This is what actually closes the "someone at home retypes a
     remembered/screenshotted trigger message" gap -- the fixed phrase
@@ -2291,7 +2300,6 @@ async def entrance_qr_relink(store_id: int, branch: str = "") -> Response:
         return PlainTextResponse("This restaurant hasn't set up WhatsApp messaging yet.", status_code=404)
 
     location_id = None
-    suffix = ""
     if branch:
         loc = next(
             (l for l in VenueConfig.list_locations(store_id) if l.branch_key == branch), None,
@@ -2299,10 +2307,9 @@ async def entrance_qr_relink(store_id: int, branch: str = "") -> Response:
         if loc is None:
             return PlainTextResponse("Unknown branch.", status_code=404)
         location_id = loc.location_id
-        suffix = f" - {loc.branch_key}"
 
     code = Store(store_id).generate_entrance_code(location_id)
-    text = f"{BOOKING_TRIGGER_PHRASE}{suffix} #{code}"
+    text = f"{BOOKING_TRIGGER_PHRASE} - {code}"
     return RedirectResponse(f"https://wa.me/{digits}?text={quote(text)}", status_code=302)
 
 

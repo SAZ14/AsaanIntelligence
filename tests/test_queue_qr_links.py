@@ -86,8 +86,10 @@ class TestQueueLinksEndpoint:
 class TestEntranceRelinker:
     """GET /q/{store_id} -- the ONLY URL a printed QR code ever encodes.
     Mints a fresh one-time code on every hit and 302s straight into
-    WhatsApp with it embedded (see gateway/customer.py's redemption
-    check for the other half of this)."""
+    WhatsApp with it embedded. The code's DB row carries the branch
+    (and the store, via a store-scoped lookup) -- the wa.me message
+    text itself never names either (see gateway/customer.py's
+    _peek_entrance_code/_burn_entrance_code for the other half)."""
 
     def test_no_provider_configured_404s(self, client, store_id):
         r = client.get(f"/q/{store_id}", follow_redirects=False)
@@ -99,23 +101,42 @@ class TestEntranceRelinker:
         assert r.status_code == 302
         location = unquote(r.headers["location"])
         assert "wa.me/15551590482" in location
-        assert "Join the Queue" in location
-        assert "#" in location  # the one-time code marker
+        assert "Join the Queue - " in location
+        code = location.rsplit("-", 1)[1].strip()
+        assert len(code) >= 6 and code.isalnum()
 
     def test_two_scans_mint_two_different_codes(self, client, store_id):
         _seed_meta_number(store_id)
         loc1 = unquote(client.get(f"/q/{store_id}", follow_redirects=False).headers["location"])
         loc2 = unquote(client.get(f"/q/{store_id}", follow_redirects=False).headers["location"])
-        code1 = loc1.rsplit("#", 1)[1]
-        code2 = loc2.rsplit("#", 1)[1]
+        code1 = loc1.rsplit("-", 1)[1].strip()
+        code2 = loc2.rsplit("-", 1)[1].strip()
         assert code1 != code2
 
-    def test_branch_suffix_is_embedded_for_a_multi_location_store(self, client, store_id):
+    def test_branch_is_resolved_from_the_code_not_the_message_text(self, client, store_id):
+        """The prefilled message never names the branch anymore -- the
+        code's own DB row carries it, so a scan at the New Blue Area
+        entrance must redeem to New Blue Area's location_id even though
+        the wa.me text just says "Join the Queue - <code>"."""
         _seed_meta_number(store_id)
         _seed_two_locations(store_id)
+        from app.core.db import SessionLocal, MaitreDLocation
+        with SessionLocal() as db:
+            blue_id = db.query(MaitreDLocation.id).filter(
+                MaitreDLocation.store_id == store_id,
+                MaitreDLocation.branch_key == "new_blue_area",
+            ).scalar()
+
         r = client.get(f"/q/{store_id}?branch=new_blue_area", follow_redirects=False)
         assert r.status_code == 302
-        assert "new_blue_area" in unquote(r.headers["location"])
+        location = unquote(r.headers["location"])
+        assert "new_blue_area" not in location
+        code = location.rsplit("-", 1)[1].strip()
+
+        from app.agents.maitre_d.store import Store
+        ok, resolved_location_id = Store(store_id).redeem_entrance_code(code)
+        assert ok is True
+        assert resolved_location_id == blue_id
 
     def test_unknown_branch_404s(self, client, store_id):
         _seed_meta_number(store_id)
@@ -127,8 +148,8 @@ class TestEntranceRelinker:
 class TestEntranceCodeRedemption:
     """Store.generate_entrance_code / redeem_entrance_code -- the part
     that makes a stale screenshot or memorised trigger message stop
-    working (gateway/customer.py's _redeem_entrance_code calls straight
-    through to these)."""
+    working (gateway/customer.py's _peek_entrance_code/_burn_entrance_code
+    call straight through to these)."""
 
     def test_fresh_code_redeems_once(self, store_id):
         from app.agents.maitre_d.store import Store

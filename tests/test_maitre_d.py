@@ -506,18 +506,20 @@ class TestMultiTenancy:
 
 # ── Gateway wiring: customer mode routes booking-shaped messages here ──────
 
-def _entrance_text(store_id: int, suffix: str = "") -> str:
-    """A fresh, valid "Join the Queue[ - branch] #CODE" message -- what a
-    REAL scan of the entrance QR relinker (main.py's entrance_qr_relink)
+def _entrance_text(store_id: int, location_id: int | None = None, decoration: str = "") -> str:
+    """A fresh, valid "Join the Queue<decoration> - <code>" message -- what
+    a REAL scan of the entrance QR relinker (main.py's entrance_qr_relink)
     hands back. Any test that drives the flow through the real gateway
     entry point (handle_customer_for_store, as opposed to calling
     MaitreD.handle_message directly) needs this: a fresh trigger now also
     requires a currently-valid one-time code, see customer.py's
-    _redeem_entrance_code."""
+    _peek_entrance_code / _burn_entrance_code. `location_id` mints the
+    code for a SPECIFIC branch -- the message text itself never names one
+    any more, the code alone carries it."""
     from app.agents.maitre_d.store import Store
     from app.gateway.customer import BOOKING_TRIGGER_PHRASE
-    code = Store(store_id).generate_entrance_code(None)
-    return f"{BOOKING_TRIGGER_PHRASE}{suffix} #{code}"
+    code = Store(store_id).generate_entrance_code(location_id)
+    return f"{BOOKING_TRIGGER_PHRASE}{decoration} - {code}"
 
 
 class TestCustomerGatewayRouting:
@@ -534,18 +536,19 @@ class TestCustomerGatewayRouting:
         without breaking the match -- see customer.py's alnum-normalised
         comparison."""
         from app.gateway.customer import handle_customer_for_store
-        handle_customer_for_store(PHONE, f"\U0001f3ab {_entrance_text(store_id, '!')}", store_id)
+        handle_customer_for_store(PHONE, f"\U0001f3ab {_entrance_text(store_id, decoration='!')}", store_id)
         reply = handle_customer_for_store(PHONE, "it's Ahmed, party of 2", store_id)
         assert "in the list" in reply.lower()
 
     def test_qr_trigger_with_branch_code_skips_the_branch_question(self, store_id):
         """End-to-end through the real gateway entry point (not MaitreD
-        directly): scanning a branch-specific QR ("Join the Queue -
-        new_blue_area") joins that branch's queue without ever asking
-        which branch."""
-        _seed_two_locations(store_id)
+        directly): scanning a branch-specific QR (its entrance code minted
+        for New Blue Area) joins that branch's queue without ever asking
+        which branch -- and the message text never names the branch at
+        all any more."""
+        blue_id, _f82_id = _seed_two_locations(store_id)
         from app.gateway.customer import handle_customer_for_store
-        r1 = handle_customer_for_store(PHONE, _entrance_text(store_id, " - new_blue_area"), store_id)
+        r1 = handle_customer_for_store(PHONE, _entrance_text(store_id, location_id=blue_id), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(PHONE, "party of 2, it's Ahmed", store_id)
         assert "in the list" in r2.lower()
@@ -679,7 +682,7 @@ class TestCustomerRateLimit:
         for _ in range(_CUSTOMER_RATE_MAX):
             handle_customer_for_store(PHONE, "hi", store_id)
         text = _entrance_text(store_id)
-        code = text.rsplit("#", 1)[1]
+        code = text.rsplit("-", 1)[1].strip()
         dropped = handle_customer_for_store(PHONE, text, store_id)
         assert dropped == ""
         ok, _ = Store(store_id).redeem_entrance_code(code)
@@ -728,9 +731,9 @@ class TestRealisticWebhookPhoneFormat:
         assert "updated" in reply.lower() or "5" in reply
 
     def test_branch_coded_qr_trigger_with_whatsapp_prefixed_phone(self, store_id):
-        _seed_two_locations(store_id)
+        blue_id, _f82_id = _seed_two_locations(store_id)
         from app.gateway.customer import handle_customer_for_store
-        r1 = handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id, " - new_blue_area"), store_id)
+        r1 = handle_customer_for_store(WHATSAPP_PHONE, _entrance_text(store_id, location_id=blue_id), store_id)
         assert "which branch" not in r1.lower()
         r2 = handle_customer_for_store(WHATSAPP_PHONE, "party of 2, it's Ahmed", store_id)
         assert "in the list" in r2.lower()
@@ -741,8 +744,8 @@ class TestRealisticWebhookPhoneFormat:
 
 class TestEntranceCodeGate:
     """handle_customer_for_store requires a currently-valid one-time code
-    on a FRESH trigger (see customer.py's _redeem_entrance_code) -- this
-    is what actually stops a remembered/screenshotted trigger message
+    on a FRESH trigger (see customer.py's _peek_entrance_code/_burn_entrance_code)
+    -- this is what actually stops a remembered/screenshotted trigger message
     from working days or rooms away from the entrance, which the fixed
     trigger phrase alone never could."""
 
@@ -759,7 +762,7 @@ class TestEntranceCodeGate:
         code = Store(store_id).generate_entrance_code(None)
         Store(store_id).redeem_entrance_code(code)  # burn it once, as if already used
         with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
-            reply = handle_customer_for_store(PHONE, f"{BOOKING_TRIGGER_PHRASE} #{code}", store_id)
+            reply = handle_customer_for_store(PHONE, f"{BOOKING_TRIGGER_PHRASE} - {code}", store_id)
         mock_md.assert_not_called()
         assert "expired" in reply.lower() or "used" in reply.lower()
 
@@ -774,12 +777,12 @@ class TestEntranceCodeGate:
             row.created_at = datetime.utcnow() - timedelta(minutes=999)
             db.commit()
         with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
-            reply = handle_customer_for_store(PHONE, f"{BOOKING_TRIGGER_PHRASE} #{code}", store_id)
+            reply = handle_customer_for_store(PHONE, f"{BOOKING_TRIGGER_PHRASE} - {code}", store_id)
         mock_md.assert_not_called()
         assert "expired" in reply.lower() or "used" in reply.lower()
 
     def test_the_same_valid_code_cannot_start_two_separate_queue_joins(self, store_id):
-        """A screenshot of one successful "Join the Queue #CODE" message
+        """A screenshot of one successful "Join the Queue - CODE" message
         shared with a friend must not let them join too, even seconds
         later -- the code is burned on the FIRST successful redemption."""
         from app.gateway.customer import handle_customer_for_store
@@ -1311,8 +1314,8 @@ class TestPerBranchBookingToggle:
         blue_id, bahria_id = _seed_two_bookable_branches(store_id)
         set_booking_enabled(store_id, False, location_id=blue_id)
 
-        text = _entrance_text(store_id, " - new_blue_area")
-        code = text.rsplit("#", 1)[1]
+        text = _entrance_text(store_id, location_id=blue_id)
+        code = text.rsplit("-", 1)[1].strip()
         with patch("app.agents.maitre_d.agent.get_maitre_d") as mock_md:
             handle_customer_for_store(PHONE, text, store_id)
         mock_md.assert_not_called()  # silently fell through, no "expired" reply either

@@ -90,8 +90,17 @@ class MaitreD:
     # ── entry point ──
 
     def handle_message(
-        self, phone: str, text: str, profile_name: str = ""
+        self, phone: str, text: str, profile_name: str = "",
+        entrance_location_id: int | None = None,
     ) -> MaitreDReply:
+        """entrance_location_id: the branch a fresh entrance-code trigger
+        was minted for (see gateway/customer.py's _peek_entrance_code --
+        the code itself now carries the branch, not the message text), so
+        _book_flow can skip the "which branch?" question entirely on the
+        very first turn instead of re-deriving it by matching branch names
+        in the guest's own words. None on every other call (a continuing
+        flow already has "location" saved in its slots by then, or there
+        was never a code to begin with)."""
         phone = normalise_phone(phone)
         vip = self.config.vip_for(phone)
         self._remember_guest(phone, profile_name, vip)
@@ -115,7 +124,7 @@ class MaitreD:
         if parsed.intent == "modify" and flow != "book":
             return self._modify_queue_entry(phone, parsed)
         if parsed.intent == "book" or flow == "book":
-            return self._book_flow(phone, parsed, vip, profile_name)
+            return self._book_flow(phone, parsed, vip, profile_name, entrance_location_id)
 
         # Fall back gracefully. Deliberately doesn't say "type book" --
         # the queue-join trigger is meant to be scanned from the entrance
@@ -160,7 +169,8 @@ class MaitreD:
     # ── booking (joining the queue) ──
 
     def _book_flow(
-        self, phone: str, parsed: ParsedMessage, vip, profile_name: str
+        self, phone: str, parsed: ParsedMessage, vip, profile_name: str,
+        entrance_location_id: int | None = None,
     ) -> MaitreDReply:
         # A table's own QR code can't stop someone already seated from
         # scanning it and typing "book" -- WhatsApp lets a guest edit or
@@ -227,20 +237,34 @@ class MaitreD:
                 elif profile_name:
                     slots["name"] = profile_name
 
-        # Multi-branch stores: try to auto-fill "location" from what the
-        # guest just said before asking for it as a missing slot -- "table
-        # for 4 at Bahria Town" shouldn't need a follow-up question just
-        # because the branch happened to be named up front. A bare number
-        # ("2") is only ever treated as a branch pick when we're actually
-        # waiting on one (prior_options set from the last "which branch"
-        # question) -- location is always resolved before party_size is
-        # ever asked (see _missing_slot's ordering), so there's no turn
-        # where a numeric reply could mean either.
+        # Multi-branch stores: try to auto-fill "location" before asking
+        # for it as a missing slot. First choice is entrance_location_id
+        # -- the branch the guest's entrance code was minted for, which is
+        # only ever set on the very first turn of a fresh QR-scan trigger
+        # (see handle_message's docstring) and always wins when present,
+        # since it's an unambiguous server-side fact rather than a guess
+        # from the guest's own wording. Falls back to matching a branch
+        # name/number in what the guest actually typed -- "table for 4 at
+        # Bahria Town" shouldn't need a follow-up question just because
+        # the branch happened to be named up front, and this is also the
+        # ONLY path once a flow is already underway (entrance_location_id
+        # is never re-supplied on later turns). A bare number ("2") is
+        # only ever treated as a branch pick when we're actually waiting
+        # on one (prior_options set from the last "which branch" question)
+        # -- location is always resolved before party_size is ever asked
+        # (see _missing_slot's ordering), so there's no turn where a
+        # numeric reply could mean either.
         location_options: list[str] = []
         if len(self.locations) > 1:
             location_options = [l.branch_key for l in self.locations if l.accepts_reservations]
             if not slots.get("location"):
-                matched = self._match_location_reply(parsed.raw, prior_options)
+                matched = None
+                if entrance_location_id is not None:
+                    matched = next(
+                        (l for l in self.locations if l.location_id == entrance_location_id), None,
+                    )
+                if matched is None:
+                    matched = self._match_location_reply(parsed.raw, prior_options)
                 if matched is not None:
                     if not matched.accepts_reservations:
                         others = _join_or(

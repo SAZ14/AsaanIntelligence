@@ -411,6 +411,33 @@ class Store:
             db.commit()
             return code
 
+    def peek_entrance_code_location(self, code: str) -> tuple[bool, int]:
+        """Read-only lookup of which location a code was minted for,
+        WITHOUT consuming it -- lets a caller check that branch's own
+        booking_enabled setting before committing to redeem_entrance_code
+        (burning it), so a scan of a currently-closed branch doesn't waste
+        an otherwise-still-valid code. Same validity rules as
+        redeem_entrance_code (must exist, be unused, and be within its
+        TTL); (False, 0) covers all three "not valid" cases identically,
+        since a caller only ever needs to know "can I trust this code
+        right now", not why not."""
+        from datetime import timedelta
+        from app.core.db import SessionLocal, MaitreDEntranceCode
+        from app.agents.maitre_d.config import get_entrance_code_ttl_minutes
+
+        ttl = get_entrance_code_ttl_minutes(self.store_id)
+        cutoff = datetime.utcnow() - timedelta(minutes=ttl)
+        with SessionLocal() as db:
+            row = db.query(MaitreDEntranceCode).filter(
+                MaitreDEntranceCode.store_id == self.store_id,
+                MaitreDEntranceCode.code == code,
+                MaitreDEntranceCode.used_at.is_(None),
+                MaitreDEntranceCode.created_at >= cutoff,
+            ).first()
+            if not row:
+                return False, 0
+            return True, row.location_id or 0
+
     def redeem_entrance_code(self, code: str) -> tuple[bool, int]:
         """Atomically claims a one-time entrance code. Returns (ok,
         location_id) -- ok is False if the code doesn't exist, belongs to

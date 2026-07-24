@@ -6,24 +6,23 @@ import re
 logger = logging.getLogger(__name__)
 
 # The ONLY thing that starts a fresh queue-join: the prefilled text of the
-# entrance/booking-area QR code's wa.me link, e.g.
-#   https://wa.me/<number>?text=Join%20the%20Queue
-# or, for one specific branch of a multi-location store (see
-# main.py's get_queue_join_links, which generates exactly this format):
-#   https://wa.me/<number>?text=Join%20the%20Queue%20-%20F7
-# Deliberately NOT a keyword match on "book"/"table"/"reservation" (that
-# used to be the trigger) -- a table's own QR code can be scanned by
-# someone already seated there, and a wa.me link's prefilled text is just
-# a suggestion the sender can edit or ignore, so nothing in the message
-# itself can prove "this came from the entrance QR". Restricting the
-# trigger to one specific, non-conversational phrase is the practical
-# mitigation: nobody accidentally types "Join the Queue" while chatting,
-# unlike the single common word "book" ("I need to book a table sometime"
-# used to accidentally start a queue-join). It's not cryptographically
-# unforgeable -- nothing over plain WhatsApp can be -- but it closes the
-# casual/accidental case, which is the actual threat model here (a guest
-# already seated by staff, no prior interaction with the bot at all,
-# shouldn't be able to just type their way into the queue).
+# entrance/booking-area QR code's wa.me link, always exactly
+#   https://wa.me/<number>?text=Join%20the%20Queue%20-%20<code>
+# (see main.py's entrance_qr_relink, the ONLY thing the printed QR encodes --
+# a STATIC relinker URL, never a wa.me link directly). Deliberately NOT a
+# keyword match on "book"/"table"/"reservation" (that used to be the
+# trigger) -- a table's own QR code can be scanned by someone already seated
+# there, and a wa.me link's prefilled text is just a suggestion the sender
+# can edit or ignore, so nothing in the message itself can prove "this came
+# from the entrance QR". Restricting the trigger to one specific, non-
+# conversational phrase is the practical mitigation: nobody accidentally
+# types "Join the Queue" while chatting, unlike the single common word
+# "book" ("I need to book a table sometime" used to accidentally start a
+# queue-join). It's not cryptographically unforgeable -- nothing over plain
+# WhatsApp can be -- but it closes the casual/accidental case, which is the
+# actual threat model here (a guest already seated by staff, no prior
+# interaction with the bot at all, shouldn't be able to just type their way
+# into the queue).
 BOOKING_TRIGGER_PHRASE = "Join the Queue"
 
 
@@ -37,35 +36,36 @@ _BOOKING_TRIGGER_NORM = _alnum(BOOKING_TRIGGER_PHRASE)
 def _is_booking_trigger(text: str) -> bool:
     """Alnum-normalised PREFIX match -- tolerant of surrounding emoji/
     punctuation a restaurant might decorate the printed QR text with
-    ("🎫 Join the Queue!"), and of a location code appended after the
-    phrase for a branch-specific QR ("Join the Queue - F7"). Still
-    requires the base phrase to be typed in full at the START of the
-    message, not merely present somewhere in it -- "please join the
-    queue for me" (ordinary chat) does not qualify, keeping the same
-    "nobody accidentally types this" protection the exact-match version
-    had. The appended code itself isn't parsed out here: agent.py's
-    _book_flow already matches a multi-branch store's location against
-    the guest's raw text (match_location in config.py) whenever a branch
-    hasn't been picked yet, so whatever follows the base phrase is simply
-    left in place for that same matching to find.
+    ("🎫 Join the Queue!"). Still requires the base phrase to be typed in
+    full at the START of the message, not merely present somewhere in it
+    -- "please join the queue for me" (ordinary chat) does not qualify,
+    keeping the same "nobody accidentally types this" protection the
+    exact-match version had.
 
     This alone only stops CASUAL/ACCIDENTAL triggering -- it says nothing
     about whether the message actually came from a fresh scan of the
     entrance QR just now, versus someone replaying a remembered or
     screenshotted copy of the same text from home. See
-    _extract_entrance_code / _redeem_entrance_code below for the part
-    that actually closes that gap."""
+    _extract_entrance_code / _peek_entrance_code / _burn_entrance_code
+    below for the part that actually closes that gap."""
     return _alnum(text).startswith(_BOOKING_TRIGGER_NORM)
 
 
-# The relinker (main.py's entrance_qr_relink, the ONLY thing the printed QR
-# encodes) appends " #<code>" to the end of the trigger text on every scan --
-# a fresh, single-use, short-TTL code minted server-side, never baked into
-# the QR image itself. Requiring it here (see _redeem_entrance_code) is what
-# makes a stale screenshot or a remembered "Join the Queue - F7" message
-# stop working: the phrase alone is meant to be public and printable, the
-# code is meant to die the instant it's used once or its TTL passes.
-_ENTRANCE_CODE_RE = re.compile(r"#([A-Za-z0-9]{6,12})\s*$")
+# The relinker appends " - <code>" to the trigger phrase on every single
+# scan -- a fresh, single-use, short-TTL code minted server-side, never
+# baked into the QR image itself. The code alone now carries BOTH which
+# store it belongs to (globally unique in MaitreDEntranceCode.code, and
+# redemption is additionally scoped to `store_id` -- codes across
+# different stores can never collide or cross-redeem even by coincidence)
+# and which branch it was minted for (MaitreDEntranceCode.location_id, set
+# from the relinker's own ?branch= query param) -- the message text itself
+# no longer needs to spell out a branch name/key at all, see
+# agent.py's handle_message(entrance_location_id=...). Requiring the code
+# here (see _peek_entrance_code / _burn_entrance_code) is what makes a
+# stale screenshot or a remembered "Join the Queue - <code>" message stop
+# working: the phrase alone is meant to be public and printable, the code
+# is meant to die the instant it's used once or its TTL passes.
+_ENTRANCE_CODE_RE = re.compile(r"-\s*([A-Za-z0-9]{6,12})\s*$")
 
 
 def _extract_entrance_code(text: str) -> str | None:
@@ -73,34 +73,26 @@ def _extract_entrance_code(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _redeem_entrance_code(store_id: int, text: str) -> bool:
-    """True only if `text` carries a currently-valid one-time entrance
-    code for this store -- burns it (marks used) in the same call, so a
-    valid redemption can never be double-spent even by two near-
-    simultaneous requests (see Store.redeem_entrance_code's own docstring
-    for the atomicity guarantee)."""
-    code = _extract_entrance_code(text)
-    if not code:
-        return False
+def _peek_entrance_code(store_id: int, code: str) -> tuple[bool, int | None]:
+    """(found, location_id) for a code WITHOUT consuming it -- lets the
+    caller check that specific branch's is_booking_enabled before
+    committing to _burn_entrance_code, so a scan of a currently-closed
+    branch doesn't waste an otherwise-still-valid code. location_id is
+    None for a single-location store's code (no branch concept), 0 or a
+    real id for a multi-location store's -- meaningless when found=False."""
+    from app.agents.maitre_d.store import Store
+    found, location_id = Store(store_id).peek_entrance_code_location(code)
+    return found, (location_id or None)
+
+
+def _burn_entrance_code(store_id: int, code: str) -> bool:
+    """Actually redeems (marks used) a code -- call only after confirming
+    via _peek_entrance_code that its branch currently has booking
+    enabled. Atomic against double-spending even by two near-simultaneous
+    requests (see Store.redeem_entrance_code's own docstring)."""
     from app.agents.maitre_d.store import Store
     ok, _location_id = Store(store_id).redeem_entrance_code(code)
     return ok
-
-
-def _trigger_location_id(store_id: int, text: str) -> int | None:
-    """Which branch (if any) a fresh trigger message names, resolved the
-    same way agent.py's own booking flow eventually would (match_location
-    against the store's configured branches) -- needed BEFORE the
-    entrance code is redeemed, so checking a disabled branch's
-    is_booking_enabled doesn't require burning a still-valid code first.
-    None for a single-location store (no branch concept) or a message
-    that doesn't name one."""
-    from app.agents.maitre_d.config import VenueConfig, match_location
-    locations = VenueConfig.list_locations(store_id)
-    if len(locations) <= 1:
-        return None
-    matched = match_location(locations, text)
-    return matched.location_id if matched else None
 
 
 def _is_cancel_message(text: str) -> bool:
@@ -202,12 +194,14 @@ def _has_active_booking_flow(store_id: int, phone: str) -> bool:
     ).get("flow"))
 
 
-def _handle_booking(from_phone: str, body: str, store_id: int) -> str:
+def _handle_booking(
+    from_phone: str, body: str, store_id: int, entrance_location_id: int | None = None,
+) -> str:
     from app.agents.maitre_d.agent import get_maitre_d
     from app.core.outbound import send_from_store, notify_staff
 
     md = get_maitre_d(store_id)
-    reply = md.handle_message(from_phone, body)
+    reply = md.handle_message(from_phone, body, entrance_location_id=entrance_location_id)
 
     # Proactive messages to OTHER guests, if the agent ever needs to send
     # one -- this turn's own reply still goes back via the caller's normal
@@ -309,43 +303,51 @@ def handle_customer_for_store(from_phone: str, body: str, store_id: int) -> str:
             wants_cancel = _is_cancel_message(text)
             wants_modify = _wants_to_modify_queue_entry(store_id, phone, text)
             # A fresh trigger only starts a flow when booking is actually
-            # switched on for the BRANCH it names -- staff's "disable
-            # booking" for a quiet walk-in day (see internal.py), which is
-            # now per-branch for a multi-location store. The branch is
-            # resolved from the message text itself, the same way agent.py's
-            # own booking flow eventually would, and checked BEFORE the
-            # entrance code is touched -- a scan of a branch that's
-            # currently closed must not burn an otherwise-still-valid code
-            # for nothing. Deliberately checked ONLY for the fresh-start
-            # case: an already-active flow finishes even if staff flip the
-            # toggle mid-conversation (less confusing than abandoning a guest
-            # partway through), and "cancel"/"modify" always work regardless
-            # (neither can create a queue entry, see their own docstrings).
+            # switched on for the BRANCH the entrance code was minted for --
+            # staff's "disable booking" for a quiet walk-in day (see
+            # internal.py), now per-branch for a multi-location store. The
+            # branch comes from _peek_entrance_code (the code itself, not
+            # the message text -- see BOOKING_TRIGGER_PHRASE's comment), and
+            # is checked BEFORE the code is actually burned: a scan of a
+            # branch that's currently closed must not waste an otherwise-
+            # still-valid code. Deliberately checked ONLY for the fresh-
+            # start case: an already-active flow finishes even if staff flip
+            # the toggle mid-conversation (less confusing than abandoning a
+            # guest partway through), and "cancel"/"modify" always work
+            # regardless (neither can create a queue entry, see their own
+            # docstrings).
             #
             # A fresh trigger ALSO now needs a currently-valid one-time
-            # entrance code (see _redeem_entrance_code) -- this is the part
-            # that actually verifies "this came from a scan just now", not
-            # just "this text matches the trigger phrase". An active flow or
-            # cancel/modify never needs one: neither can create a fresh
-            # queue entry, so neither carries the replay risk a fresh join
-            # does.
+            # entrance code -- this is the part that actually verifies
+            # "this came from a scan just now", not just "this text matches
+            # the trigger phrase". An active flow or cancel/modify never
+            # needs one: neither can create a fresh queue entry, so neither
+            # carries the replay risk a fresh join does.
             invalid_code = False
             wants_new_booking = False
+            entrance_location_id = None
             if _is_booking_trigger(text) and not active_flow:
-                trigger_location_id = _trigger_location_id(store_id, text)
-                if is_booking_enabled(store_id, trigger_location_id):
-                    if _redeem_entrance_code(store_id, text):
+                code = _extract_entrance_code(text)
+                found, code_location_id = _peek_entrance_code(store_id, code) if code else (False, None)
+                if not found:
+                    invalid_code = True
+                elif is_booking_enabled(store_id, code_location_id):
+                    if _burn_entrance_code(store_id, code):
                         wants_new_booking = True
+                        entrance_location_id = code_location_id
                     else:
+                        # Lost a race with a near-simultaneous redemption of
+                        # the identical code -- treat exactly like any other
+                        # already-used code.
                         invalid_code = True
                 # else: booking is off for this specific branch (or the
                 # whole store) -- falls through silently below, same as
-                # the store-wide case always has; the code (if any) is
-                # never touched, so it stays valid for a later scan once
+                # the store-wide case always has; the code is never
+                # touched, so it stays valid for a later scan once
                 # booking's back on.
 
             if active_flow or wants_cancel or wants_modify or wants_new_booking:
-                return _handle_booking(phone, text, store_id)
+                return _handle_booking(phone, text, store_id, entrance_location_id=entrance_location_id)
 
             if invalid_code:
                 return ("That entrance code has expired or was already used. "
