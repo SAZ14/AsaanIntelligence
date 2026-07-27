@@ -521,6 +521,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AsaanPay Central Agent Server", lifespan=lifespan)
 
+# Loans agent (demo) — self-contained JSON book, no DB dependency
+from app.agents.loans.api import router as loans_router  # noqa: E402
+app.include_router(loans_router)
+
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 

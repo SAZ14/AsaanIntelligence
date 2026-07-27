@@ -15,6 +15,7 @@ Built with FastAPI, SQLAlchemy, Twilio, Z.AI (GLM-4.7), and Apify.
 | **Integrity** | `audit`, `summary`, `leakage`, `profit`, `staff`, `daily`, `weekly` | Audits POS data for voids, discounts, and anomalies |
 | **Revenue** | `revenue`, `sales`, `pricing`, `strategy`, `upsell` | Revenue trend analysis and pricing advice |
 | **Customer** | *(non-staff senders)* | Loyalty stamps, leaderboard, deals, winback messages |
+| **Loans** *(demo)* | `/loans/*` API + CLI | Scans the customer book, scores relationships, detects cash stress, and decides proactive instant-loan offers vs monitor vs decline-with-alternatives — deterministic policy gate + local LLM narrator ([docs](docs/loan-agent.md)) |
 
 ---
 

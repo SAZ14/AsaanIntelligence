@@ -1,0 +1,2047 @@
+{
+ "customers": [
+  {
+   "customer_id": "C001",
+   "name": "Ayesha Baloch",
+   "age": 48,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Okara",
+   "employment": "Software house QA analyst (permanent)",
+   "net_monthly_income": 129000,
+   "account_age_years": 8.6,
+   "salary_months_12": 11,
+   "avg_balance_6m": 633600,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 4200
+    },
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 5700
+    }
+   ],
+   "eom_balances": [
+    515300,
+    615300,
+    766500,
+    775400,
+    872500,
+    851500
+   ],
+   "days_below_5k_30d": 7,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C002",
+   "name": "Rabia Memon",
+   "age": 27,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Faisalabad",
+   "employment": "Bank teller (permanent)",
+   "net_monthly_income": 87000,
+   "account_age_years": 2.8,
+   "salary_months_12": 10,
+   "avg_balance_6m": 197300,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    380900,
+    313400,
+    246000,
+    178500,
+    111000,
+    43600
+   ],
+   "days_below_5k_30d": 18,
+   "salary_to_low_gap_days": 8
+  },
+  {
+   "customer_id": "C003",
+   "name": "Fatima Durrani",
+   "age": 53,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Sargodha",
+   "employment": "Sindh Health Department (government)",
+   "net_monthly_income": 196000,
+   "account_age_years": 1.2,
+   "salary_months_12": 9,
+   "avg_balance_6m": 124500,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 3700
+    }
+   ],
+   "eom_balances": [
+    174400,
+    146600,
+    118700,
+    90800,
+    63000,
+    35100
+   ],
+   "days_below_5k_30d": 16,
+   "salary_to_low_gap_days": 8
+  },
+  {
+   "customer_id": "C004",
+   "name": "Ayesha Abbasi",
+   "age": 28,
+   "bank": "Sindh Bank",
+   "bank_code": "SNDB",
+   "city": "Karachi",
+   "employment": "Bank teller (permanent)",
+   "net_monthly_income": 129000,
+   "account_age_years": 3.6,
+   "salary_months_12": 11,
+   "avg_balance_6m": 243600,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 6800
+    },
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 7800
+    },
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 2000
+    }
+   ],
+   "eom_balances": [
+    200100,
+    245500,
+    213300,
+    272800,
+    236000,
+    234600
+   ],
+   "days_below_5k_30d": 6,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C005",
+   "name": "Khadija Baloch",
+   "age": 29,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Islamabad",
+   "employment": "Bank teller (permanent)",
+   "net_monthly_income": 66000,
+   "account_age_years": 5.6,
+   "salary_months_12": 10,
+   "avg_balance_6m": 161900,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 15000
+    },
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 4000
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 8600
+    }
+   ],
+   "eom_balances": [
+    351500,
+    283900,
+    216400,
+    148900,
+    81300,
+    13800
+   ],
+   "days_below_5k_30d": 27,
+   "salary_to_low_gap_days": 15
+  },
+  {
+   "customer_id": "C006",
+   "name": "Tariq Bajwa",
+   "age": 42,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Multan",
+   "employment": "Kiryana store owner (self-employed)",
+   "net_monthly_income": 198000,
+   "account_age_years": 9.5,
+   "salary_months_12": 11,
+   "avg_balance_6m": 879600,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 27400
+    },
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 4000
+    }
+   ],
+   "eom_balances": [
+    910500,
+    964400,
+    1088600,
+    1130000,
+    1025600,
+    1069100
+   ],
+   "days_below_5k_30d": 5,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C007",
+   "name": "Rabia Khan",
+   "age": 44,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Sialkot",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 134000,
+   "account_age_years": 6.8,
+   "salary_months_12": 12,
+   "avg_balance_6m": 628600,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 6300
+    }
+   ],
+   "eom_balances": [
+    1013400,
+    842700,
+    672100,
+    501500,
+    330800,
+    160200
+   ],
+   "days_below_5k_30d": 27,
+   "salary_to_low_gap_days": 14
+  },
+  {
+   "customer_id": "C008",
+   "name": "Kashif Sheikh",
+   "age": 58,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Lahore",
+   "employment": "Software house QA analyst (permanent)",
+   "net_monthly_income": 170000,
+   "account_age_years": 8.2,
+   "salary_months_12": 12,
+   "avg_balance_6m": 625200,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 5000
+    },
+    {
+     "label": "car instalment",
+     "monthly_amount": 15800
+    }
+   ],
+   "eom_balances": [
+    658700,
+    608300,
+    633100,
+    672800,
+    920000,
+    961500
+   ],
+   "days_below_5k_30d": 5,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C009",
+   "name": "Rehan Bajwa",
+   "age": 49,
+   "bank": "Sindh Bank",
+   "bank_code": "SNDB",
+   "city": "Quetta",
+   "employment": "Punjab Police (government)",
+   "net_monthly_income": 148000,
+   "account_age_years": 4.1,
+   "salary_months_12": 12,
+   "avg_balance_6m": 563000,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    841100,
+    688700,
+    536400,
+    384000,
+    231700,
+    79300
+   ],
+   "days_below_5k_30d": 26,
+   "salary_to_low_gap_days": 14
+  },
+  {
+   "customer_id": "C010",
+   "name": "Zeeshan Gondal",
+   "age": 45,
+   "bank": "Bank Alfalah",
+   "bank_code": "BAFL",
+   "city": "Abbottabad",
+   "employment": "Tailoring business (self-employed)",
+   "net_monthly_income": 96000,
+   "account_age_years": 14.5,
+   "salary_months_12": 12,
+   "avg_balance_6m": 658000,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    1195600,
+    970100,
+    744700,
+    519200,
+    293800,
+    68300
+   ],
+   "days_below_5k_30d": 12,
+   "salary_to_low_gap_days": 15
+  },
+  {
+   "customer_id": "C011",
+   "name": "Rabia Durrani",
+   "age": 59,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Jhelum",
+   "employment": "Private school teacher (contract)",
+   "net_monthly_income": 120000,
+   "account_age_years": 14.2,
+   "salary_months_12": 12,
+   "avg_balance_6m": 141700,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 11600
+    }
+   ],
+   "eom_balances": [
+    121200,
+    115200,
+    130100,
+    127200,
+    143300,
+    134500
+   ],
+   "days_below_5k_30d": 2,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C012",
+   "name": "Amna Butt",
+   "age": 54,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Gujranwala",
+   "employment": "Kiryana store owner (self-employed)",
+   "net_monthly_income": 77000,
+   "account_age_years": 1.5,
+   "salary_months_12": 11,
+   "avg_balance_6m": 442000,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": true,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 2300
+    }
+   ],
+   "eom_balances": [
+    515100,
+    419100,
+    526900,
+    403300,
+    524200,
+    491000
+   ],
+   "days_below_5k_30d": 6,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C013",
+   "name": "Sana Butt",
+   "age": 59,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Rawalpindi",
+   "employment": "Tailoring business (self-employed)",
+   "net_monthly_income": 52000,
+   "account_age_years": 4.0,
+   "salary_months_12": 9,
+   "avg_balance_6m": 119400,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 3200
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 6100
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 5100
+    }
+   ],
+   "eom_balances": [
+    252300,
+    203500,
+    154700,
+    105900,
+    57000,
+    8200
+   ],
+   "days_below_5k_30d": 21,
+   "salary_to_low_gap_days": 14
+  },
+  {
+   "customer_id": "C014",
+   "name": "Amna Qureshi",
+   "age": 31,
+   "bank": "Sindh Bank",
+   "bank_code": "SNDB",
+   "city": "Rawalpindi",
+   "employment": "Auto workshop mechanic (self-employed)",
+   "net_monthly_income": 56000,
+   "account_age_years": 4.4,
+   "salary_months_12": 10,
+   "avg_balance_6m": 17900,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 4600
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 4900
+    }
+   ],
+   "eom_balances": [
+    25800,
+    21700,
+    17700,
+    13600,
+    9600,
+    5500
+   ],
+   "days_below_5k_30d": 22,
+   "salary_to_low_gap_days": 7
+  },
+  {
+   "customer_id": "C015",
+   "name": "Usman Chaudhry",
+   "age": 41,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Rawalpindi",
+   "employment": "Private school teacher (contract)",
+   "net_monthly_income": 62000,
+   "account_age_years": 1.4,
+   "salary_months_12": 9,
+   "avg_balance_6m": 627700,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": true,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 6800
+    }
+   ],
+   "eom_balances": [
+    775700,
+    657400,
+    539100,
+    420700,
+    302400,
+    184100
+   ],
+   "days_below_5k_30d": 14,
+   "salary_to_low_gap_days": 16
+  },
+  {
+   "customer_id": "C016",
+   "name": "Hamza Memon",
+   "age": 33,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Gujranwala",
+   "employment": "Punjab Police (government)",
+   "net_monthly_income": 154000,
+   "account_age_years": 8.1,
+   "salary_months_12": 11,
+   "avg_balance_6m": 540800,
+   "previous_loan": "none",
+   "cheque_bounce_12m": true,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 21000
+    }
+   ],
+   "eom_balances": [
+    675500,
+    576300,
+    477000,
+    377800,
+    278500,
+    179300
+   ],
+   "days_below_5k_30d": 27,
+   "salary_to_low_gap_days": 6
+  },
+  {
+   "customer_id": "C017",
+   "name": "Bilal Bajwa",
+   "age": 33,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Karachi",
+   "employment": "Foodpanda rider (gig)",
+   "net_monthly_income": 41000,
+   "account_age_years": 7.8,
+   "salary_months_12": 10,
+   "avg_balance_6m": 31500,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 6100
+    },
+    {
+     "label": "car instalment",
+     "monthly_amount": 15000
+    },
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 5400
+    }
+   ],
+   "eom_balances": [
+    54800,
+    44800,
+    34700,
+    24700,
+    14700,
+    4600
+   ],
+   "days_below_5k_30d": 15,
+   "salary_to_low_gap_days": 9
+  },
+  {
+   "customer_id": "C018",
+   "name": "Hamza Qureshi",
+   "age": 56,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Hyderabad",
+   "employment": "Foodpanda rider (gig)",
+   "net_monthly_income": 38000,
+   "account_age_years": 12.1,
+   "salary_months_12": 12,
+   "avg_balance_6m": 373200,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 3000
+    }
+   ],
+   "eom_balances": [
+    585700,
+    480600,
+    375500,
+    270400,
+    165300,
+    60200
+   ],
+   "days_below_5k_30d": 23,
+   "salary_to_low_gap_days": 9
+  },
+  {
+   "customer_id": "C019",
+   "name": "Kashif Bajwa",
+   "age": 47,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Okara",
+   "employment": "Careem captain (gig)",
+   "net_monthly_income": 97000,
+   "account_age_years": 7.0,
+   "salary_months_12": 10,
+   "avg_balance_6m": 174000,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    340500,
+    284200,
+    227900,
+    171600,
+    115300,
+    59000
+   ],
+   "days_below_5k_30d": 15,
+   "salary_to_low_gap_days": 12
+  },
+  {
+   "customer_id": "C020",
+   "name": "Ali Soomro",
+   "age": 49,
+   "bank": "Sindh Bank",
+   "bank_code": "SNDB",
+   "city": "Islamabad",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 80000,
+   "account_age_years": 8.2,
+   "salary_months_12": 11,
+   "avg_balance_6m": 472200,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 8700
+    },
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 7900
+    }
+   ],
+   "eom_balances": [
+    390100,
+    504200,
+    451800,
+    505600,
+    554200,
+    638900
+   ],
+   "days_below_5k_30d": 5,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C021",
+   "name": "Mahnoor Siddiqui",
+   "age": 41,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Okara",
+   "employment": "Careem captain (gig)",
+   "net_monthly_income": 52000,
+   "account_age_years": 7.5,
+   "salary_months_12": 8,
+   "avg_balance_6m": 273300,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": true,
+   "ecib_dpd90_24m": true,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 7500
+    }
+   ],
+   "eom_balances": [
+    230600,
+    270200,
+    255100,
+    293100,
+    394200,
+    371900
+   ],
+   "days_below_5k_30d": 6,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C022",
+   "name": "Hira Khan",
+   "age": 60,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Abbottabad",
+   "employment": "Software house QA analyst (permanent)",
+   "net_monthly_income": 244000,
+   "account_age_years": 4.1,
+   "salary_months_12": 12,
+   "avg_balance_6m": 260200,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 17100
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 8000
+    },
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 6900
+    }
+   ],
+   "eom_balances": [
+    432800,
+    360200,
+    287600,
+    215100,
+    142500,
+    69900
+   ],
+   "days_below_5k_30d": 21,
+   "salary_to_low_gap_days": 6
+  },
+  {
+   "customer_id": "C023",
+   "name": "Sohail Sheikh",
+   "age": 22,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Hyderabad",
+   "employment": "Kiryana store owner (self-employed)",
+   "net_monthly_income": 148000,
+   "account_age_years": 14.3,
+   "salary_months_12": 12,
+   "avg_balance_6m": 455700,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    405200,
+    363200,
+    436000,
+    482500,
+    456100,
+    373500
+   ],
+   "days_below_5k_30d": 0,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C024",
+   "name": "Khadija Durrani",
+   "age": 58,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Faisalabad",
+   "employment": "Pharmaceutical sales rep (permanent)",
+   "net_monthly_income": 130000,
+   "account_age_years": 3.2,
+   "salary_months_12": 11,
+   "avg_balance_6m": 54700,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    44100,
+    45800,
+    59200,
+    54900,
+    60800,
+    46900
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C025",
+   "name": "Hira Gondal",
+   "age": 60,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Sargodha",
+   "employment": "Auto workshop mechanic (self-employed)",
+   "net_monthly_income": 72000,
+   "account_age_years": 6.0,
+   "salary_months_12": 11,
+   "avg_balance_6m": 22100,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 3400
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 5000
+    }
+   ],
+   "eom_balances": [
+    46400,
+    38200,
+    30000,
+    21800,
+    13600,
+    5400
+   ],
+   "days_below_5k_30d": 16,
+   "salary_to_low_gap_days": 10
+  },
+  {
+   "customer_id": "C026",
+   "name": "Tariq Bhatti",
+   "age": 40,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Sialkot",
+   "employment": "Kiryana store owner (self-employed)",
+   "net_monthly_income": 168000,
+   "account_age_years": 5.9,
+   "salary_months_12": 9,
+   "avg_balance_6m": 128200,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 20600
+    }
+   ],
+   "eom_balances": [
+    204400,
+    171200,
+    137900,
+    104700,
+    71500,
+    38200
+   ],
+   "days_below_5k_30d": 23,
+   "salary_to_low_gap_days": 14
+  },
+  {
+   "customer_id": "C027",
+   "name": "Ali Bhatti",
+   "age": 57,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Faisalabad",
+   "employment": "Sindh Health Department (government)",
+   "net_monthly_income": 117000,
+   "account_age_years": 4.8,
+   "salary_months_12": 9,
+   "avg_balance_6m": 188900,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 13500
+    }
+   ],
+   "eom_balances": [
+    177700,
+    194100,
+    148000,
+    199300,
+    172500,
+    158100
+   ],
+   "days_below_5k_30d": 5,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C028",
+   "name": "Faisal Baloch",
+   "age": 30,
+   "bank": "Bank Alfalah",
+   "bank_code": "BAFL",
+   "city": "Okara",
+   "employment": "Kiryana store owner (self-employed)",
+   "net_monthly_income": 79000,
+   "account_age_years": 5.9,
+   "salary_months_12": 12,
+   "avg_balance_6m": 245200,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 10500
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 9700
+    }
+   ],
+   "eom_balances": [
+    210500,
+    211700,
+    281800,
+    242500,
+    243300,
+    236900
+   ],
+   "days_below_5k_30d": 5,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C029",
+   "name": "Khadija Memon",
+   "age": 24,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Sargodha",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 149000,
+   "account_age_years": 1.7,
+   "salary_months_12": 6,
+   "avg_balance_6m": 27000,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 9600
+    },
+    {
+     "label": "car instalment",
+     "monthly_amount": 22200
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 6200
+    }
+   ],
+   "eom_balances": [
+    31500,
+    22700,
+    23200,
+    32000,
+    32000,
+    34300
+   ],
+   "days_below_5k_30d": 6,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C030",
+   "name": "Maryam Siddiqui",
+   "age": 23,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Hyderabad",
+   "employment": "Bank teller (permanent)",
+   "net_monthly_income": 106000,
+   "account_age_years": 10.5,
+   "salary_months_12": 10,
+   "avg_balance_6m": 589800,
+   "previous_loan": "none",
+   "cheque_bounce_12m": true,
+   "ecib_dpd90_24m": true,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    882500,
+    739200,
+    596000,
+    452700,
+    309500,
+    166200
+   ],
+   "days_below_5k_30d": 22,
+   "salary_to_low_gap_days": 15
+  },
+  {
+   "customer_id": "C031",
+   "name": "Bushra Memon",
+   "age": 38,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Hyderabad",
+   "employment": "Private school teacher (contract)",
+   "net_monthly_income": 118000,
+   "account_age_years": 5.6,
+   "salary_months_12": 12,
+   "avg_balance_6m": 419700,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    586900,
+    486100,
+    385300,
+    284500,
+    183800,
+    83000
+   ],
+   "days_below_5k_30d": 18,
+   "salary_to_low_gap_days": 6
+  },
+  {
+   "customer_id": "C032",
+   "name": "Usman Durrani",
+   "age": 26,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Hyderabad",
+   "employment": "Pharmaceutical sales rep (permanent)",
+   "net_monthly_income": 171000,
+   "account_age_years": 14.4,
+   "salary_months_12": 11,
+   "avg_balance_6m": 171600,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 17600
+    }
+   ],
+   "eom_balances": [
+    197400,
+    159400,
+    156100,
+    232700,
+    186500,
+    199000
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C033",
+   "name": "Bilal Sheikh",
+   "age": 24,
+   "bank": "Bank Alfalah",
+   "bank_code": "BAFL",
+   "city": "Gujranwala",
+   "employment": "Tailoring business (self-employed)",
+   "net_monthly_income": 68000,
+   "account_age_years": 12.3,
+   "salary_months_12": 12,
+   "avg_balance_6m": 150800,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 5500
+    }
+   ],
+   "eom_balances": [
+    164700,
+    162600,
+    146600,
+    172300,
+    129600,
+    143500
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C034",
+   "name": "Fatima Ansari",
+   "age": 57,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Multan",
+   "employment": "Software house QA analyst (permanent)",
+   "net_monthly_income": 217000,
+   "account_age_years": 6.8,
+   "salary_months_12": 12,
+   "avg_balance_6m": 601300,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 12300
+    }
+   ],
+   "eom_balances": [
+    662300,
+    487600,
+    626000,
+    601700,
+    694300,
+    623400
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C035",
+   "name": "Amna Bhatti",
+   "age": 31,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Sargodha",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 90000,
+   "account_age_years": 5.8,
+   "salary_months_12": 11,
+   "avg_balance_6m": 181100,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 9400
+    }
+   ],
+   "eom_balances": [
+    231000,
+    190900,
+    150700,
+    110600,
+    70400,
+    30300
+   ],
+   "days_below_5k_30d": 23,
+   "salary_to_low_gap_days": 8
+  },
+  {
+   "customer_id": "C036",
+   "name": "Tariq Bajwa",
+   "age": 25,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Quetta",
+   "employment": "Bank teller (permanent)",
+   "net_monthly_income": 67000,
+   "account_age_years": 12.6,
+   "salary_months_12": 12,
+   "avg_balance_6m": 576200,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 5300
+    },
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 3300
+    }
+   ],
+   "eom_balances": [
+    535500,
+    550000,
+    559300,
+    611800,
+    784800,
+    566000
+   ],
+   "days_below_5k_30d": 6,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C037",
+   "name": "Rabia Soomro",
+   "age": 50,
+   "bank": "Sindh Bank",
+   "bank_code": "SNDB",
+   "city": "Lahore",
+   "employment": "Careem captain (gig)",
+   "net_monthly_income": 68000,
+   "account_age_years": 1.3,
+   "salary_months_12": 10,
+   "avg_balance_6m": 87800,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 3400
+    }
+   ],
+   "eom_balances": [
+    73100,
+    79500,
+    118300,
+    101800,
+    98500,
+    110500
+   ],
+   "days_below_5k_30d": 7,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C038",
+   "name": "Tariq Rajput",
+   "age": 52,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Quetta",
+   "employment": "Foodpanda rider (gig)",
+   "net_monthly_income": 72000,
+   "account_age_years": 0.8,
+   "salary_months_12": 11,
+   "avg_balance_6m": 576700,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": true,
+   "ecib_writeoff": true,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 9500
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 5600
+    }
+   ],
+   "eom_balances": [
+    957200,
+    783200,
+    609200,
+    435200,
+    261200,
+    87100
+   ],
+   "days_below_5k_30d": 18,
+   "salary_to_low_gap_days": 14
+  },
+  {
+   "customer_id": "C039",
+   "name": "Bilal Ansari",
+   "age": 31,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Quetta",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 49000,
+   "account_age_years": 9.5,
+   "salary_months_12": 9,
+   "avg_balance_6m": 732400,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": true,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 6600
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 3800
+    }
+   ],
+   "eom_balances": [
+    1143200,
+    928000,
+    712800,
+    497600,
+    282500,
+    67300
+   ],
+   "days_below_5k_30d": 20,
+   "salary_to_low_gap_days": 14
+  },
+  {
+   "customer_id": "C040",
+   "name": "Zeeshan Sheikh",
+   "age": 41,
+   "bank": "MCB Bank",
+   "bank_code": "MCB",
+   "city": "Multan",
+   "employment": "Careem captain (gig)",
+   "net_monthly_income": 101000,
+   "account_age_years": 2.0,
+   "salary_months_12": 7,
+   "avg_balance_6m": 39400,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 4300
+    }
+   ],
+   "eom_balances": [
+    35900,
+    35800,
+    39900,
+    41900,
+    39500,
+    40500
+   ],
+   "days_below_5k_30d": 0,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C041",
+   "name": "Khadija Chaudhry",
+   "age": 33,
+   "bank": "National Bank of Pakistan",
+   "bank_code": "NBP",
+   "city": "Karachi",
+   "employment": "Auto workshop mechanic (self-employed)",
+   "net_monthly_income": 75000,
+   "account_age_years": 13.3,
+   "salary_months_12": 12,
+   "avg_balance_6m": 387700,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 15000
+    }
+   ],
+   "eom_balances": [
+    632200,
+    515900,
+    399600,
+    283300,
+    167000,
+    50600
+   ],
+   "days_below_5k_30d": 12,
+   "salary_to_low_gap_days": 10
+  },
+  {
+   "customer_id": "C042",
+   "name": "Rabia Awan",
+   "age": 32,
+   "bank": "National Bank of Pakistan",
+   "bank_code": "NBP",
+   "city": "Lahore",
+   "employment": "Tailoring business (self-employed)",
+   "net_monthly_income": 42000,
+   "account_age_years": 4.1,
+   "salary_months_12": 9,
+   "avg_balance_6m": 121200,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    126500,
+    128900,
+    132900,
+    127900,
+    112300,
+    145700
+   ],
+   "days_below_5k_30d": 2,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C043",
+   "name": "Zainab Awan",
+   "age": 39,
+   "bank": "Meezan Bank",
+   "bank_code": "MEBL",
+   "city": "Lahore",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 84000,
+   "account_age_years": 2.1,
+   "salary_months_12": 7,
+   "avg_balance_6m": 14600,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "car instalment",
+     "monthly_amount": 15000
+    }
+   ],
+   "eom_balances": [
+    17000,
+    16500,
+    13600,
+    18100,
+    18800,
+    18700
+   ],
+   "days_below_5k_30d": 4,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C044",
+   "name": "Mudassir Durrani",
+   "age": 45,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Badin",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 114000,
+   "account_age_years": 5.6,
+   "salary_months_12": 11,
+   "avg_balance_6m": 132600,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 10600
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 8200
+    }
+   ],
+   "eom_balances": [
+    177800,
+    149400,
+    121000,
+    92600,
+    64200,
+    35900
+   ],
+   "days_below_5k_30d": 22,
+   "salary_to_low_gap_days": 7
+  },
+  {
+   "customer_id": "C045",
+   "name": "Imran Ansari",
+   "age": 24,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Peshawar",
+   "employment": "Sindh Health Department (government)",
+   "net_monthly_income": 222000,
+   "account_age_years": 7.6,
+   "salary_months_12": 10,
+   "avg_balance_6m": 120000,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 12300
+    }
+   ],
+   "eom_balances": [
+    112900,
+    99800,
+    119400,
+    108600,
+    123400,
+    104500
+   ],
+   "days_below_5k_30d": 1,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C046",
+   "name": "Ali Baloch",
+   "age": 54,
+   "bank": "Sindh Bank",
+   "bank_code": "SNDB",
+   "city": "Quetta",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 132000,
+   "account_age_years": 4.8,
+   "salary_months_12": 12,
+   "avg_balance_6m": 253500,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    219200,
+    230600,
+    279900,
+    270700,
+    280700,
+    310300
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C047",
+   "name": "Imran Ansari",
+   "age": 56,
+   "bank": "MCB Bank",
+   "bank_code": "MCB",
+   "city": "Peshawar",
+   "employment": "Foodpanda rider (gig)",
+   "net_monthly_income": 54000,
+   "account_age_years": 1.4,
+   "salary_months_12": 9,
+   "avg_balance_6m": 22300,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    19600,
+    21300,
+    24300,
+    18000,
+    20900,
+    26800
+   ],
+   "days_below_5k_30d": 1,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C048",
+   "name": "Bilal Sheikh",
+   "age": 22,
+   "bank": "Bank Alfalah",
+   "bank_code": "BAFL",
+   "city": "Gujranwala",
+   "employment": "Sindh Health Department (government)",
+   "net_monthly_income": 220000,
+   "account_age_years": 13.1,
+   "salary_months_12": 12,
+   "avg_balance_6m": 814300,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 24700
+    },
+    {
+     "label": "car instalment",
+     "monthly_amount": 21600
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 3600
+    }
+   ],
+   "eom_balances": [
+    770900,
+    728100,
+    815100,
+    723100,
+    943000,
+    800600
+   ],
+   "days_below_5k_30d": 2,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C049",
+   "name": "Tariq Bhatti",
+   "age": 46,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Hyderabad",
+   "employment": "Nishat Mills (permanent)",
+   "net_monthly_income": 50000,
+   "account_age_years": 7.2,
+   "salary_months_12": 10,
+   "avg_balance_6m": 76800,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 6200
+    },
+    {
+     "label": "car instalment",
+     "monthly_amount": 15000
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 3500
+    }
+   ],
+   "eom_balances": [
+    147800,
+    120100,
+    92400,
+    64700,
+    37000,
+    9400
+   ],
+   "days_below_5k_30d": 27,
+   "salary_to_low_gap_days": 9
+  },
+  {
+   "customer_id": "C050",
+   "name": "Fatima Khan",
+   "age": 24,
+   "bank": "Bank of Punjab",
+   "bank_code": "BOP",
+   "city": "Hyderabad",
+   "employment": "Sindh Health Department (government)",
+   "net_monthly_income": 206000,
+   "account_age_years": 7.1,
+   "salary_months_12": 12,
+   "avg_balance_6m": 793900,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 4600
+    }
+   ],
+   "eom_balances": [
+    791100,
+    776600,
+    907200,
+    812300,
+    684600,
+    755500
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C051",
+   "name": "Rabia Abbasi",
+   "age": 37,
+   "bank": "Bank Alfalah",
+   "bank_code": "BAFL",
+   "city": "Quetta",
+   "employment": "Software house QA analyst (permanent)",
+   "net_monthly_income": 285000,
+   "account_age_years": 2.0,
+   "salary_months_12": 11,
+   "avg_balance_6m": 110900,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 3900
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 11000
+    }
+   ],
+   "eom_balances": [
+    152600,
+    129100,
+    105600,
+    82000,
+    58500,
+    35000
+   ],
+   "days_below_5k_30d": 13,
+   "salary_to_low_gap_days": 15
+  },
+  {
+   "customer_id": "C052",
+   "name": "Adnan Ansari",
+   "age": 38,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Islamabad",
+   "employment": "Bank teller (permanent)",
+   "net_monthly_income": 128000,
+   "account_age_years": 12.8,
+   "salary_months_12": 11,
+   "avg_balance_6m": 307300,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 5400
+    },
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 3400
+    }
+   ],
+   "eom_balances": [
+    560400,
+    461200,
+    362000,
+    262800,
+    163600,
+    64400
+   ],
+   "days_below_5k_30d": 24,
+   "salary_to_low_gap_days": 18
+  },
+  {
+   "customer_id": "C053",
+   "name": "Hamza Ansari",
+   "age": 54,
+   "bank": "Bank Alfalah",
+   "bank_code": "BAFL",
+   "city": "Abbottabad",
+   "employment": "Tailoring business (self-employed)",
+   "net_monthly_income": 108000,
+   "account_age_years": 12.0,
+   "salary_months_12": 12,
+   "avg_balance_6m": 158800,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 6400
+    },
+    {
+     "label": "committee (BC) contribution",
+     "monthly_amount": 7400
+    }
+   ],
+   "eom_balances": [
+    150100,
+    181200,
+    159300,
+    160500,
+    192600,
+    187800
+   ],
+   "days_below_5k_30d": 7,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C054",
+   "name": "Nimra Abbasi",
+   "age": 48,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Lahore",
+   "employment": "Private school teacher (contract)",
+   "net_monthly_income": 123000,
+   "account_age_years": 1.8,
+   "salary_months_12": 6,
+   "avg_balance_6m": 39600,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 5400
+    },
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 16700
+    }
+   ],
+   "eom_balances": [
+    42700,
+    47800,
+    48400,
+    40700,
+    49000,
+    49700
+   ],
+   "days_below_5k_30d": 7,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C055",
+   "name": "Mudassir Bajwa",
+   "age": 31,
+   "bank": "MCB Bank",
+   "bank_code": "MCB",
+   "city": "Sialkot",
+   "employment": "Pharmaceutical sales rep (permanent)",
+   "net_monthly_income": 92000,
+   "account_age_years": 5.5,
+   "salary_months_12": 11,
+   "avg_balance_6m": 408700,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 13000
+    }
+   ],
+   "eom_balances": [
+    398000,
+    417200,
+    423900,
+    481600,
+    399800,
+    460800
+   ],
+   "days_below_5k_30d": 7,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C056",
+   "name": "Ali Rajput",
+   "age": 51,
+   "bank": "Habib Bank Limited",
+   "bank_code": "HBL",
+   "city": "Quetta",
+   "employment": "Careem captain (gig)",
+   "net_monthly_income": 85000,
+   "account_age_years": 6.6,
+   "salary_months_12": 9,
+   "avg_balance_6m": 142400,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 2100
+    },
+    {
+     "label": "appliance instalment",
+     "monthly_amount": 4200
+    }
+   ],
+   "eom_balances": [
+    157100,
+    149900,
+    131600,
+    111000,
+    140500,
+    155500
+   ],
+   "days_below_5k_30d": 4,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C057",
+   "name": "Tariq Qureshi",
+   "age": 44,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Hyderabad",
+   "employment": "Sindh Health Department (government)",
+   "net_monthly_income": 177000,
+   "account_age_years": 1.3,
+   "salary_months_12": 9,
+   "avg_balance_6m": 5100,
+   "previous_loan": "none",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "motorcycle instalment",
+     "monthly_amount": 7600
+    }
+   ],
+   "eom_balances": [
+    5300,
+    4400,
+    5100,
+    5700,
+    4700,
+    5400
+   ],
+   "days_below_5k_30d": 3,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C058",
+   "name": "Amna Rajput",
+   "age": 42,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Okara",
+   "employment": "Tailoring business (self-employed)",
+   "net_monthly_income": 65000,
+   "account_age_years": 1.5,
+   "salary_months_12": 11,
+   "avg_balance_6m": 148700,
+   "previous_loan": "late_1_2",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    312100,
+    259200,
+    206400,
+    153500,
+    100600,
+    47800
+   ],
+   "days_below_5k_30d": 23,
+   "salary_to_low_gap_days": 8
+  },
+  {
+   "customer_id": "C059",
+   "name": "Junaid Gondal",
+   "age": 29,
+   "bank": "HBL Microfinance Bank",
+   "bank_code": "HBLMFB",
+   "city": "Rawalpindi",
+   "employment": "Punjab Police (government)",
+   "net_monthly_income": 149000,
+   "account_age_years": 2.6,
+   "salary_months_12": 10,
+   "avg_balance_6m": 21000,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [
+    {
+     "label": "existing personal loan EMI",
+     "monthly_amount": 6100
+    }
+   ],
+   "eom_balances": [
+    23500,
+    19700,
+    28000,
+    27900,
+    21800,
+    30600
+   ],
+   "days_below_5k_30d": 1,
+   "salary_to_low_gap_days": null
+  },
+  {
+   "customer_id": "C060",
+   "name": "Ayesha Khan",
+   "age": 45,
+   "bank": "United Bank Limited",
+   "bank_code": "UBL",
+   "city": "Multan",
+   "employment": "Private school teacher (contract)",
+   "net_monthly_income": 84000,
+   "account_age_years": 11.2,
+   "salary_months_12": 11,
+   "avg_balance_6m": 796200,
+   "previous_loan": "clean",
+   "cheque_bounce_12m": false,
+   "ecib_dpd90_24m": false,
+   "ecib_writeoff": false,
+   "obligations": [],
+   "eom_balances": [
+    1289200,
+    1065700,
+    842300,
+    618900,
+    395500,
+    172100
+   ],
+   "days_below_5k_30d": 16,
+   "salary_to_low_gap_days": 6
+  }
+ ]
+}

@@ -16,9 +16,17 @@ os.environ.setdefault("APIFY_TOKEN", "")           # disabled in tests
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 
 from app.core.db import Base
+
+
+@compiles(ARRAY, "sqlite")
+def _compile_pg_array_on_sqlite(element, compiler, **kw):
+    """SQLite can't render Postgres ARRAY columns — store them as JSON in tests."""
+    return "JSON"
 
 TEST_DB_URL = "sqlite:///./test_central.db"
 
