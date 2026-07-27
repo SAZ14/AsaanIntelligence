@@ -51,9 +51,19 @@ python scripts/loan_demo.py --customer C007  # one file in detail
 python scripts/loan_demo.py --no-llm         # fully offline (template narratives)
 ```
 
+### Dashboard
+
+`GET /loans/ui` serves the loans-desk dashboard: stat strip, triage queues,
+per-customer credit files (score breakdown, balance sparkline, sized offer or
+alternatives, desk narrative), and a **what-if simulator** that runs the exact
+policy math live in the browser — the JS mirror of `policy.py` is cross-checked
+against the Python engine. The scan data is injected server-side at request
+time (`app/agents/loans/dashboard.py`).
+
 API (mounted on the central server):
 
 ```
+GET  /loans/ui                          loans-desk dashboard (HTML)
 GET  /loans/book                        book summary with scores/bands
 GET  /loans/customers/{cid}             profile + score breakdown + stress signals
 GET  /loans/customers/{cid}/decision    policy decision (?narrative=true → LLM)
@@ -86,6 +96,21 @@ export LOAN_LLM_MODEL=loans-agent LOAN_FEWSHOT=0
 
 The agent's prompts (`app/agents/loans/prompts.py`) byte-match the dataset's
 format, so the fine-tuned model is a drop-in.
+
+## Guarantees (tested)
+
+`tests/test_loan_agent.py` + `tests/test_loan_edge_cases.py` (63 tests) pin:
+- every scoring threshold on both sides of its boundary (3.0 years, 11/12
+  months, Rs 50,000, score exactly 0/3/6, 10 stress days)
+- EMI/DBR/affordability math against worked examples from the dataset,
+  including zero-rate and round-trip inversion; off-shelf tenors rejected
+- a 500-profile randomized sweep: POOR is never offered unsecured credit,
+  the 40% DBR cap is never breached, offers never leave the product band,
+  every decline carries alternatives
+- LLM output sanitisation: truncated `<think>` scratchpads never leak;
+  an empty model reply falls back to the deterministic narrative
+- corrupt book rows (15/12 salary months, negative stress days, unknown
+  loan history, duplicate customer ids) are rejected at the loader boundary
 
 ## Synthetic customer book
 

@@ -31,8 +31,12 @@ _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 
 def _strip_think(text: str) -> str:
-    """The fine-tuned model emits <think> scratchpads; hide them from output."""
-    return _THINK_RE.sub("", text).strip()
+    """The fine-tuned model emits <think> scratchpads; hide them from output.
+    An unclosed tag (truncated generation) drops everything from the tag on."""
+    text = _THINK_RE.sub("", text)
+    if "<think>" in text:
+        text = text.split("<think>", 1)[0]
+    return text.strip()
 
 
 @dataclass
@@ -54,7 +58,11 @@ class LoanAgent:
         self.customers = customers if customers is not None else load_book(book_path)
         self.product = product or PERSONAL_INSTALMENT_LOAN
         self.client = client
-        self._by_id = {c.customer_id: c for c in self.customers}
+        self._by_id: dict[str, CustomerProfile] = {}
+        for c in self.customers:
+            if c.customer_id in self._by_id:
+                raise ValueError(f"Duplicate customer_id {c.customer_id!r} in book")
+            self._by_id[c.customer_id] = c
 
     def get(self, customer_id: str) -> CustomerProfile:
         try:
@@ -80,8 +88,9 @@ class LoanAgent:
                 fewshot_tasks=["proactive_offer_decision", "decline_with_alternatives"],
                 client=self.client,
             )
-            if raw:
-                narrative, source = _strip_think(raw), "llm"
+            stripped = _strip_think(raw) if raw else ""
+            if stripped:  # empty after stripping (e.g. truncated <think>) → template
+                narrative, source = stripped, "llm"
         if narrative is None:
             narrative = template_narrative(customer, decision)
         return Assessment(customer=customer, decision=decision,

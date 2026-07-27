@@ -234,6 +234,28 @@ def test_api_book_and_detail(client):
     assert client.get("/loans/customers/NOPE").status_code == 404
 
 
+def test_api_dashboard_ui(client):
+    r = client.get("/loans/ui")
+    assert r.status_code == 200
+    assert "AsaanPay" in r.text
+    assert "What-if simulator" in r.text
+    assert "/*__LOAN_DATA__*/null" not in r.text  # payload was injected
+
+
+def test_dashboard_payload_is_complete():
+    from app.agents.loans.dashboard import build_payload
+    from scripts.generate_loan_book import generate
+    agent = LoanAgent(customers=generate(n=15, seed=5))
+    payload = build_payload(agent)
+    queued = [cid for ids in payload["queues"].values() for cid in ids]
+    assert sorted(queued) == sorted(payload["customers"])
+    for c in payload["customers"].values():
+        assert c["decision"]["action"] in ("OFFER", "MONITOR", "DECLINE")
+        assert c["narrative"]
+        if c["decision"]["action"] == "OFFER":
+            assert c["decision"]["offer"]["dbr_pct"] <= 40.0
+
+
 def test_api_scan_and_decision(client):
     scan = client.get("/loans/scan").json()
     assert set(scan) == {"OFFER", "MONITOR", "DECLINE"}

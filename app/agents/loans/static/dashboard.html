@@ -1,0 +1,623 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AsaanPay Loans Desk</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f6f4;
+    --surface: #ffffff;
+    --surface-2: #ecefec;
+    --line: #dbe1db;
+    --ink: #151815;
+    --ink-2: #59635c;
+    --ink-3: #8b948d;
+    --accent: #0e7a5f;
+    --accent-ink: #ffffff;
+    --band-strong: #008300;
+    --band-acceptable: #2a78d6;
+    --band-thin: #b57800;
+    --band-poor: #d63c3b;
+    --offer-bg: #e7f2ec;
+    --decline-bg: #f9e9e8;
+    --monitor-bg: #eef0f4;
+    --spark: #0e7a5f;
+    --spark-fill: rgba(14, 122, 95, 0.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --bg: #131614;
+      --surface: #1c201d;
+      --surface-2: #242925;
+      --line: #333a35;
+      --ink: #edf1ed;
+      --ink-2: #a4aea7;
+      --ink-3: #737d76;
+      --accent: #33b189;
+      --accent-ink: #0c1210;
+      --band-strong: #4caf50;
+      --band-acceptable: #3987e5;
+      --band-thin: #d99a1b;
+      --band-poor: #e66767;
+      --offer-bg: #1c2b24;
+      --decline-bg: #30201f;
+      --monitor-bg: #22262c;
+      --spark: #33b189;
+      --spark-fill: rgba(51, 177, 137, 0.15);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #131614;
+    --surface: #1c201d;
+    --surface-2: #242925;
+    --line: #333a35;
+    --ink: #edf1ed;
+    --ink-2: #a4aea7;
+    --ink-3: #737d76;
+    --accent: #33b189;
+    --accent-ink: #0c1210;
+    --band-strong: #4caf50;
+    --band-acceptable: #3987e5;
+    --band-thin: #d99a1b;
+    --band-poor: #e66767;
+    --offer-bg: #1c2b24;
+    --decline-bg: #30201f;
+    --monitor-bg: #22262c;
+    --spark: #33b189;
+    --spark-fill: rgba(51, 177, 137, 0.15);
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f6f4;
+    --surface: #ffffff;
+    --surface-2: #ecefec;
+    --line: #dbe1db;
+    --ink: #151815;
+    --ink-2: #59635c;
+    --ink-3: #8b948d;
+    --accent: #0e7a5f;
+    --accent-ink: #ffffff;
+    --band-strong: #008300;
+    --band-acceptable: #2a78d6;
+    --band-thin: #b57800;
+    --band-poor: #d63c3b;
+    --offer-bg: #e7f2ec;
+    --decline-bg: #f9e9e8;
+    --monitor-bg: #eef0f4;
+    --spark: #0e7a5f;
+    --spark-fill: rgba(14, 122, 95, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .num, td.num, .figure {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 20px 64px; }
+
+  /* header */
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  header h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+  header h1 .desk { color: var(--accent); }
+  .demo-tag {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; color: var(--ink-2);
+  }
+  .policy-line { color: var(--ink-2); font-size: 13.5px; margin: 0 0 20px; max-width: 72ch; }
+
+  /* stat strip */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+  .stat .label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+  .stat .value { font-size: 24px; font-weight: 700; margin-top: 2px; }
+  .stat .sub { font-size: 12px; color: var(--ink-2); }
+
+  /* main grid */
+  .main { display: grid; grid-template-columns: minmax(340px, 5fr) minmax(380px, 7fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .panel-head { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .panel-head h2 { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin: 0; color: var(--ink-2); }
+
+  /* queue tabs */
+  .tabs { display: flex; gap: 6px; }
+  .tab {
+    border: 1px solid var(--line); background: transparent; color: var(--ink-2);
+    border-radius: 5px; padding: 4px 11px; font: 600 13px/1.4 inherit; cursor: pointer;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--ink); }
+  .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .tab:focus-visible, .row:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  .queue { max-height: 560px; overflow-y: auto; }
+  .row {
+    display: grid; grid-template-columns: 44px 1fr auto auto; gap: 10px; align-items: center;
+    width: 100%; text-align: left; padding: 10px 16px; border: 0; border-bottom: 1px solid var(--line);
+    background: transparent; color: inherit; cursor: pointer; font: inherit;
+  }
+  .row:hover { background: var(--surface-2); }
+  .row[aria-current="true"] { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+  .row .cid { color: var(--ink-3); font-size: 12px; }
+  .row .who { min-width: 0; }
+  .row .who .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .who .meta { font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .stress { font-size: 12px; color: var(--ink-2); text-align: right; }
+  .empty { padding: 28px 16px; color: var(--ink-3); text-align: center; }
+
+  /* band chip: color + text, never color alone */
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
+  }
+  .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .chip.STRONG { color: var(--band-strong); }
+  .chip.ACCEPTABLE { color: var(--band-acceptable); }
+  .chip.THIN { color: var(--band-thin); }
+  .chip.POOR { color: var(--band-poor); }
+
+  /* detail panel */
+  .detail { padding: 16px; display: grid; gap: 16px; }
+  .d-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: start; }
+  .d-head h3 { margin: 0; font-size: 18px; }
+  .d-head .sub { color: var(--ink-2); font-size: 13px; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; }
+  .fact .k { font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); }
+  .fact .v { font-size: 14.5px; }
+
+  .verdict { border-radius: 6px; padding: 12px 14px; display: grid; gap: 4px; }
+  .verdict .act { font-size: 15px; font-weight: 800; letter-spacing: 0.04em; }
+  .verdict.OFFER { background: var(--offer-bg); }
+  .verdict.OFFER .act { color: var(--band-strong); }
+  .verdict.MONITOR { background: var(--monitor-bg); }
+  .verdict.MONITOR .act { color: var(--band-acceptable); }
+  .verdict.DECLINE { background: var(--decline-bg); }
+  .verdict.DECLINE .act { color: var(--band-poor); }
+  .verdict .why { font-size: 13.5px; color: var(--ink-2); }
+
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 640px) { .cols2 { grid-template-columns: 1fr; } }
+
+  h4.sec { margin: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+
+  /* score breakdown bars */
+  .score-list { display: grid; gap: 5px; font-size: 13px; }
+  .score-item { display: grid; grid-template-columns: 34px 1fr; gap: 8px; align-items: center; }
+  .score-item .pts { font-weight: 700; text-align: right; }
+  .score-item .pts.pos { color: var(--band-strong); }
+  .score-item .pts.neg { color: var(--band-poor); }
+  .score-item .pts.zero { color: var(--ink-3); }
+  .score-item .lbl { color: var(--ink-2); }
+  .score-total { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; font-weight: 700; }
+
+  /* sparkline + offer table */
+  .spark-box { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 6px; }
+  .spark-cap { font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+  table.terms { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.terms td { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  table.terms td:first-child { color: var(--ink-2); }
+  table.terms td.num { text-align: right; font-weight: 600; }
+  table.terms tr:last-child td { border-bottom: 0; }
+
+  .alt-list { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--ink-2); display: grid; gap: 5px; }
+  .narrative { background: var(--surface-2); border-radius: 6px; padding: 12px 14px; font-size: 13.5px; white-space: pre-wrap; max-width: 72ch; }
+
+  /* simulator */
+  .sim { margin-top: 22px; }
+  .sim-grid { display: grid; grid-template-columns: minmax(320px, 5fr) minmax(360px, 7fr); gap: 16px; align-items: start; padding: 16px; }
+  @media (max-width: 900px) { .sim-grid { grid-template-columns: 1fr; } }
+  .controls { display: grid; gap: 12px; }
+  .ctl { display: grid; gap: 3px; }
+  .ctl label { font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+  .ctl output { font-weight: 700; color: var(--ink); }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  select {
+    background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 8px; font: inherit; font-size: 13.5px;
+  }
+  .checks { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13.5px; }
+  .checks label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  input[type="checkbox"] { accent-color: var(--band-poor); width: 15px; height: 15px; }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; }
+  .preset {
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); border-radius: 5px;
+    padding: 4px 10px; font: 600 12.5px/1.4 inherit; cursor: pointer;
+  }
+  .preset:hover { border-color: var(--accent); color: var(--ink); }
+
+  footer { margin-top: 28px; color: var(--ink-3); font-size: 12.5px; max-width: 80ch; }
+  @media (prefers-reduced-motion: no-preference) {
+    .row, .tab, .preset { transition: background 0.12s ease, border-color 0.12s ease; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>AsaanPay <span class="desk">Loans Desk</span></h1>
+    <span class="demo-tag">Demo · synthetic data</span>
+  </header>
+  <p class="policy-line">
+    Proactive instant-loan triage. Policy: offer only to <strong>STRONG</strong> or
+    <strong>ACCEPTABLE</strong> relationships showing genuine cash stress (10+ days under
+    Rs 5,000 in the last 30); monitor THIN files; no unsecured credit to POOR files —
+    secured alternatives only. Instalments capped at 40% DBR.
+  </p>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="main">
+    <section class="panel" aria-label="Triage queues">
+      <div class="panel-head">
+        <h2>Triage queue</h2>
+        <div class="tabs" role="tablist" id="tabs"></div>
+      </div>
+      <div class="queue" id="queue" role="tabpanel"></div>
+    </section>
+
+    <section class="panel" aria-label="Customer file">
+      <div class="panel-head"><h2>Customer file</h2></div>
+      <div class="detail" id="detail"></div>
+    </section>
+  </div>
+
+  <section class="panel sim" aria-label="What-if simulator">
+    <div class="panel-head">
+      <h2>What-if simulator</h2>
+      <span style="font-size:12.5px;color:var(--ink-3)">the exact policy math, live — move a slider, watch the decision flip</span>
+    </div>
+    <div class="sim-grid">
+      <div class="controls">
+        <div class="presets" id="presets"></div>
+        <div class="ctl">
+          <label for="s-income">Net monthly income <output id="o-income" class="num"></output></label>
+          <input type="range" id="s-income" min="0" max="500000" step="5000" value="90000">
+        </div>
+        <div class="ctl">
+          <label for="s-age">Account age (years) <output id="o-age" class="num"></output></label>
+          <input type="range" id="s-age" min="0" max="15" step="0.5" value="5">
+        </div>
+        <div class="ctl">
+          <label for="s-salary">Salary months (last 12) <output id="o-salary" class="num"></output></label>
+          <input type="range" id="s-salary" min="0" max="12" step="1" value="12">
+        </div>
+        <div class="ctl">
+          <label for="s-balance">Average balance (6-month) <output id="o-balance" class="num"></output></label>
+          <input type="range" id="s-balance" min="0" max="500000" step="5000" value="120000">
+        </div>
+        <div class="ctl">
+          <label for="s-oblig">Existing obligations / month <output id="o-oblig" class="num"></output></label>
+          <input type="range" id="s-oblig" min="0" max="100000" step="1000" value="6000">
+        </div>
+        <div class="ctl">
+          <label for="s-days">Days below Rs 5,000 (last 30) <output id="o-days" class="num"></output></label>
+          <input type="range" id="s-days" min="0" max="30" step="1" value="18">
+        </div>
+        <div class="ctl">
+          <label for="s-prev">Previous loan history</label>
+          <select id="s-prev">
+            <option value="clean">Fully repaid, never 30+ days late</option>
+            <option value="late_1_2">Repaid with 1–2 late months</option>
+            <option value="none">No previous loan</option>
+          </select>
+        </div>
+        <div class="ctl">
+          <label for="s-tenor">Tenor</label>
+          <select id="s-tenor"></select>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="s-bounce"> Cheque bounce (12m) <span class="num" style="color:var(--band-poor)">−3</span></label>
+          <label><input type="checkbox" id="s-dpd"> eCIB 90+ DPD (24m) <span class="num" style="color:var(--band-poor)">−4</span></label>
+          <label><input type="checkbox" id="s-writeoff"> eCIB write-off <span class="num" style="color:var(--band-poor)">−6</span></label>
+        </div>
+      </div>
+      <div id="sim-out" class="detail" style="padding:0"></div>
+    </div>
+  </section>
+
+  <footer>
+    Every figure on this page is computed by the deterministic policy engine
+    (<span class="num">app/agents/loans/policy.py</span>, mirrored in this page's simulator) —
+    the local LLM only narrates decisions, it never makes them. All customers are synthetic.
+  </footer>
+</div>
+
+<script>
+"use strict";
+const DATA = /*__LOAN_DATA__*/null;
+
+/* ── policy math, mirroring app/agents/loans/policy.py ─────────────────── */
+const DBR_CAP = 0.40, STRESS_DAYS = 10, FLOOR = 10000;
+
+function scoreProfile(p) {
+  const comps = [];
+  comps.push(p.account_age_years >= 3 ? [2, "account age 3 years or more"]
+           : p.account_age_years >= 1 ? [1, "account age 1–3 years"]
+           : [0, "account age under 1 year"]);
+  comps.push(p.salary_months_12 >= 11 ? [2, "salary credited 11+ of last 12 months"]
+           : p.salary_months_12 >= 9 ? [1, "salary credited 9–10 of last 12 months"]
+           : [0, "salary credited under 9 of last 12 months"]);
+  comps.push(p.avg_balance_6m > 50000 ? [2, "average balance above Rs 50,000"]
+           : p.avg_balance_6m >= 15000 ? [1, "average balance Rs 15,000–50,000"]
+           : [0, "average balance below Rs 15,000"]);
+  comps.push(p.previous_loan === "clean" ? [2, "previous loan fully repaid, never 30+ days late"]
+           : p.previous_loan === "late_1_2" ? [1, "previous loan repaid with 1–2 late months"]
+           : [0, "no previous loan history"]);
+  if (p.bounce) comps.push([-3, "cheque/direct-debit bounce in last 12 months"]);
+  if (p.dpd90) comps.push([-4, "90+ day delinquency on eCIB in last 24 months"]);
+  if (p.writeoff) comps.push([-6, "write-off/litigation flag on eCIB"]);
+  const score = comps.reduce((s, c) => s + c[0], 0);
+  const band = score >= 6 ? "STRONG" : score >= 3 ? "ACCEPTABLE" : score >= 0 ? "THIN" : "POOR";
+  return { comps, score, band };
+}
+
+function emiReducing(P, annual, n) {
+  const r = annual / 12;
+  if (r === 0) return P / n;
+  const g = Math.pow(1 + r, n);
+  return P * r * g / (g - 1);
+}
+function invertEmi(inst, annual, n) {
+  const r = annual / 12;
+  if (r === 0) return inst * n;
+  const g = Math.pow(1 + r, n);
+  return inst * (g - 1) / (r * g);
+}
+
+function decideSim(p, product, tenor) {
+  const s = scoreProfile(p);
+  const stressed = p.days_below_5k_30d >= STRESS_DAYS;
+  const out = { score: s, stressed, action: "MONITOR", offer: null, why: "" };
+  if (s.band === "POOR") {
+    out.action = "DECLINE";
+    out.why = "No unsecured credit to a POOR file — " +
+      (stressed ? "and the cash stress is real, which makes unsecured lending more dangerous, not less. " : "") +
+      "Redirect to deposit-backed or gold-backed finance and a secured card to rebuild eCIB.";
+    return out;
+  }
+  if (s.band === "THIN") { out.why = "File too thin for a proactive unsecured offer — keep monitoring while the relationship builds."; return out; }
+  if (!stressed) { out.why = `Only ${p.days_below_5k_30d} of the last 30 days under Rs 5,000 (marker is ${STRESS_DAYS}+) — liquid, so an offer would land as marketing, not help. Keep pre-approved.`; return out; }
+  if (p.net_monthly_income < product.min_income) { out.why = `Genuine stress, but income is below the product minimum of Rs ${product.min_income.toLocaleString()}.`; return out; }
+  const headroom = DBR_CAP * p.net_monthly_income - p.total_obligations;
+  if (headroom <= 0) { out.why = "Genuine stress, but existing obligations leave no instalment headroom under the 40% DBR cap."; return out; }
+  let amount = Math.floor(invertEmi(headroom, product.annual_rate, tenor) / FLOOR) * FLOOR;
+  if (amount < product.min_amount) { out.why = "Instalment headroom under the 40% cap supports less than the product minimum — monitor."; return out; }
+  amount = Math.min(amount, product.max_amount);
+  const inst = emiReducing(amount, product.annual_rate, tenor);
+  out.action = "OFFER";
+  out.offer = {
+    amount, tenor_months: tenor, annual_rate: product.annual_rate, rate_type: product.rate_type,
+    emi: Math.round(inst),
+    dbr_pct: Math.round((p.total_obligations + inst) / p.net_monthly_income * 1000) / 10,
+    processing_fee: Math.round(amount * product.processing_fee_pct),
+    headroom_after: Math.round(p.net_monthly_income - p.total_obligations - inst),
+  };
+  out.why = `${s.band} file under genuine stress (${p.days_below_5k_30d} days under Rs 5,000) — a proactive offer lands as help. Sized under the 40% DBR cap.`;
+  return out;
+}
+
+/* ── rendering ─────────────────────────────────────────────────────────── */
+const rs = (x) => "Rs " + Math.round(x).toLocaleString("en-PK");
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const $ = (id) => document.getElementById(id);
+
+function chip(band) { return `<span class="chip ${band}">${band}</span>`; }
+
+function sparkline(values, w = 260, h = 56) {
+  if (!values || values.length < 2) return "";
+  const min = Math.min(...values), max = Math.max(...values), range = max - min || 1;
+  const pad = 4, step = (w - pad * 2) / (values.length - 1);
+  const pts = values.map((v, i) => [pad + i * step, pad + (h - pad * 2) * (1 - (v - min) / range)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = line + ` L ${pts[pts.length - 1][0].toFixed(1)} ${h - pad} L ${pad} ${h - pad} Z`;
+  const last = pts[pts.length - 1];
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img" aria-label="Six month-end balances, ${rs(values[0])} to ${rs(values[values.length - 1])}">
+    <path d="${area}" fill="var(--spark-fill)"></path>
+    <path d="${line}" fill="none" stroke="var(--spark)" stroke-width="2" stroke-linecap="round"></path>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.5" fill="var(--spark)"></circle>
+  </svg>`;
+}
+
+function scoreBlock(comps, score, band) {
+  const items = comps.map(([pts, lbl]) => {
+    const cls = pts > 0 ? "pos" : pts < 0 ? "neg" : "zero";
+    const sign = pts > 0 ? "+" + pts : String(pts);
+    return `<div class="score-item"><span class="pts num ${cls}">${sign}</span><span class="lbl">${esc(lbl)}</span></div>`;
+  }).join("");
+  return `<div class="score-list">${items}
+    <div class="score-total"><span class="num">${score}</span> ${chip(band)}</div></div>`;
+}
+
+function offerTable(o) {
+  return `<table class="terms">
+    <tr><td>Amount</td><td class="num">${rs(o.amount)}</td></tr>
+    <tr><td>Tenor</td><td class="num">${o.tenor_months} months</td></tr>
+    <tr><td>Rate</td><td class="num">${(o.annual_rate * 100).toFixed(1)}% p.a. (${o.rate_type})</td></tr>
+    <tr><td>Instalment</td><td class="num">${rs(o.emi)}/mo</td></tr>
+    <tr><td>DBR vs 40% cap</td><td class="num">${o.dbr_pct}%</td></tr>
+    <tr><td>Processing fee</td><td class="num">${rs(o.processing_fee)}</td></tr>
+    <tr><td>Headroom after</td><td class="num">${rs(o.headroom_after)}/mo</td></tr>
+  </table>`;
+}
+
+/* ── book views ────────────────────────────────────────────────────────── */
+const QUEUES = ["OFFER", "MONITOR", "DECLINE"];
+const QUEUE_LABEL = { OFFER: "Offer", MONITOR: "Monitor", DECLINE: "Decline" };
+let activeQueue = "OFFER", activeCustomer = null;
+
+function renderStats() {
+  const q = DATA.queues;
+  const offerable = q.OFFER.reduce((s, id) => s + (DATA.customers[id].decision.offer?.amount || 0), 0);
+  const tiles = [
+    ["Customer book", Object.keys(DATA.customers).length, "profiles scanned"],
+    ["Offer queue", q.OFFER.length, "strong files under stress"],
+    ["Monitoring", q.MONITOR.length, "thin or liquid files"],
+    ["Declined", q.DECLINE.length, "secured alternatives only"],
+    ["Offerable capital", rs(offerable), "sum of sized offers"],
+  ];
+  $("stats").innerHTML = tiles.map(([l, v, s]) =>
+    `<div class="stat"><div class="label">${l}</div><div class="value num">${v}</div><div class="sub">${s}</div></div>`).join("");
+}
+
+function renderTabs() {
+  $("tabs").innerHTML = QUEUES.map((qn) =>
+    `<button class="tab" role="tab" aria-selected="${qn === activeQueue}" data-q="${qn}">
+       ${QUEUE_LABEL[qn]} <span class="num">${DATA.queues[qn].length}</span></button>`).join("");
+}
+
+function renderQueue() {
+  const ids = DATA.queues[activeQueue];
+  if (!ids.length) { $("queue").innerHTML = `<div class="empty">Queue is empty.</div>`; return; }
+  $("queue").innerHTML = ids.map((id) => {
+    const c = DATA.customers[id];
+    return `<button class="row" data-id="${id}" aria-current="${id === activeCustomer}">
+      <span class="cid num">${id}</span>
+      <span class="who"><span class="nm">${esc(c.name)}</span>
+        <span class="meta">${esc(c.bank_code)} · ${esc(c.city)} · ${rs(c.net_monthly_income)}/mo</span></span>
+      ${chip(c.decision.score.band)}
+      <span class="stress num">${c.days_below_5k_30d}d&lt;5k</span>
+    </button>`;
+  }).join("");
+}
+
+function renderDetail() {
+  const c = DATA.customers[activeCustomer];
+  if (!c) { $("detail").innerHTML = `<div class="empty">Select a customer from the queue.</div>`; return; }
+  const d = c.decision;
+  const flags = [c.flags.bounce && "cheque bounce", c.flags.dpd90 && "eCIB 90+ DPD", c.flags.writeoff && "eCIB write-off"].filter(Boolean);
+  const comps = d.score.components.map((x) => [x.points, x.label]);
+  const first = c.eom_balances[0], last = c.eom_balances[c.eom_balances.length - 1];
+  $("detail").innerHTML = `
+    <div class="d-head">
+      <div><h3>${esc(c.name)}, ${c.age}</h3>
+        <div class="sub">${esc(c.employment)} · ${esc(c.bank)} (${esc(c.bank_code)}), ${esc(c.city)}</div></div>
+      ${chip(d.score.band)}
+    </div>
+    <div class="verdict ${d.action}">
+      <span class="act">${d.action === "OFFER" ? "OFFER — proactive instant loan" : d.action === "DECLINE" ? "DECLINE — no unsecured credit" : "MONITOR — no offer today"}</span>
+      <span class="why">${esc(d.reasons[0] || "")}</span>
+    </div>
+    <div class="facts">
+      <div class="fact"><div class="k">Income</div><div class="v num">${rs(c.net_monthly_income)}/mo</div></div>
+      <div class="fact"><div class="k">Account age</div><div class="v num">${c.account_age_years} yrs</div></div>
+      <div class="fact"><div class="k">Salary months</div><div class="v num">${c.salary_months_12}/12</div></div>
+      <div class="fact"><div class="k">Avg balance</div><div class="v num">${rs(c.avg_balance_6m)}</div></div>
+      <div class="fact"><div class="k">Obligations</div><div class="v num">${rs(c.total_obligations)}/mo</div></div>
+      <div class="fact"><div class="k">Credit flags</div><div class="v">${flags.length ? esc(flags.join(", ")) : "none"}</div></div>
+    </div>
+    <div class="cols2">
+      <div><h4 class="sec">Relationship score</h4>${scoreBlock(comps, d.score.score, d.score.band)}</div>
+      <div>
+        <h4 class="sec">Cash position</h4>
+        <div class="spark-box">${sparkline(c.eom_balances)}
+          <div class="spark-cap"><span>6-mo month-end balances</span>
+            <span class="num">${rs(first)} → ${rs(last)}</span></div>
+        </div>
+        <div style="font-size:13px;color:var(--ink-2);margin-top:8px">
+          ${d.stress.notes.map(esc).join("<br>")}</div>
+      </div>
+    </div>
+    ${d.offer ? `<div><h4 class="sec">Sized offer — ${esc(DATA.product.name)}</h4>${offerTable(d.offer)}</div>` : ""}
+    ${d.alternatives.length ? `<div><h4 class="sec">Responsible alternatives</h4>
+      <ul class="alt-list">${d.alternatives.map((a) => `<li>${esc(a)}</li>`).join("")}</ul></div>` : ""}
+    <div><h4 class="sec">Desk narrative</h4><div class="narrative">${esc(c.narrative)}</div></div>`;
+}
+
+/* ── simulator ─────────────────────────────────────────────────────────── */
+const PRESETS = [
+  ["Gig worker, stressed", { income: 85000, age: 7.5, salary: 11, balance: 120000, oblig: 19000, days: 16, prev: "late_1_2", bounce: false, dpd: false, writeoff: false }],
+  ["Govt salaried, liquid", { income: 232000, age: 9.5, salary: 12, balance: 448000, oblig: 0, days: 4, prev: "clean", bounce: false, dpd: false, writeoff: false }],
+  ["Defaulted before", { income: 130000, age: 7.5, salary: 12, balance: 715000, oblig: 0, days: 16, prev: "late_1_2", bounce: true, dpd: false, writeoff: true }],
+  ["New to bank", { income: 60000, age: 0.5, salary: 7, balance: 12000, oblig: 2000, days: 14, prev: "none", bounce: false, dpd: false, writeoff: false }],
+];
+
+function simProfile() {
+  return {
+    net_monthly_income: +$("s-income").value,
+    account_age_years: +$("s-age").value,
+    salary_months_12: +$("s-salary").value,
+    avg_balance_6m: +$("s-balance").value,
+    total_obligations: +$("s-oblig").value,
+    days_below_5k_30d: +$("s-days").value,
+    previous_loan: $("s-prev").value,
+    bounce: $("s-bounce").checked,
+    dpd90: $("s-dpd").checked,
+    writeoff: $("s-writeoff").checked,
+  };
+}
+
+function renderSim() {
+  const p = simProfile();
+  $("o-income").textContent = rs(p.net_monthly_income) + "/mo";
+  $("o-age").textContent = p.account_age_years + " yrs";
+  $("o-salary").textContent = p.salary_months_12 + "/12";
+  $("o-balance").textContent = rs(p.avg_balance_6m);
+  $("o-oblig").textContent = rs(p.total_obligations);
+  $("o-days").textContent = p.days_below_5k_30d + " days";
+  const tenor = +$("s-tenor").value;
+  const r = decideSim(p, DATA.product, tenor);
+  $("sim-out").innerHTML = `
+    <div class="verdict ${r.action}">
+      <span class="act">${r.action === "OFFER" ? "OFFER — proactive instant loan" : r.action === "DECLINE" ? "DECLINE — no unsecured credit" : "MONITOR — no offer today"}</span>
+      <span class="why">${esc(r.why)}</span>
+    </div>
+    <div class="cols2">
+      <div><h4 class="sec">Relationship score</h4>${scoreBlock(r.score.comps, r.score.score, r.score.band)}</div>
+      <div><h4 class="sec">${r.offer ? "Sized offer" : "Stress check"}</h4>
+        ${r.offer ? offerTable(r.offer)
+          : `<div style="font-size:13.5px;color:var(--ink-2)">${r.stressed ? "Genuine cash stress detected" : "No genuine cash stress"} —
+             <span class="num">${p.days_below_5k_30d}</span> of the last 30 days under Rs 5,000
+             (marker: ${STRESS_DAYS}+).</div>`}
+      </div>
+    </div>`;
+}
+
+/* ── wiring ────────────────────────────────────────────────────────────── */
+function boot() {
+  if (!DATA) { document.body.innerHTML = "<p style='padding:2em'>No data payload injected.</p>"; return; }
+  activeCustomer = DATA.queues.OFFER[0] || DATA.queues.MONITOR[0] || null;
+  renderStats(); renderTabs(); renderQueue(); renderDetail();
+
+  $("tabs").addEventListener("click", (e) => {
+    const b = e.target.closest(".tab"); if (!b) return;
+    activeQueue = b.dataset.q;
+    const ids = DATA.queues[activeQueue];
+    if (ids.length) activeCustomer = ids[0];
+    renderTabs(); renderQueue(); renderDetail();
+  });
+  $("queue").addEventListener("click", (e) => {
+    const b = e.target.closest(".row"); if (!b) return;
+    activeCustomer = b.dataset.id;
+    renderQueue(); renderDetail();
+  });
+
+  $("s-tenor").innerHTML = DATA.product.tenors.map((t) =>
+    `<option value="${t}" ${t === DATA.product.tenors[DATA.product.tenors.length - 1] ? "selected" : ""}>${t} months</option>`).join("");
+  $("presets").innerHTML = PRESETS.map(([name], i) =>
+    `<button class="preset" data-p="${i}">${name}</button>`).join("");
+  $("presets").addEventListener("click", (e) => {
+    const b = e.target.closest(".preset"); if (!b) return;
+    const v = PRESETS[+b.dataset.p][1];
+    $("s-income").value = v.income; $("s-age").value = v.age; $("s-salary").value = v.salary;
+    $("s-balance").value = v.balance; $("s-oblig").value = v.oblig; $("s-days").value = v.days;
+    $("s-prev").value = v.prev; $("s-bounce").checked = v.bounce;
+    $("s-dpd").checked = v.dpd; $("s-writeoff").checked = v.writeoff;
+    renderSim();
+  });
+  for (const id of ["s-income", "s-age", "s-salary", "s-balance", "s-oblig", "s-days"])
+    $(id).addEventListener("input", renderSim);
+  for (const id of ["s-prev", "s-tenor", "s-bounce", "s-dpd", "s-writeoff"])
+    $(id).addEventListener("change", renderSim);
+  renderSim();
+}
+boot();
+</script>

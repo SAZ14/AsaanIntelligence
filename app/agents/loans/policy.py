@@ -146,19 +146,27 @@ def detect_stress(p: CustomerProfile) -> StressSignals:
 
 def emi(principal: float, annual_rate: float, months: int, rate_type: str) -> float:
     """Exact (unrounded) monthly instalment."""
+    if months <= 0:
+        raise ValueError(f"Tenor must be positive, got {months}")
     if rate_type == "flat":
         markup = principal * annual_rate * (months / 12)
         return (principal + markup) / months
     r = annual_rate / 12
+    if r == 0:
+        return principal / months
     growth = (1 + r) ** months
     return principal * r * growth / (growth - 1)
 
 
 def invert_emi(instalment: float, annual_rate: float, months: int, rate_type: str) -> float:
     """Principal supportable by a given monthly instalment."""
+    if months <= 0:
+        raise ValueError(f"Tenor must be positive, got {months}")
     if rate_type == "flat":
         return instalment * months / (1 + annual_rate * months / 12)
     r = annual_rate / 12
+    if r == 0:
+        return instalment * months
     growth = (1 + r) ** months
     return instalment * (growth - 1) / (r * growth)
 
@@ -191,6 +199,11 @@ def build_offer(
     """Size a responsible offer at the DBR cap for the given tenor
     (default: the product's longest tenor, which maximises headroom)."""
     tenor = tenor or product.tenors[-1]
+    if tenor not in product.tenors:
+        raise ValueError(
+            f"Tenor {tenor} months not on the shelf for {product.name} "
+            f"(available: {product.tenors})"
+        )
     amount = max_affordable_loan(p, product, tenor)
     if amount <= 0:
         return None

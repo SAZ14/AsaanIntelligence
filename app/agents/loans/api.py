@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.agents.loans.agent import LoanAgent
@@ -46,6 +47,13 @@ def _summary_row(c: CustomerProfile, d: Decision | None = None) -> dict:
         "days_below_5k_30d": stress.days_below_5k,
         "stressed": stress.stressed,
     }
+
+
+@router.get("/ui", response_class=HTMLResponse)
+def dashboard() -> str:
+    """The loans-desk dashboard with a live scan of the book baked in."""
+    from app.agents.loans.dashboard import render_dashboard
+    return render_dashboard(get_agent())
 
 
 @router.get("/book")

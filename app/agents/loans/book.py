@@ -12,9 +12,33 @@ from app.agents.loans.models import CustomerProfile, Obligation
 
 DEFAULT_BOOK_PATH = Path(__file__).resolve().parents[3] / "data" / "loans" / "customer_book.json"
 
+_PREVIOUS_LOAN_VALUES = ("clean", "late_1_2", "none")
+
+
+def validate_profile(p: CustomerProfile) -> CustomerProfile:
+    """Reject obviously corrupt rows before they reach the policy engine —
+    a 15/12 salary count or negative stress-day count would silently skew
+    scores and stress detection."""
+    cid = p.customer_id
+    if p.net_monthly_income < 0:
+        raise ValueError(f"{cid}: net_monthly_income must be >= 0, got {p.net_monthly_income}")
+    if p.account_age_years < 0:
+        raise ValueError(f"{cid}: account_age_years must be >= 0, got {p.account_age_years}")
+    if not 0 <= p.salary_months_12 <= 12:
+        raise ValueError(f"{cid}: salary_months_12 must be 0-12, got {p.salary_months_12}")
+    if not 0 <= p.days_below_5k_30d <= 30:
+        raise ValueError(f"{cid}: days_below_5k_30d must be 0-30, got {p.days_below_5k_30d}")
+    if p.previous_loan not in _PREVIOUS_LOAN_VALUES:
+        raise ValueError(
+            f"{cid}: previous_loan must be one of {_PREVIOUS_LOAN_VALUES}, got {p.previous_loan!r}"
+        )
+    if any(o.monthly_amount < 0 for o in p.obligations):
+        raise ValueError(f"{cid}: obligation amounts must be >= 0")
+    return p
+
 
 def profile_from_dict(d: dict) -> CustomerProfile:
-    return CustomerProfile(
+    return validate_profile(CustomerProfile(
         customer_id=d["customer_id"],
         name=d["name"],
         age=d["age"],
@@ -34,7 +58,7 @@ def profile_from_dict(d: dict) -> CustomerProfile:
         eom_balances=d.get("eom_balances", []),
         days_below_5k_30d=d.get("days_below_5k_30d", 0),
         salary_to_low_gap_days=d.get("salary_to_low_gap_days"),
-    )
+    ))
 
 
 def profile_to_dict(p: CustomerProfile) -> dict:
