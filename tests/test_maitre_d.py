@@ -100,6 +100,40 @@ class TestQueueJoin:
         assert r.action == "queued"
         assert "Bilal" in r.text
 
+    def test_bare_name_reply_fills_the_name_slot(self, store_id):
+        """Confirmed live in production: a guest asked "what name should I
+        put it under?" who replies with JUST the name -- no "it's"/"I'm"
+        framing -- must not get asked the exact same question again. The
+        deterministic/LLM NLU only recognises a name when it's introduced
+        by a phrase like that, so a bare reply used to fill nothing and
+        loop forever."""
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "table for 2")
+        assert r1.action == "need_info"
+        r2 = md.handle_message(PHONE, "Alyan")
+        assert r2.action == "queued", r2.text
+        assert "Alyan" in r2.text
+
+    def test_bare_party_size_reply_fills_the_party_size_slot(self, store_id):
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "book", profile_name="Ahmed")
+        assert r1.action == "need_info"  # only party size left to ask
+        r2 = md.handle_message(PHONE, "4")
+        assert r2.action == "queued", r2.text
+
+    def test_mid_flow_greeting_is_not_mistaken_for_a_name(self, store_id):
+        """A stray "hi" while a name is still pending must not get
+        captured as the guest's name -- only an intent-less bare reply
+        should ever fill an awaited slot this way."""
+        md = _md(store_id)
+        r1 = md.handle_message(PHONE, "table for 2")
+        assert r1.action == "need_info"
+        r2 = md.handle_message(PHONE, "hi")
+        assert r2.action == "need_info"  # still asking for the name, not "Hi"
+        r3 = md.handle_message(PHONE, "Alyan")
+        assert r3.action == "queued"
+        assert "Alyan" in r3.text
+
     def test_queue_numbers_are_sequential(self, store_id):
         md = _md(store_id)
         r1 = md.handle_message("+923000000001", "table for 2, it's Aman")

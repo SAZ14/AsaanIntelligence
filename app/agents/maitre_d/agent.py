@@ -16,6 +16,7 @@ the Postgres-backed, store_id-scoped versions in this package.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -24,7 +25,7 @@ from app.agents.maitre_d.config import (
     get_seated_grace_minutes, get_queue_stale_minutes,
 )
 from app.agents.maitre_d.models import Guest, QueueEntry
-from app.agents.maitre_d.nlu import ParsedMessage, parse_message
+from app.agents.maitre_d.nlu import NUMBER_WORDS, ParsedMessage, parse_message
 from app.agents.maitre_d.store import Store
 
 
@@ -45,6 +46,35 @@ class MaintenanceResult:
     """One housekeeping sweep's outcome -- see MaitreD.expire_stale_entries."""
     expired: int = 0
     outbound: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _bare_reply_as_name(raw: str) -> str:
+    """A direct, unframed answer to "what name should I put it under?" --
+    e.g. just "Alyan" -- has no "it's"/"I'm"/"name is" phrase for
+    nlu.py's _extract_name (or the LLM, given the message in isolation
+    with no question-being-answered context) to anchor on, so it comes
+    back with name="". Without this, that reply fills no slot and the
+    exact same question repeats forever (confirmed live in production).
+    Only ever consulted by _book_flow when "name" is the slot we just
+    asked for, so a stray "hi"/"table for 2"/etc. mid-flow never reaches
+    here (those parse to a non-"unknown" intent and are handled first)."""
+    words = raw.strip().split()
+    if not (1 <= len(words) <= 4):
+        return ""
+    if not all(re.match(r"^[A-Za-z][A-Za-z'-]*$", w) for w in words):
+        return ""
+    return " ".join(w.capitalize() for w in words)
+
+
+def _bare_reply_as_party_size(raw: str) -> int | None:
+    """Same gap as _bare_reply_as_name but for "how many people in your
+    party?" -- a bare "4" or "four" has no surrounding words for nlu.py's
+    _extract_party_size to match against."""
+    stripped = raw.strip().lower()
+    if stripped.isdigit():
+        n = int(stripped)
+        return n if 1 <= n <= 30 else None
+    return NUMBER_WORDS.get(stripped)
 
 
 class MaitreD:
@@ -213,11 +243,20 @@ class MaitreD:
         state = self._conversation(phone)
         slots = state.get("slots", {})
         prior_options = state.get("location_options", [])
+        awaiting = state.get("awaiting")
 
         if parsed.party_size:
             slots["party_size"] = parsed.party_size
+        elif awaiting == "party_size" and parsed.intent == "unknown":
+            bare_party = _bare_reply_as_party_size(parsed.raw)
+            if bare_party:
+                slots["party_size"] = bare_party
         if parsed.name:
             slots["name"] = parsed.name
+        elif awaiting == "name" and parsed.intent == "unknown":
+            bare_name = _bare_reply_as_name(parsed.raw)
+            if bare_name:
+                slots["name"] = bare_name
         if parsed.special_requests:
             existing = slots.get("special_requests", "")
             slots["special_requests"] = ", ".join(
@@ -280,7 +319,7 @@ class MaitreD:
         # What's still missing?
         missing = self._missing_slot(slots)
         if missing:
-            new_state = {"flow": "book", "slots": slots}
+            new_state = {"flow": "book", "slots": slots, "awaiting": missing}
             if location_options:
                 new_state["location_options"] = location_options
             self._save_conversation(phone, new_state)
